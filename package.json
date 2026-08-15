@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc -b tsconfig.packages.json",
     "typecheck": "tsc -b tsconfig.packages.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "4.1.8",
