@@ -1,0 +1,54 @@
+{
+  "name": "@jianxx/dsh-cc-plugin-loader",
+  "description": "Load Claude Code plugin.json manifests as in-memory dsh plugin mounts",
+  "version": "0.1.0-rc.5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/compat/cc-plugin-loader"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./manifest": {
+      "types": "./lib/manifest.d.ts",
+      "default": "./lib/manifest.js"
+    },
+    "./seams": {
+      "types": "./lib/seams.d.ts",
+      "default": "./lib/seams.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
+    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.5",
+    "@jianxx/dsh-cc-hook-protocol": "workspace:^",
+    "@jianxx/dsh-cc-mcp-client": "workspace:^",
+    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-skill": ">=0.1.0-rc.5",
+    "@jianxx/dsh-cc-skill-loader": "workspace:^",
+    "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.5",
+    "@jianxx/dsh-cc-tools": "workspace:^",
+    "@deepseek-ai/cordis": ">=0.1.0-rc.5"
+  },
+  "devDependencies": {
+    "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
+    "@deepseek-ai/dsh-commands": "link:../../../../deepseek-harness/packages/interaction/commands",
+    "@jianxx/dsh-cc-hook-protocol": "workspace:^",
+    "@jianxx/dsh-cc-mcp-client": "workspace:^",
+    "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",
+    "@deepseek-ai/dsh-skill": "link:../../../../deepseek-harness/packages/skill/skill",
+    "@jianxx/dsh-cc-skill-loader": "workspace:^",
+    "@deepseek-ai/dsh-subagent": "link:../../../../deepseek-harness/packages/subagent/subagent",
+    "@jianxx/dsh-cc-tools": "workspace:^",
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis"
+  }
+}

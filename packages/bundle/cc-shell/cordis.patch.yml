@@ -1,0 +1,73 @@
+# Claude Code shell-surface parity layer. Mounts the vendored tool registry
+# (deferred-name support) plus the CC surface plugins. Every package here is a
+# plain composition row — zero config keeps upstream defaults, which already
+# resolve against $DSH_HOME and process.cwd().
+
+# Swap the in-box tool registry for the vendored one. reserve()/isAdmitted()
+# join the restrictable-name universe so permission gates may name deferred
+# tools before they load; the shipped behavior otherwise matches upstream.
+- id: tools
+  disabled: true
+
+- insert:
+    # ── core swaps ────────────────────────────────────────────────────────────
+    - id: tools
+      name: '@jianxx/dsh-cc-tools'
+
+    # ── discovery + gating ─────────────────────────────────────────────────
+    # ToolSearch: model-called search that activates deferred tools per scope.
+    - id: tool-search
+      name: '@jianxx/dsh-cc-tool-search'
+
+    # Claude Code skills from user/project/additional roots.
+    - id: skill-claude-code
+      name: '@jianxx/dsh-cc-skill-loader'
+
+    # CC plugins on disk (agents/skills/commands/hooks/mcp servers) plus the
+    # base agent preset dirs and .mcp.json server wiring — see the glue plugin.
+    - id: cc-shell-glue
+      name: '@jianxx/dsh-cc-bundle-shell'
+
+    # ── session features ────────────────────────────────────────────────────
+    - id: memory
+      name: '@jianxx/dsh-cc-memory'
+
+    - id: memory-consolidation
+      name: '@jianxx/dsh-cc-memory-consolidation'
+
+    # Render CLAUDE.md-style output styles to the system prompt.
+    - id: cc-output-styles
+      name: '@jianxx/dsh-cc-output-styles'
+
+    # Model-free staleness microcompaction (auto: false by default).
+    - id: compaction-micro
+      name: '@jianxx/dsh-cc-compaction-micro'
+
+    # Coordinator mode: DSH_COORDINATOR_MODE=1 or config enabled.
+    - id: coordinator
+      name: '@jianxx/dsh-cc-coordinator'
+
+    # ── tools + hooks ───────────────────────────────────────────────────────
+    - id: tool-git-worktree
+      name: '@jianxx/dsh-cc-tool-git-worktree'
+
+    # The 27-event Claude Code hook bridge: PreToolUse/PostToolUse et al.,
+    # command hooks + http executors over the vendored hook protocol.
+    - id: hooks-claude-code
+      name: '@jianxx/dsh-cc-hooks-claude-code'
+
+    # ── CC parity slash commands ────────────────────────────────────────────
+    - id: command-cost
+      name: '@jianxx/dsh-cc-command-cost'
+
+    - id: command-export
+      name: '@jianxx/dsh-cc-command-export'
+
+    - id: command-stats
+      name: '@jianxx/dsh-cc-command-stats'
+
+    - id: command-status
+      name: '@jianxx/dsh-cc-command-status'
+
+    - id: command-doctor
+      name: '@jianxx/dsh-cc-command-doctor'

@@ -1,0 +1,27 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../skill/skill-claude-code"
+    },
+    {
+      "path": "../../preset/claude-code-agents"
+    },
+    {
+      "path": "../../hooks/hook-protocol"
+    },
+    {
+      "path": "../../core/tools"
+    },
+    {
+      "path": "../../mcp/mcp-client"
+    }
+  ]
+}

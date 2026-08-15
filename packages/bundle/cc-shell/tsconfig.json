@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../compat/cc-plugin-loader" },
+    { "path": "../../preset/claude-code-agents" },
+    { "path": "../../mcp/mcp-client" },
+    { "path": "../../mcp/mcp-config" }
+  ]
+}

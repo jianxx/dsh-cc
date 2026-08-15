@@ -1,0 +1,16 @@
+{
+  "name": "@jianxx/dsh-cc-agent-loop-mock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vendored agent-loop MockAdapter test fixture (from deepseek-harness packages/core/agent-loop/tests/mock-adapter.ts) retained for suite reuse.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm"
+  }
+}

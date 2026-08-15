@@ -1,0 +1,134 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "es2024"
+    ],
+    "declaration": true,
+    "sourceMap": true,
+    "declarationMap": true,
+    "composite": true,
+    "incremental": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "@jianxx/dsh-cc-settings-cascade": [
+        "./packages/settings/settings-cascade/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-permission-rules": [
+        "./packages/interaction/permission-rules/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-permission-rules/types": [
+        "./packages/interaction/permission-rules/src/types.ts"
+      ],
+      "@jianxx/dsh-cc-mcp-config": [
+        "./packages/mcp/mcp-config/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-mcp-client": [
+        "./packages/mcp/mcp-client/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-hook-protocol": [
+        "./packages/hooks/hook-protocol/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-hooks-claude-code": [
+        "./packages/hooks/hooks-claude-code/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tools": [
+        "./packages/core/tools/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-skill-loader": [
+        "./packages/skill/skill-claude-code/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tool-search": [
+        "./packages/core/tool-search/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-claude-code-agents": [
+        "./packages/preset/claude-code-agents/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-plugin-loader": [
+        "./packages/compat/cc-plugin-loader/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-memory": [
+        "./packages/memory/memory/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-memory-consolidation": [
+        "./packages/memory/memory-consolidation/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tool-git-worktree": [
+        "./packages/workspace/tool-git-worktree/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-output-styles": [
+        "./packages/compat/cc-output-styles/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-coordinator": [
+        "./packages/subagent/coordinator/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-compaction-micro": [
+        "./packages/compaction/compaction-micro/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-cost": [
+        "./packages/session/command-cost/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-export": [
+        "./packages/session/command-export/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-stats": [
+        "./packages/session/command-stats/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-status": [
+        "./packages/interaction/command-status/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-doctor": [
+        "./packages/interaction/command-doctor/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-cost/cost": [
+        "./packages/session/command-cost/src/cost.ts"
+      ],
+      "@jianxx/dsh-cc-command-doctor/doctor": [
+        "./packages/interaction/command-doctor/src/doctor.ts"
+      ],
+      "@jianxx/dsh-cc-command-export/transcript": [
+        "./packages/session/command-export/src/transcript.ts"
+      ],
+      "@jianxx/dsh-cc-command-stats/stats": [
+        "./packages/session/command-stats/src/stats.ts"
+      ],
+      "@jianxx/dsh-cc-command-status/status": [
+        "./packages/interaction/command-status/src/status.ts"
+      ],
+      "@jianxx/dsh-cc-permission-rules/invariant": [
+        "./packages/interaction/permission-rules/src/invariant.ts"
+      ],
+      "@jianxx/dsh-cc-output-styles/invariant": [
+        "./packages/compat/cc-output-styles/src/invariant.ts"
+      ],
+      "@jianxx/dsh-cc-hook-protocol/invariant": [
+        "./packages/hooks/hook-protocol/src/invariant.ts"
+      ],
+      "@jianxx/dsh-cc-tools/invariant": [
+        "./packages/core/tools/src/invariant.ts"
+      ],
+      "@jianxx/dsh-cc-agent-loop-mock": [
+        "./packages/test-support/agent-loop-mock/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-bundle-shell": [
+        "./packages/bundle/cc-shell/src/index.ts"
+      ]
+    },
+    "rewriteRelativeImportExtensions": true
+  }
+}

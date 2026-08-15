@@ -1,0 +1,53 @@
+{
+  "name": "@jianxx/dsh-cc-claude-code-agents",
+  "description": "Load Claude Code `.claude/agents` definitions as agent presets for the DeepSeek Harness",
+  "version": "0.1.0-rc.5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/preset/claude-code-agents"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./parse": {
+      "types": "./lib/parse.d.ts",
+      "default": "./lib/parse.js"
+    },
+    "./restrict": {
+      "types": "./lib/restrict.d.ts",
+      "default": "./lib/restrict.js"
+    },
+    "./discovery": {
+      "types": "./lib/discovery.d.ts",
+      "default": "./lib/discovery.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types/types.js"
+    },
+    "./invariant": {
+      "types": "./lib/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants"
+  }
+}

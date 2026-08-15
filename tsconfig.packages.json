@@ -1,0 +1,77 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/settings/settings-cascade"
+    },
+    {
+      "path": "./packages/interaction/permission-rules"
+    },
+    {
+      "path": "./packages/mcp/mcp-config"
+    },
+    {
+      "path": "./packages/mcp/mcp-client"
+    },
+    {
+      "path": "./packages/hooks/hook-protocol"
+    },
+    {
+      "path": "./packages/hooks/hooks-claude-code"
+    },
+    {
+      "path": "./packages/core/tools"
+    },
+    {
+      "path": "./packages/skill/skill-claude-code"
+    },
+    {
+      "path": "./packages/core/tool-search"
+    },
+    {
+      "path": "./packages/preset/claude-code-agents"
+    },
+    {
+      "path": "./packages/compat/cc-plugin-loader"
+    },
+    {
+      "path": "./packages/memory/memory"
+    },
+    {
+      "path": "./packages/memory/memory-consolidation"
+    },
+    {
+      "path": "./packages/workspace/tool-git-worktree"
+    },
+    {
+      "path": "./packages/compat/cc-output-styles"
+    },
+    {
+      "path": "./packages/subagent/coordinator"
+    },
+    {
+      "path": "./packages/compaction/compaction-micro"
+    },
+    {
+      "path": "./packages/session/command-cost"
+    },
+    {
+      "path": "./packages/session/command-export"
+    },
+    {
+      "path": "./packages/session/command-stats"
+    },
+    {
+      "path": "./packages/interaction/command-status"
+    },
+    {
+      "path": "./packages/interaction/command-doctor"
+    },
+    {
+      "path": "./packages/test-support/agent-loop-mock"
+    },
+    {
+      "path": "./packages/bundle/cc-shell"
+    }
+  ]
+}

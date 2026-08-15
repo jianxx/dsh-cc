@@ -1,0 +1,41 @@
+{
+  "name": "@jianxx/dsh-cc-mcp-config",
+  "description": "MCP workspace-configuration loader: parses .mcp.json into mcp-client registrations",
+  "version": "0.1.0-rc.5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/mcp/mcp-config"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.5",
+    "@deepseek-ai/cordis": ">=0.1.0-rc.5"
+  },
+  "dependencies": {
+    "@jianxx/dsh-cc-mcp-client": "workspace:^",
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  },
+  "devDependencies": {
+    "@jianxx/dsh-cc-mcp-client": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  }
+}

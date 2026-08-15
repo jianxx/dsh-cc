@@ -1,0 +1,26 @@
+{
+  "name": "@jianxx/dsh-cc-bundle-permissions",
+  "version": "0.1.0",
+  "description": "Claude Code permission parity layer for dsh profiles: five-level settings cascade + CC permission-rule engine",
+  "type": "module",
+  "files": ["cordis.patch.yml"],
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/bundle/cc-permissions"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@jianxx/dsh-cc-settings-cascade": "workspace:^",
+    "@jianxx/dsh-cc-permission-rules": "workspace:^"
+  }
+}

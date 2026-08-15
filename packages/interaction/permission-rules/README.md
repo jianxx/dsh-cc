@@ -1,0 +1,75 @@
+# @jianxx/dsh-cc-permission-rules
+
+English | [中文](README.zh.md)
+
+Claude Code-compatible permission-rule engine. Parses `ToolName` and `ToolName(content)` rules, folds a mode-aware decision on the `tools/pre-execute` waterfall, and enforces bypass-immune content rules through the monotonic `guard()` layer so neither a mode switch nor `bypassPermissions` can override them. Rules fail loud at load; settings hot-reload by rebuilding merged state and re-registering guards.
+
+## Rule syntax
+
+A rule is `ToolName` (whole tool) or `ToolName(content)` (content-scoped). `content` may escape `(`/`)`/`\` with a backslash, use `*` as a wildcard, or end in `:*` to declare a prefix rule.
+
+| Rule | Meaning |
+|---|---|
+| `Bash` | whole-tool rule for every `Bash` call |
+| `Bash(npm install)` | prefix rule: any command starting with `npm install` |
+| `Bash(npm publish:*)` | prefix rule on the stem `npm publish:` |
+| `Edit(foo/*.json)` | wildcard: commands/paths matching `foo/*.json` (a `*` matches any run) |
+| `Bash(python -c "print\(1\)")` | literal parens inside content |
+
+Malformed rules (unclosed paren, content after the closing paren, content with no tool name) throw a `TypeError` at load — fail loud. `escapeRuleContent`/`unescapeRuleContent` round-trip content safely (`\` first, then parens).
+
+## Evaluation order
+
+The plugin registers a `tools/pre-execute` listener and folds one decision per call:
+
+1. **Bypass-immune** content rules (e.g. `.git` internals, shell-config paths) always deny — registered as monotonic **guards**, never overridable by a mode switch or `bypassPermissions`.
+2. **whole-tool deny** → deny.
+3. **whole-tool ask** → ask (a sandboxed, confining `Bash` is exempt and allowed instead when `exemptSandboxedBashFromToolAsk` is set).
+4. **content-level allow/deny/ask** rules by source priority (highest source first; first rule to match decides).
+5. **mode** short-circuits: `bypassPermissions` allows everything (unless `disableBypassPermissionsMode`); `acceptEdits` auto-allows file-edit tools; `plan` auto-allows read-only tools.
+6. **whole-tool allow** is the coarse default for that tool when nothing more specific matched.
+7. **no match** → passthrough to downstream listeners (ultimately the approval seam), which may still `ask`.
+
+## Config
+
+```ts
+import PermissionRules from '@jianxx/dsh-cc-permission-rules'
+
+await ctx.plugin(PermissionRules, {
+  rules: {
+    deny: ['Bash(rm -rf)', 'Edit(.git*)'],
+    bypassImmune: ['Edit(~/.bashrc)', 'Edit(~/.zshrc)'],
+  },
+  bashToolName: 'Bash',           // default
+  fileEditTools: ['edit'],        // auto-allowed under acceptEdits
+  readOnlyTools: ['read'],        // auto-allowed under plan
+  exemptSandboxedBashFromToolAsk: false,
+  defaultMode: 'default',
+})
+```
+
+All fields are optional; the service schema applies the illustrated defaults. Rule strings are parsed with source `config`.
+
+## Settings and hot reload
+
+When `ctx.settings` is mounted, the plugin registers the `permissions` namespace (`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`). Settings rules carry the `settingsSource` label (default `userSettings`) and merge with Config `rules` by source priority — settings rules win. A stored change re-runs the merge and re-registers guards immediately (hot reload); a malformed settings rule fails loud at the settings boundary. When `ctx.settings` is absent, only the Config `rules` are in force.
+
+## Sources and modes
+
+Every rule carries a `PermissionRuleSource` (`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`) used for content-rule priority. The engine resolves the effective mode at call time: plan activation (from `@deepseek-ai/dsh-plan-mode`) overlays the session's recorded `permission/mode` override, falling back to `defaultMode`.
+
+## Pure exports for host UI
+
+- `parseRuleString(rule)`, `parseRule(rule, behavior, source)`, `escapeRuleContent`/`unescapeRuleContent` — parse rules to `PermissionRule`.
+- `evaluatePermission(input)` — fold a `PermissionDecision` for a call (`allow` / `deny` / `ask` / `passthrough`) given tool, subject, rule set, mode, and exemption flags. Use it to preview what a rule hits without mounting the plugin.
+- `mergeRuleSets(...sets)` — merge rule sets by source priority.
+- `foldPermissionMode(events)` — fold a session's recorded mode.
+- `PERMISSION_MODES`, `SOURCE_PRIORITY` — closed vocabularies.
+
+Rule parsing and evaluation are browser-safe (pure string logic), so the type/parser/evaluate modules import cleanly into UI previews.
+
+## Invariant companion
+
+`@jianxx/dsh-cc-permission-rules/invariant` rejects any `permission/mode` session event whose value is outside the closed `PERMISSION_MODES` vocabulary.
+
+See the [Agent Note](../../../.agents/notes/implemented/feature/2026-08-14-cc-permission-rules.md).

@@ -1,0 +1,22 @@
+# Claude Code permission parity for dsh: replace the plain settings provider
+# with the five-level settings cascade (settings.json precedence chain), then
+# mount the CC permission-rule engine that reads the merged `permissions`
+# section from it.
+
+# Swap the in-box settings file provider for the cascade. The incoming cascade
+# honours $DSH_HOME/settings.json and the project's .claude settings files;
+# it reads config defaults via resolveSpec, so no config rows are needed.
+- id: settings
+  disabled: true
+
+# Mount order inside the insert list is registration order: the permission
+# engine reads ctx.settings lazily at call time, so either order conforms, but
+# keeping the cascade first keeps boot logs readable.
+- insert:
+    - id: settings
+      name: '@jianxx/dsh-cc-settings-cascade'
+
+    # allow/deny/ask rule engine reading the `permissions` settings namespace.
+    # bypass-immune rules ride the monotonic guard layer.
+    - id: permission-rules
+      name: '@jianxx/dsh-cc-permission-rules'
