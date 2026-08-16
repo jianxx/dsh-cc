@@ -46,6 +46,13 @@ import {
 import type { SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import { parseClaudeCodeConfig, type ClaudeCodeHookConfig } from './config.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Harness-home path resolver, provided by @deepseek-ai/dsh-app-boot at boot. Optional in tests. */
+    dshHomePath?: (...segments: string[]) => string
+  }
+}
+
 export const name = 'hooks-claude-code'
 // `bash` is required to run hooks; the rest are read opportunistically via
 // ctx.get so a deployment can load this bridge without every extension point present.
@@ -55,12 +62,15 @@ export const inject = ['shell']
 export interface Config {
   /**
    * Path to a `hooks.json` or a settings file whose `hooks` key holds the config.
+   * Optional: when unset, defaults to `$DSH_HOME/hooks.json` (resolved via
+   * `ctx.dshHomePath`); when that too is unavailable, the bridge logs and
+   * registers no hooks.
    * Process-level: read once at load, a relative path resolves against the process
    * launch cwd, so one config applies to the whole process.
    * TODO(per-session-hook-config): per-session discovery of a project-local
    * `hooks.json` from each `session/new.cwd`.
    */
-  configPath: string
+  configPath?: string
   /**
    * Replaces `${CLAUDE_PLUGIN_ROOT}` in command strings (the plugin's root dir).
    */
@@ -99,7 +109,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  configPath: z.string().required(),
+  configPath: z.string(),
   pluginRoot: z.string(),
   projectDir: z.string(),
   defaultTimeoutMs: z.number().default(DEFAULT_HOOK_TIMEOUT_MS),
@@ -127,6 +137,15 @@ function assertPositiveInteger(name: string, value: number): void {
 }
 
 export function apply(ctx: Context, config: Config): void {
+  // Resolve the hook config path: an explicit config value wins, otherwise
+  // default to $DSH_HOME/hooks.json via ctx.dshHomePath. With neither available
+  // (e.g. an app-boot that does not provide dshHomePath), register nothing and
+  // log, rather than relying on a read error below to degrade silently.
+  const configPath = config.configPath || ctx.dshHomePath?.('hooks.json')
+  if (!configPath) {
+    ctx.logger.info('no hooks config path; hooks disabled')
+    return
+  }
   // Validate before config parsing so a bad value cannot be hidden by its early return.
   const stderrSummaryMaxChars = config.stderrSummaryMaxChars ?? DEFAULT_STDERR_SUMMARY_MAX_CHARS
   assertPositiveInteger('stderrSummaryMaxChars', stderrSummaryMaxChars)
@@ -134,7 +153,7 @@ export function apply(ctx: Context, config: Config): void {
   // Parse once at load. A read or parse failure logs and registers nothing.
   let parsed: ClaudeCodeHookConfig = {}
   try {
-    const raw: unknown = JSON.parse(readFileSync(config.configPath, 'utf8'))
+    const raw: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
     const result = parseClaudeCodeConfig(raw, {
       ...config.pluginRoot !== undefined ? { pluginRoot: config.pluginRoot } : {},
       ...config.projectDir !== undefined ? { projectDir: config.projectDir } : {},
@@ -144,7 +163,7 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`hooks-claude-code: skipping unsupported "${s.type}" hook on ${s.event} (unknown hook type)`)
     }
   } catch (error: unknown) {
-    ctx.logger.warn(`hooks-claude-code: could not load hook config "${config.configPath}": ${String(error)} — no hooks registered`)
+    ctx.logger.warn(`hooks-claude-code: could not load hook config "${configPath}": ${String(error)} — no hooks registered`)
     return
   }
 

@@ -2,11 +2,15 @@
 
 ## pnpm verification on network-restricted hosts
 
-pnpm 11.7 re-verifies the lockfile against supply-chain policies whenever its
-stat (size/mtime/inode) changes. On hosts where registry.npmjs.org metadata is
-unreachable, that first verification stalls for minutes per uncached entry, so
-`pnpm install` / `pnpm install --lockfile-only` are effectively unavailable
-here.
+pnpm 11.7.0 verifies package integrity against registry attestations and
+re-verifies the lockfile against supply-chain policies whenever its stat
+(size/mtime/inode) changes. Crucially, pnpm fetches these per-package
+attestations **even under `--offline`** — each one retrying ~10s against
+registry.npmjs.org — so on a host where the registry is unreachable, any
+install-resolution (`pnpm install`, `pnpm install --lockfile-only`) stalls
+~10s per uncached package and is effectively unavailable here. Recovery: run
+`pnpm install --frozen-lockfile` once on a host with registry access (or let
+CI be the authority), then the resolved tree is usable here.
 
 (An earlier revision of this note claimed a `lockfile-verified.jsonl` refresh
 script "lives in the repo history" — it does not; nothing usable was ever

@@ -6,6 +6,10 @@
 # Swap the in-box settings file provider for the cascade. The incoming cascade
 # honours $DSH_HOME/settings.json and the project's .claude settings files;
 # it reads config defaults via resolveSpec, so no config rows are needed.
+# The disable marker targets the base row BY ID (the loader dup-checks every
+# incoming entry, so the insert below must use a distinct id); the remount is
+# registered under a unique id and the base row stays disabled to keep it from
+# double-mounting.
 - id: settings
   disabled: true
 
@@ -13,7 +17,7 @@
 # engine reads ctx.settings lazily at call time, so either order conforms, but
 # keeping the cascade first keeps boot logs readable.
 - insert:
-    - id: settings
+    - id: settings-cc
       name: '@jianxx/dsh-cc-settings-cascade'
 
     # allow/deny/ask rule engine reading the `permissions` settings namespace.
