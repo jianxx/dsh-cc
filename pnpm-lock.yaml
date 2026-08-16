@@ -182,6 +182,21 @@ importers:
       '@deepseek-ai/dsh-fs-local':
         specifier: link:../../../../deepseek-harness/packages/fs/fs-local
         version: link:../../../../deepseek-harness/packages/fs/fs-local
+      '@deepseek-ai/dsh-lsp':
+        specifier: link:../../../../deepseek-harness/packages/lsp/lsp
+        version: link:../../../../deepseek-harness/packages/lsp/lsp
+      '@deepseek-ai/dsh-lsp-stdio':
+        specifier: link:../../../../deepseek-harness/packages/lsp/lsp-stdio
+        version: link:../../../../deepseek-harness/packages/lsp/lsp-stdio
+      '@deepseek-ai/dsh-tool-ask-user':
+        specifier: link:../../../../deepseek-harness/packages/interaction/tool-ask-user
+        version: link:../../../../deepseek-harness/packages/interaction/tool-ask-user
+      '@deepseek-ai/dsh-tool-lsp':
+        specifier: link:../../../../deepseek-harness/packages/lsp/tool-lsp
+        version: link:../../../../deepseek-harness/packages/lsp/tool-lsp
+      '@deepseek-ai/dsh-user-questions':
+        specifier: link:../../../../deepseek-harness/packages/interaction/user-questions
+        version: link:../../../../deepseek-harness/packages/interaction/user-questions
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
