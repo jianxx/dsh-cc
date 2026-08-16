@@ -12,7 +12,8 @@
     "prepare": "husky",
     "typecheck": "tsc -b tsconfig.packages.json",
     "test": "vitest run",
-    "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs"
+    "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs",
+    "check:spec-deps": "node scripts/check-spec-deps.mjs"
   },
   "devDependencies": {
     "husky": "^9.1.7",

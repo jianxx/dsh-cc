@@ -69,6 +69,12 @@ jobs:
             dsh-cc-plugins/pnpm-lock.yaml
             deepseek-harness/pnpm-lock.yaml
 
+      # 纯静态扫描,无需 node_modules:抢在 harness 构建前挡住"测试引用了未声明
+      # 的 link:/workspace 依赖"这一类 CI-only 失败(ERR_MODULE_NOT_FOUND)。
+      - name: Spec dependency declarations (check:spec-deps)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-spec-deps.mjs
+
       - name: Cache harness build outputs (restore)
         id: cache-harness
         uses: actions/cache/restore@v4

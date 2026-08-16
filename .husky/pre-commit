@@ -5,6 +5,7 @@
 # 依赖,自动执行幂等的 scripts/link-worktree-deps.sh(主仓内 no-op)。
 if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
+pnpm check:spec-deps
 pnpm typecheck
 pnpm test
 pnpm check:subagent-paste
