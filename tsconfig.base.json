@@ -127,6 +127,90 @@
       ],
       "@jianxx/dsh-cc-bundle-shell": [
         "./packages/bundle/cc-shell/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-memory": [
+        "./packages/interaction/command-memory/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-memory/memory": [
+        "./packages/interaction/command-memory/src/memory.ts"
+      ],
+      "@jianxx/dsh-cc-command-plugin": [
+        "./packages/interaction/command-plugin/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-plugin/plugin": [
+        "./packages/interaction/command-plugin/src/plugin.ts"
+      ],
+      "@jianxx/dsh-cc-command-mcp": [
+        "./packages/interaction/command-mcp/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-mcp/mcp": [
+        "./packages/interaction/command-mcp/src/mcp.ts"
+      ],
+      "@jianxx/dsh-cc-command-tasks": [
+        "./packages/interaction/command-tasks/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-tasks/tasks": [
+        "./packages/interaction/command-tasks/src/tasks.ts"
+      ],
+      "@jianxx/dsh-cc-command-resume": [
+        "./packages/interaction/command-resume/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-resume/resume": [
+        "./packages/interaction/command-resume/src/resume.ts"
+      ],
+      "@jianxx/dsh-cc-command-branch": [
+        "./packages/interaction/command-branch/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-branch/branch": [
+        "./packages/interaction/command-branch/src/branch.ts"
+      ],
+      "@jianxx/dsh-cc-command-skills": [
+        "./packages/interaction/command-skills/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-skills/skills": [
+        "./packages/interaction/command-skills/src/skills.ts"
+      ],
+      "@jianxx/dsh-cc-command-help": [
+        "./packages/interaction/command-help/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-help/help": [
+        "./packages/interaction/command-help/src/help.ts"
+      ],
+      "@jianxx/dsh-cc-command-config": [
+        "./packages/interaction/command-config/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-config/config": [
+        "./packages/interaction/command-config/src/config.ts"
+      ],
+      "@jianxx/dsh-cc-command-permissions": [
+        "./packages/interaction/command-permissions/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-permissions/permissions": [
+        "./packages/interaction/command-permissions/src/permissions.ts"
+      ],
+      "@jianxx/dsh-cc-command-version": [
+        "./packages/interaction/command-version/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-version/version": [
+        "./packages/interaction/command-version/src/version.ts"
+      ],
+      "@jianxx/dsh-cc-command-release-notes": [
+        "./packages/interaction/command-release-notes/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-release-notes/release-notes": [
+        "./packages/interaction/command-release-notes/src/release-notes.ts"
+      ],
+      "@jianxx/dsh-cc-command-diff": [
+        "./packages/interaction/command-diff/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-diff/diff": [
+        "./packages/interaction/command-diff/src/diff.ts"
+      ],
+      "@jianxx/dsh-cc-command-init": [
+        "./packages/interaction/command-init/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-init/init": [
+        "./packages/interaction/command-init/src/init.ts"
       ]
     },
     "rewriteRelativeImportExtensions": true
