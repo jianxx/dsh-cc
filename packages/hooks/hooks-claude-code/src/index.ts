@@ -265,6 +265,13 @@ export function apply(ctx: Context, config: Config): void {
       detached.track(runPoint('Setup', 'init', setupPayload(ctx, agent), { agent, signal: detached.signal })
         .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: Setup hook failed: ${String(error)}`) }))
     }
+    // SessionResume: a session resuming prior history. Only the `resume` source
+    // fires it — dsh has no emit point for `clear`/`compact`, so those stay
+    // unimplemented (see docs).
+    if (source === 'resume') {
+      detached.track(runPoint('SessionResume', '', sessionResumePayload(ctx, agent, source), { agent, signal: detached.signal })
+        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: SessionResume hook failed: ${String(error)}`) }))
+    }
   })
 
   // --- UserPromptSubmit → PreStepDecision. The prompt text is the payload; no
@@ -301,10 +308,18 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // --- PostToolUse → PostToolDecision. Matcher subject is the tool name. ---
+  // PostToolUseFailure rides the same seam as an observe-only emit when the
+  // tool result is an error (`result.isError`), matching CC where the two are
+  // mutually exclusive on a single tool call. Matcher subject is also the tool
+  // name.
   ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
     const turn = lastTurn(exec.agent)
     // Same boundary cast as the PreToolUse listener above.
     const ccExec = exec as ToolExecution
+    if (result.isError) {
+      detached.track(runPoint('PostToolUseFailure', ccExec.name, postToolFailurePayload(ctx, ccExec, result), { ...exec.agent ? { agent: exec.agent } : {}, signal: exec.signal ?? detached.signal })
+        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: PostToolUseFailure hook failed: ${String(error)}`) }))
+    }
     const merged = await runPoint('PostToolUse', ccExec.name, postToolPayload(ctx, ccExec, result), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
     const context = contextFrom(merged)
     if (merged.decision === 'deny') {
@@ -681,6 +696,10 @@ function base(ctx: Context, agent: Agent | undefined, event: string): Record<str
 function sessionStartPayload(ctx: Context, agent: Agent, source: string): Record<string, unknown> {
   return { ...base(ctx, agent, 'SessionStart'), source }
 }
+/** SessionResume: the base session fields plus the `resume` source (CC's source enum). */
+function sessionResumePayload(ctx: Context, agent: Agent, source: string): Record<string, unknown> {
+  return { ...base(ctx, agent, 'SessionResume'), source }
+}
 function promptPayload(ctx: Context, agent: Agent, content: ContentBlock[]): Record<string, unknown> {
   return { ...base(ctx, agent, 'UserPromptSubmit'), prompt: blocksToText(content) }
 }
@@ -689,6 +708,16 @@ function preToolPayload(ctx: Context, exec: ToolExecution): Record<string, unkno
 }
 function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
   return { ...base(ctx, exec.agent, 'PostToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId, tool_response: blocksToText(result.content) }
+}
+
+/**
+ * PostToolUseFailure: fired on an isError tool result. Mirror of PostToolUse
+ * minus `tool_response`, carrying the error text flattened from the result
+ * content (CC's `error` string). `is_interrupt` is omitted (not derivable from
+ * the harness seam).
+ */
+function postToolFailurePayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
+  return { ...base(ctx, exec.agent, 'PostToolUseFailure'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId, error: blocksToText(result.content) }
 }
 function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
   return { ...base(ctx, agent, 'Stop'), stop_hook_active: false }

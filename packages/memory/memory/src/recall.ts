@@ -19,6 +19,15 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
+// Memory observes tool usage for recall suppression without depending on the
+// tools package, so it declares a minimal structural listen-only contract for
+// the `tools/post-execute` waterfall event here.
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'tools/post-execute'(exec: ToolExecuted, _result: unknown, _next: () => Promise<unknown>): Promise<unknown>
+  }
+}
+
 /** How many topic files the selector may surface per query. */
 export const MAX_RECALL_MEMORIES = 5
 
@@ -36,12 +45,15 @@ export interface MemorySelector {
    * @param query - the user turn text.
    * @param candidates - topic files (filename + description) not yet shown.
    * @param signal - cancellation for the underlying model request.
+   * @param recentTools - tool names used earlier this session; the selector
+   *   should not surface usage-reference/API-doc memories for these tools.
    * @returns selected filenames.
    */
   select(
     query: string,
     candidates: readonly RecallCandidate[],
     signal: AbortSignal,
+    recentTools: readonly string[],
   ): Promise<string[]>
 }
 
@@ -65,7 +77,7 @@ export class SubagentMemorySelector implements MemorySelector {
     private readonly agentOptions?: unknown,
   ) {}
 
-  async select(query: string, candidates: readonly RecallCandidate[], signal: AbortSignal): Promise<string[]> {
+  async select(query: string, candidates: readonly RecallCandidate[], signal: AbortSignal, recentTools: readonly string[]): Promise<string[]> {
     const subagents = this.ctx.get('subagents') as SubagentLike | undefined
     if (subagents === undefined) return []
     const manifest = candidates
@@ -75,13 +87,20 @@ export class SubagentMemorySelector implements MemorySelector {
       'You select memories useful for processing a user query.',
       `Return a JSON object with a "selected_memories" array of filenames (at most ${MAX_RECALL_MEMORIES}).`,
       'Only include memories you are certain are helpful. If none are clearly useful, return an empty array.',
+      'If a list of recently-used tools is provided, do not select memories that are usage reference or API documentation for those tools (the agent is already exercising them). DO still select memories containing warnings, gotchas, or known issues about those tools — active use is exactly when those matter.',
     ].join('\n')
+    // When a tool is actively in use, its reference-doc memory is noise — the
+    // conversation already contains working usage and keyword overlap would
+    // otherwise false-positive the selector. Surface the list so it can suppress.
+    const toolsSection = recentTools.length > 0
+      ? `\n\nRecently used tools: ${recentTools.join(', ')}`
+      : ''
     let run
     try {
       run = await subagents.start(this.providerName, {
         label: 'memory-recall',
         signal,
-        prompt: [{ type: 'text', text: `${system}\n\nQuery: ${query}\n\nAvailable memories:\n${manifest}` }],
+        prompt: [{ type: 'text', text: `${system}\n\nQuery: ${query}\n\nAvailable memories:\n${manifest}${toolsSection}` }],
         parent: this.parent,
         ...(this.agentOptions !== undefined ? { agentOptions: this.agentOptions } : {}),
       })
@@ -111,6 +130,11 @@ interface SubagentLike {
   }>
 }
 
+/** Structural subset of a `tools/post-execute` payload used to track tools. */
+interface ToolExecuted {
+  name: string
+}
+
 /** Loose JSON extraction tolerant of code fences and prose around the array. */
 export function extractSelectedNames(text: string): string[] {
   const match = /"selected_memories"\s*:\s*(\[[^\]]*\])/.exec(text)
@@ -130,22 +154,51 @@ export function extractSelectedNames(text: string): string[] {
 export class MemoryRecall {
   private readonly state = new WeakMap<Agent, { shown: Set<string> }>()
   private readonly providerName: string
+  private readonly createSelector: (ctx: Context, agent: Agent) => MemorySelector
+  private readonly recentTools = new Set<string>()
+  private readonly disposers: Array<() => void> = []
 
   /**
-   * Register the `agent/pre-step` listener.
+   * Register the `agent/pre-step` and `tools/post-execute` listeners.
    * @param ctx - host context with `fs`, `subagents`, and the agent channel.
    * @param dir - the memory directory to scan.
-   * @param options - provider name and whether recall is enabled.
+   * @param options - provider name, whether recall is enabled, and an optional
+   *   selector factory (defaults to {@link SubagentMemorySelector}; inject a
+   *   fake for deterministic tests).
    */
   constructor(
     private readonly ctx: Context,
     private readonly dir: string,
-    options: { providerName?: string; enabled?: boolean } = {},
+    options: {
+      providerName?: string
+      enabled?: boolean
+      createSelector?: (ctx: Context, agent: Agent) => MemorySelector
+    } = {},
   ) {
     this.providerName = options.providerName ?? 'fork'
+    this.createSelector = options.createSelector
+      ?? ((ctx, agent) => new SubagentMemorySelector(ctx, agent, this.providerName))
     if (options.enabled ?? true) {
-      this.ctx.on('agent/pre-step', (payload, next) => this.onPreStep(payload, next))
+      this.disposers.push(
+        this.ctx.on('agent/pre-step', (payload, next) => this.onPreStep(payload, next)),
+      )
     }
+    // Track tools used this session so recall can suppress reference-doc
+    // memories for the tools the agent is already exercising. This is a
+    // waterfall observer: it must delegate to `next()` so the tools pipeline
+    // continues unchanged.
+    this.disposers.push(
+      this.ctx.on('tools/post-execute', (exec: ToolExecuted, _result, next) => {
+        if (exec.name.length > 0) this.recentTools.add(exec.name)
+        return next()
+      }),
+    )
+  }
+
+  /** Remove both the pre-step and post-execute listeners. */
+  dispose(): void {
+    for (const dispose of this.disposers.splice(0)) dispose()
+    this.recentTools.clear()
   }
 
   private async onPreStep(
@@ -163,7 +216,7 @@ export class MemoryRecall {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     signal.throwIfAborted()
-    void this.maybeRecall(agent, messages, signal, new SubagentMemorySelector(this.ctx, agent, this.providerName))
+    void this.maybeRecall(agent, messages, signal, this.createSelector(this.ctx, agent))
     return decision
   }
 
@@ -193,6 +246,7 @@ export class MemoryRecall {
       query,
       fresh.map(topic => ({ path: topic.path, filename: topic.filename, description: topic.frontmatter.description })),
       signal,
+      Array.from(this.recentTools),
     )
     if (signal.aborted || selected.length === 0) return
     const byFilename = new Map(scan.topics.map(topic => [topic.filename, topic]))

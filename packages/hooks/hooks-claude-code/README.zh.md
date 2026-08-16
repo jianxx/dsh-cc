@@ -42,6 +42,7 @@ hook **本身**会在 agent 的会话工作区中运行：对 agent scope 点，
 | `UserPromptSubmit` | `agent/pre-step`（waterfall（瀑布式事件）） | `deny` → `PreStepDecision.reject`；仅 additionalContext → 通过 `next()` 委托，再向下游 `enter` 决策追加一条单独标记来源的消息（后续外层 listener 仍可 reject／改写） |
 | `PreToolUse` | `tools/pre-execute`（waterfall） | `deny` → `PreToolDecision.deny`；`ask` → `PreToolDecision.ask` |
 | `PostToolUse` | `tools/post-execute`（waterfall） | `deny` → 带反馈的 `block`；仅 additionalContext → 通过 `next()` 委托，再将一个单独标记源的上下文前置到下游决策；Code Mode 将子调用上下文延迟到外层 `run_code` 结果 |
+| `PostToolUseFailure` | `tools/post-execute` 且结果为 `isError`（emit） | 只观测；工具结果为错误时触发，与同一调用上的 `PostToolUse` 互斥；payload 携带 `tool_name`／`tool_input`／`tool_use_id` + 展平的 `error` 文本 |
 | `Stop` | `agent/turn-stopping`（serial） | 阻塞 Stop hook 通过 `steer()` 送入其原因，强制再执行一步 |
 | `SubagentStart` | `subagent/start`（emit） | additionalContext → `agent.inject()` 到仍在运行的同进程 child；远程 child 没有本地注入目标 |
 | `SubagentStop` | `subagent/end`（emit） | 只观测 |
@@ -54,6 +55,7 @@ hook **本身**会在 agent 的会话工作区中运行：对 agent scope 点，
 | `TaskCreated` | `ctx.jobs` 变更 diff（emit） | 桥接对 `list()` 快照做 diff，对每个新出现的 job id 触发一次（无主或变更 owner scope 的 job） |
 | `TeammateIdle` | `agent/status` → `idle`（emit） | 只观测；仅对被视为 subagent 的 agent 触发（根 agent 的 idle 不触发） |
 | `Setup` | `agent/session-start` `source:'startup'`（emit） | **部分的一键近似**：仅对全新（seeded）会话触发，payload 为 `source:'init'`；resume/clear/compact 源不触发 |
+| `SessionResume` | `agent/session-start` `source:'resume'`（emit） | 只观测；仅在 `resume` 源触发 —— `clear`／`compact` 在 dsh 无 emit 点，`UserPromptCancel` 在 dsh 无 seam（均暂缓） |
 
 以上 emit 点都以分离方式运行：没有扩展点会等待这些 hook；`PermissionRequest` 是其中唯一的拦截点，并同步返回其决策。每条运行链都会被跟踪；对桥接执行 dispose（资源释放）时，会中止仍在运行的 hook 进程，并在 dispose 完成前排空 continuation（`createDetachedRuns`，位于 `dsh-hook-protocol`）。
 
@@ -97,7 +99,7 @@ hook 不返回上下文时没有成本。Hook 文本取决于数据，会被记�
 
 ## 已知限制与暂缓事项
 
-- **已支持的 hook 事件（Claude Code 当前 30 项中的 16 项，其余不支持）：** `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStart`、`SubagentStop`、`PermissionRequest`、`PermissionDenied`、`Notification`（部分 —— 仅 `permission_prompt` 子类型）、`PostCompact`、`SessionEnd`、`StopFailure`、`TaskCreated`、`TeammateIdle`、`Setup`（部分 —— 一键近似）。**不支持（14 项）：** `PreCompact`（需要上游 `compaction/start` seam）、`InstructionsLoaded`、`UserPromptExpansion`、`MessageDisplay`、`PostToolUseFailure`、`PostToolBatch`、`TaskCompleted`、`ConfigChange`、`CwdChanged`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`Elicitation`、`ElicitationResult`；另有 `Notification` 的 `idle`／`auth_success`／`elicitation` 子类型（headless 无法映射）。这些事件的配置会在配置组解析前被忽略，因此不支持的事件既不会使配置失效，也不会注册 hook。比较基线是 Claude Code [官方 hook 事件参考](https://code.claude.com/docs/en/hooks#hook-events)。
+- **已支持的 hook 事件（Claude Code 当前 30 项中的 18 项，其余不支持）：** `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`SubagentStart`、`SubagentStop`、`PermissionRequest`、`PermissionDenied`、`Notification`（部分 —— 仅 `permission_prompt` 子类型）、`PostCompact`、`SessionEnd`、`StopFailure`、`TaskCreated`、`TeammateIdle`、`Setup`（部分 —— 一键近似）、`SessionResume`（部分 —— 仅 `resume` 源）。**不支持（12 项）：** `PreCompact`（需要上游 `compaction/start` seam）、`InstructionsLoaded`、`UserPromptExpansion`、`MessageDisplay`、`PostToolBatch`、`TaskCompleted`、`ConfigChange`、`CwdChanged`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`Elicitation`、`ElicitationResult`；另有 `Notification` 的 `idle`／`auth_success`／`elicitation` 子类型（headless 无法映射）、`UserPromptCancel`（dsh 无取消 seam —— 桥接不做有损近似）以及 `SessionResume` 的 `clear`／`compact` 源（dsh 无 emit 点）。这些事件的配置会在配置组解析前被忽略，因此不支持的事件既不会使配置失效，也不会注册 hook。比较基线是 Claude Code [官方 hook 事件参考](https://code.claude.com/docs/en/hooks#hook-events)。
 - **`SessionStart` 只支持部分功能：** 会消费 JSON `additionalContext`，但不支持纯 stdout 上下文、`initialUserMessage`、`sessionTitle`、`watchPaths`、`reloadSkills` 与 `CLAUDE_ENV_FILE`。hook 脱离运行，因此上下文可能错过第一个请求（`TODO(session-start-gating)`），payload 会省略 `model`、`agent_type` 和 `session_title` 等当前可选字段。
 - **`UserPromptSubmit` 只支持部分功能：** 支持阻塞与 JSON `additionalContext`，但不支持纯 stdout 上下文、`sessionTitle` 和 `suppressOriginalPrompt`。除非被覆盖，否则桥接还会使用自身 600 秒默认值，而非 Claude Code 的事件特定 30 秒 command 超时。
 - **`PreToolUse` 只支持部分功能：** `deny` 与 `ask` 决策可用；`allow` 不会预审批，不支持 `defer`，`additionalContext` 会被忽略，`updatedInput` 会被记录 + 警告但不应用（见 [pre-tool-input-rewrite Agent Note](../../../.agents/notes/proposed/feature/2026-06-30-pre-tool-input-rewrite.md)）。

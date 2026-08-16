@@ -91,6 +91,25 @@
     - id: tool-structured-output
       name: '@jianxx/dsh-cc-tool-structured-output'
 
+    # AI-human interaction: the ctx.userQuestions capability seam (UI provider is
+    # owned by the host app — no provider yields a graceful NO_PROVIDER tool error)
+    # plus the model-facing ask_user_question tool that consumes it. Seam must
+    # mount before the tool that injects it.
+    - id: user-questions
+      name: '@deepseek-ai/dsh-user-questions'
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+
+    # LSP: the ctx.lsp provider registry (dsh-lsp) + the stdio language-server
+    # provider (dsh-lsp-stdio) compose the model-facing `lsp` tool (dsh-tool-lsp,
+    # four read-only operations). Seam must mount before the tool that injects it.
+    - id: lsp
+      name: '@deepseek-ai/dsh-lsp'
+    - id: lsp-stdio
+      name: '@deepseek-ai/dsh-lsp-stdio'
+    - id: tool-lsp
+      name: '@deepseek-ai/dsh-tool-lsp'
+
     # Claude Code hook bridge: 16 of 30 hook events (see hooks-claude-code README
     # for the supported set). PreToolUse/PostToolUse et al., command hooks +
     # http executors over the vendored hook protocol.

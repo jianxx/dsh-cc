@@ -33,6 +33,8 @@ const CLAUDE_EVENTS = [
   'TaskCreated',
   'TeammateIdle',
   'Setup',
+  'PostToolUseFailure',
+  'SessionResume',
 ] as const
 
 /** A parsed CC config: event name → its matcher groups (any executor kind). */

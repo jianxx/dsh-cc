@@ -32,7 +32,7 @@ packages/
   hooks/hooks-claude-code          27-event CC hook bridge (command + http executors)
   core/tools                       vendored tool registry + reserve()/isAdmitted() (deferred names)
   core/tool-search                 ToolSearch tool + DeferredToolRegistry
-  skill/skill-claude-code          SKILL.md provider reading CC directories
+  skill/skill-claude-code          SKILL.md provider reading CC dirs; CC paths conditional activation + bundled subset (debug/simplify/batch)
   preset/claude-code-agents        `.claude/agents` → subagent providers (library)
   compat/cc-plugin-loader          mount a CC plugin directory (plugin.json) onto dsh seams (library)
   compat/cc-output-styles          CLAUDE.md output styles → system prompt
@@ -43,7 +43,7 @@ packages/
   compaction/compaction-micro      model-free stale-result microcompaction
   session/command-cost|export|stats  /cost /export /stats
   bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
-  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin
+  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts the harness `dsh-user-questions` seam + `dsh-tool-ask-user` AskUserQuestion, and `dsh-schedule`)
   test-support/agent-loop-mock     vendored test fixture (not a plugin)
 ```
 

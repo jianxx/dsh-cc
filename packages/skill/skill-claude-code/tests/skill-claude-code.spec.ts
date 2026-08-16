@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
+import { FsObservation, FsTarget, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillCc from '../src/index.ts'
 
@@ -86,6 +87,15 @@ describe('dsh-skill-claude-code plugin', () => {
       ].join('\n'),
     )
     const ctx = await setup({ dshHome: join(project, 'nohome') })
+    // `paths` gates this skill into conditional activation: activate it via a
+    // matching Read touch before loading its full metadata.
+    await ctx.skills.list({ cwd: project })
+    ctx.emit(
+      'fs/observed',
+      { targetKey: FsTargetKey(join(project, 'src', 'app.ts')), displayPath: join(project, 'src', 'app.ts') } satisfies FsTarget,
+      { kind: 'present', version: FsVersion('1') } satisfies FsObservation,
+      { name: 'read' },
+    )
     const loaded = await ctx.skills.get('rich-skill', { cwd: project })
     expect(loaded?.metadata).toMatchObject({
       allowedTools: ['Bash', 'Read'],

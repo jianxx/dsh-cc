@@ -33,8 +33,8 @@ export interface CcSkillMetadata {
   readonly paths?: readonly string[]
   /** Whether this skill came from a legacy `.claude/commands/*.md` file. */
   readonly deprecated: boolean
-  /** Discovery source bucket. */
-  readonly source: CcSkillSource
+  /** Discovery source bucket (`bundled` for in-package bundled skills). */
+  readonly source: 'bundled' | CcSkillSource
   /** Unknown frontmatter keys, preserved for tolerant downstream consumers. */
   readonly unknown: Readonly<Record<string, unknown>>
 }

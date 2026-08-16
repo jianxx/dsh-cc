@@ -1,10 +1,11 @@
 /**
  * The `memory` system-prompt section: entrypoint content (truncated), an
- * index of topic files by frontmatter, and grep search guidance. The section
- * text is assembled synchronously, so a background scan through `ctx.fs`
- * caches the rendered text and emits `system-prompt/change` to re-assemble
- * once the entrypoint and index are read. When MEMORY.md is absent the
- * section renders empty (no error).
+ * index of topic files by frontmatter, and grep search guidance. When
+ * `teamEnabled` is set, a combined section surfaces both the private and the
+ * team directory. The section text is assembled synchronously, so a background
+ * scan through `ctx.fs` caches the rendered text and emits
+ * `system-prompt/change` to re-assemble once the entrypoint and index are
+ * read. When MEMORY.md is absent the section renders empty (no error).
  * @module @jianxx/dsh-cc-memory/section
  */
 
@@ -27,17 +28,23 @@ export const MEMORY_SECTION_NAME = 'memory'
 export class MemorySection {
   private cached = ''
   private refresher: Promise<void> | undefined
+  private readonly teamDir: string | undefined
 
   /**
    * Create a cache holder bounded to a memory directory.
    * @param ctx - the host context whose `fs` seam and `system-prompt/change`
    *   channel drive refresh.
    * @param dir - the memory directory to scan for the entrypoint and index.
+   * @param options - when `teamDir` is set, render the combined private + team
+   *   section and scan both directories.
    */
   constructor(
     private readonly ctx: Context,
     private readonly dir: string,
-  ) {}
+    options: { teamDir?: string } = {},
+  ) {
+    this.teamDir = options.teamDir
+  }
 
   /** Register the `memory` section and start the first background scan. */
   start(): void {
@@ -77,8 +84,19 @@ export class MemorySection {
   private async run(): Promise<void> {
     const fileSystem = this.ctx.get('fs')
     if (fileSystem === undefined) return
-    const state = await scanMemoryDirectory(fileSystem, this.dir)
-    const rendered = renderMemorySection(this.dir, state)
+    if (this.teamDir === undefined) {
+      const state = await scanMemoryDirectory(fileSystem, this.dir)
+      const rendered = renderMemorySection(this.dir, state)
+      if (rendered === this.cached) return
+      this.cached = rendered
+      this.ctx.emit('system-prompt/change')
+      return
+    }
+    const [privateState, teamState] = await Promise.all([
+      scanMemoryDirectory(fileSystem, this.dir),
+      scanMemoryDirectory(fileSystem, this.teamDir),
+    ])
+    const rendered = renderTeamMemorySection(this.dir, this.teamDir, privateState, teamState)
     if (rendered === this.cached) return
     this.cached = rendered
     this.ctx.emit('system-prompt/change')
@@ -128,6 +146,94 @@ function renderIndex(topics: readonly MemoryIndexEntry[]): string[] {
     return `- [${escapeLinkText(topic.frontmatter.name)}](${topic.filename}) — ${topic.frontmatter.description}${type}`
   })
   return ['', '## Memory index', '', ...lines]
+}
+
+/**
+ * Render the combined team-memory section text from both observed directory
+ * states. Surfaces the dual-directory (private + team) scope guidance, both
+ * entrypoints, a scope-tagged topic index, and grep search guidance. Returns
+ * empty when neither directory has entrypoint content.
+ * @param privateDir - the private memory directory, surfaced for writes.
+ * @param teamDir - the shared team memory directory, surfaced for writes.
+ * @param privateState - the scanned private entrypoint and topic index.
+ * @param teamState - the scanned team entrypoint and topic index.
+ * @returns the combined section, or `''` when both entrypoints are empty.
+ */
+export function renderTeamMemorySection(
+  privateDir: string,
+  teamDir: string,
+  privateState: MemoryDirectoryState,
+  teamState: MemoryDirectoryState,
+): string {
+  const privateEntry = privateState.entrypoint?.trim()
+  const teamEntry = teamState.entrypoint?.trim()
+  if ((privateEntry === undefined || privateEntry.length === 0)
+    && (teamEntry === undefined || teamEntry.length === 0)) {
+    return ''
+  }
+  const lines = [
+    '# Memory',
+    '',
+    `You have a persistent, file-based memory system with two directories: a private directory at \`${privateDir}\` and a shared team directory at \`${teamDir}\`.`,
+    '',
+    'There are two scope levels:',
+    `- private: memories private between you and the current user, stored at the root \`${privateDir}\`.`,
+    `- team: memories shared with and contributed by all users of this project, stored at \`${teamDir}\`.`,
+    '',
+    'Each directory keeps its own index and topic files. Save each memory to the directory matching its scope; never write memory content directly into a MEMORY.md.',
+    '',
+    `## ${ENTRYPOINT_NAME} (private)`,
+    '',
+    privateEntry !== undefined && privateEntry.length > 0 ? renderEntrypointBody(privateEntry) : '(empty)',
+    '',
+    `## ${ENTRYPOINT_NAME} (team)`,
+    '',
+    teamEntry !== undefined && teamEntry.length > 0 ? renderEntrypointBody(teamEntry) : '(empty)',
+  ]
+  const index = renderCombinedIndex(privateState.topics, teamState.topics)
+  if (index.length > 0) lines.push(...index)
+  const search = topLevelSearch(privateDir, teamDir, privateState.topics, teamState.topics)
+  if (search.length > 0) lines.push(...search)
+  return lines.join('\n')
+}
+
+function renderEntrypointBody(entrypoint: string): string {
+  return truncateEntrypointContent(entrypoint).content
+}
+
+/** A combined topic index with each scope tagged, sorted by filename. */
+function renderCombinedIndex(
+  privateTopics: readonly MemoryIndexEntry[],
+  teamTopics: readonly MemoryIndexEntry[],
+): string[] {
+  const combined = [
+    ...privateTopics.map(topic => ({ ...topic, scope: 'private' as const })),
+    ...teamTopics.map(topic => ({ ...topic, scope: 'team' as const })),
+  ]
+  if (combined.length === 0) return []
+  combined.sort((a, b) => a.filename.localeCompare(b.filename))
+  const lines = combined.map((topic) => {
+    const type = topic.frontmatter.type === undefined ? '' : ` [${topic.frontmatter.type}]`
+    return `- [${escapeLinkText(topic.frontmatter.name)}](${topic.filename}) — ${topic.frontmatter.description} (${topic.scope})${type}`
+  })
+  return ['', '## Memory index (private + team)', '', ...lines]
+}
+
+function topLevelSearch(
+  privateDir: string,
+  teamDir: string,
+  privateTopics: readonly MemoryIndexEntry[],
+  teamTopics: readonly MemoryIndexEntry[],
+): string[] {
+  if (privateTopics.length === 0 && teamTopics.length === 0) return []
+  return [
+    '',
+    '## Searching past context',
+    'When a MEMORY.md entry is not enough, search topic files and the transcript log with narrow terms (error messages, file paths, function names):',
+    '```',
+    `grep -rn "<search term>" ${privateDir}/ ${teamDir}/ --include="*.md"`,
+    '```',
+  ]
 }
 
 function escapeLinkText(name: string): string {
