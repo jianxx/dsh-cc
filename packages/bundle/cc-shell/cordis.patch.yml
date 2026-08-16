@@ -9,6 +9,10 @@
 - id: tools
   disabled: true
 
+# Remount below (in the insert list) with fetch enabled and the fetch provider.
+- id: tool-web
+  disabled: true
+
 - insert:
     # ── core swaps ────────────────────────────────────────────────────────────
     - id: tools
@@ -47,12 +51,31 @@
     - id: coordinator
       name: '@jianxx/dsh-cc-coordinator'
 
+    # WebFetch: model-directed fetch is an SSRF surface — web-fetch-http has
+    # NO host allowlist yet. Fetch is enabled for egress-restricted
+    # deployments; see README "Known limits". Tightened caps.
+    - id: tool-web
+      name: '@deepseek-ai/dsh-tool-web'
+      config:
+        fetch: true
+    - id: web-fetch-http
+      name: '@deepseek-ai/dsh-web-fetch-http'
+      config:
+        timeoutMs: 20000
+        maxResponseBytes: 2000000
+        maxRedirects: 3
+    # Durable session-local reminders (SessionCron parity; cron-expression
+    # selectors not yet supported upstream).
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
+
     # ── tools + hooks ───────────────────────────────────────────────────────
     - id: tool-git-worktree
       name: '@jianxx/dsh-cc-tool-git-worktree'
 
-    # The 27-event Claude Code hook bridge: PreToolUse/PostToolUse et al.,
-    # command hooks + http executors over the vendored hook protocol.
+    # Claude Code hook bridge: 16 of 30 hook events (see hooks-claude-code README
+    # for the supported set). PreToolUse/PostToolUse et al., command hooks +
+    # http executors over the vendored hook protocol.
     - id: hooks-claude-code
       name: '@jianxx/dsh-cc-hooks-claude-code'
 
@@ -71,3 +94,33 @@
 
     - id: command-doctor
       name: '@jianxx/dsh-cc-command-doctor'
+
+    # ── CC parity slash commands, batch 2 ────────────────────────────────────
+    - id: command-memory
+      name: '@jianxx/dsh-cc-command-memory'
+    - id: command-skills
+      name: '@jianxx/dsh-cc-command-skills'
+    - id: command-help
+      name: '@jianxx/dsh-cc-command-help'
+    - id: command-config
+      name: '@jianxx/dsh-cc-command-config'
+    - id: command-permissions
+      name: '@jianxx/dsh-cc-command-permissions'
+    - id: command-version
+      name: '@jianxx/dsh-cc-command-version'
+    - id: command-release-notes
+      name: '@jianxx/dsh-cc-command-release-notes'
+    - id: command-diff
+      name: '@jianxx/dsh-cc-command-diff'
+    - id: command-init
+      name: '@jianxx/dsh-cc-command-init'
+    - id: command-plugin
+      name: '@jianxx/dsh-cc-command-plugin'
+    - id: command-mcp
+      name: '@jianxx/dsh-cc-command-mcp'
+    - id: command-tasks
+      name: '@jianxx/dsh-cc-command-tasks'
+    - id: command-resume
+      name: '@jianxx/dsh-cc-command-resume'
+    - id: command-branch
+      name: '@jianxx/dsh-cc-command-branch'

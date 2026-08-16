@@ -12,11 +12,11 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { mountCcPlugin } from '@jianxx/dsh-cc-plugin-loader'
 import { AgentProvider } from '@jianxx/dsh-cc-plugin-loader'
 import { loadClaudeCodeAgents } from '@jianxx/dsh-cc-claude-code-agents'
 import { buildRegistrations, type McpConfigFile } from '@jianxx/dsh-cc-mcp-config'
 import * as CcMcpClient from '@jianxx/dsh-cc-mcp-client'
+import { CcPluginsService } from './ccPlugins.ts'
 
 /** Plugin config: which on-disk CC surfaces to mount. */
 export interface Config {
@@ -68,22 +68,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const results: string[] = []
 
   // 1. Claude Code plugins (each dir = one plugin root holding plugin.json).
-  for (const root of config.pluginDirs ?? defaultPluginDirs()) {
-    if (!existsSync(root)) continue
-    const entries = existsSync(join(root, 'plugin.json'))
-      ? [root]
-      : listPluginDirs(root)
-    for (const dir of entries) {
-      try {
-        const mounted = await mountCcPlugin(ctx, { root: dir })
-        const tallies = mounted.report.components
-        const loaded = tallies.reduce((n, c) => n + c.loaded, 0)
-        const skipped = tallies.reduce((n, c) => n + c.skipped, 0)
-        results.push(`cc-plugin ${mounted.report.name}: ${loaded} loaded/${skipped} skipped`)
-      } catch (error) {
-        ctx.logger.warn(`cc-shell-glue: failed to mount CC plugin at ${dir}: ${String(error)}`)
-      }
-    }
+  //    The CcPluginsService tracks every mount so host plugins can enumerate
+  //    and rescan; mountAll performs the same best-effort discovery the glue
+  //    always performed, tolerating any number of absent/invalid roots.
+  const pluginDirs = config.pluginDirs ?? defaultPluginDirs()
+  const plugins = new CcPluginsService(ctx, pluginDirs)
+  const pluginErrors = await plugins.mountAll()
+  for (const { root, error } of pluginErrors) {
+    ctx.logger.warn(`cc-shell-glue: failed to mount CC plugin at ${root}: ${error}`)
+  }
+  for (const summary of plugins.list()) {
+    const tallies = summary.components
+    const loaded = tallies.reduce((n, c) => n + c.loaded, 0)
+    const skipped = tallies.reduce((n, c) => n + c.skipped, 0)
+    results.push(`cc-plugin ${summary.name}: ${loaded} loaded/${skipped} skipped`)
   }
 
   // 2. `.mcp.json` documents → per-server @jianxx/dsh-cc-mcp-client instances.
@@ -122,21 +120,4 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
 
   if (results.length > 0) ctx.logger.info(`cc-shell-glue: mounted — ${results.join('; ')}`)
-}
-
-/** List immediate subdirectories that contain a plugin.json. */
-function listPluginDirs(root: string): string[] {
-  try {
-    return Array.from(ioReaddirSyncEntries(root))
-  } catch {
-    return []
-  }
-}
-
-import { readdirSync } from 'node:fs'
-
-function ioReaddirSyncEntries(root: string): string[] {
-  return readdirSync(root, { withFileTypes: true })
-    .filter(entry => entry.isDirectory() && existsSync(join(root, entry.name, 'plugin.json')))
-    .map(entry => join(root, entry.name))
 }
