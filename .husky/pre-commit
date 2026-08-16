@@ -1,0 +1,10 @@
+# 与 .github/workflows/presubmit.yml 门禁一一对应:
+#   typecheck ≡ build(同为 tsc -b tsconfig.packages.json,不重复跑 build)
+#   不引入 lint-staged:仓内无 eslint/prettier,无 staged 检查可执行。
+# worktree 自愈:worktree 无 node_modules(gitignored);首次 commit 前若未 link
+# 依赖,自动执行幂等的 scripts/link-worktree-deps.sh(主仓内 no-op)。
+if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
+
+pnpm typecheck
+pnpm test
+pnpm check:subagent-paste

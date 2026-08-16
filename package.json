@@ -9,11 +9,13 @@
   },
   "scripts": {
     "build": "tsc -b tsconfig.packages.json",
+    "prepare": "husky",
     "typecheck": "tsc -b tsconfig.packages.json",
     "test": "vitest run",
     "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs"
   },
   "devDependencies": {
+    "husky": "^9.1.7",
     "@vitest/coverage-v8": "4.1.8",
     "tsx": "4.22.4",
     "typescript": "6.0.3",

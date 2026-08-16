@@ -1,0 +1,84 @@
+# =============================================================================
+# PreSubmit — dsh-cc-plugins
+#
+# GitHub 移植自 orchestrix 的 codebase presubmit。与参考仓的三处有意偏离:
+#   1. 单 job:本仓 typecheck≡build(同为 tsc -b tsconfig.packages.json),
+#      参考仓 quality-gates/test-and-build 双 job 并联在此只会重复构建 harness。
+#   2. 参考仓手工装 Node+内部镜像/bnpm → 本 workflow 用 setup-node 原生
+#      pnpm 缓存;两仓依赖全部来自公网 npm。
+#   3. ~20 个包以 link:../../../../deepseek-harness/... 依赖兄弟仓库
+#      → 并排 checkout:两个 path: 使两仓目录互为兄弟,link 上溯 4 级即命中。
+#
+# deepseek-harness pin 升级流程:harness master 验证通过后,更新下方 ref 到
+# 新 SHA 并连同本仓适配修改一起提交。注意这是个人 fork:删除/转私有/force-push
+# GC 都会让 CI 失效。
+# =============================================================================
+name: PreSubmit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同一 PR/分支的快速连推只保留最新一轮,避免重复构建 deepseek-harness
+concurrency:
+  group: presubmit-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  presubmit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dsh-cc-plugins
+
+      - uses: actions/checkout@v4
+        with:
+          repository: jianxx/deepseek-harness
+          ref: e3e27afa2e534c15df2b3093b413fe808a4ce7ca
+          path: deepseek-harness
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            dsh-cc-plugins/pnpm-lock.yaml
+            deepseek-harness/pnpm-lock.yaml
+
+      - name: Install deepseek-harness deps
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Build deepseek-harness lib (link: 的消费点;跳过 build:web)
+        working-directory: deepseek-harness
+        run: pnpm run build:lib
+
+      - name: Install dsh-cc-plugins deps
+        working-directory: dsh-cc-plugins
+        env:
+          HUSKY: 0
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck ≡ Build (tsc -b project references)
+        working-directory: dsh-cc-plugins
+        run: pnpm typecheck
+
+      - name: Unit tests (vitest)
+        working-directory: dsh-cc-plugins
+        run: pnpm test
+
+      - name: check:subagent-paste
+        working-directory: dsh-cc-plugins
+        run: pnpm check:subagent-paste
