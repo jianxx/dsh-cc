@@ -9,6 +9,7 @@ This repository holds the CC-parity work that used to live inside a `jianxx/deep
 ```
 packages/
   settings/settings-cascade        5-level settings file precedence (~ enterprise/user/project/local/flags)
+  settings/settings-migrations     version-gated settings.json migrations on mount (mechanism ready; registry empty until the first format change)
   interaction/permission-rules     allow/deny/ask rule engine + mode state (CC /permissions semantics)
   interaction/command-status       /status
   interaction/command-doctor       /doctor
@@ -29,21 +30,24 @@ packages/
   mcp/mcp-client                   MCP client with OAuth 2.1 + resources + prompts (vendored superset)
   mcp/mcp-config                   `.mcp.json` parser → mcp-client registrations (library)
   hooks/hook-protocol              hook wire protocol incl. http executor (vendored superset)
-  hooks/hooks-claude-code          27-event CC hook bridge (command + http executors)
+  hooks/hooks-claude-code          CC hook bridge — 18 of 30 events (command + http executors)
   core/tools                       vendored tool registry + reserve()/isAdmitted() (deferred names)
   core/tool-search                 ToolSearch tool + DeferredToolRegistry
+  core/tool-sleep                  Sleep tool (cooperative interrupt; CC SleepTool parity)
+  core/tool-structured-output      StructuredOutput tool factory (CC SyntheticOutputTool parity)
+  core/tool-notebook-edit          NotebookEdit tool (fs-seam .ipynb edits + read-before-write gate)
   skill/skill-claude-code          SKILL.md provider reading CC dirs; CC paths conditional activation + bundled subset (debug/simplify/batch)
   preset/claude-code-agents        `.claude/agents` → subagent providers (library)
   compat/cc-plugin-loader          mount a CC plugin directory (plugin.json) onto dsh seams (library)
   compat/cc-output-styles          CLAUDE.md output styles → system prompt
-  memory/memory                    CLAUDE.md memories + recall
+  memory/memory                    CLAUDE.md memories + recall (recentTools suppression) + opt-in team memory
   memory/memory-consolidation      background memory consolidation
   workspace/tool-git-worktree      EnterWorktree / ExitWorktree tools
   subagent/coordinator             coordinator mode (delegation-only agent surface)
   compaction/compaction-micro      model-free stale-result microcompaction
   session/command-cost|export|stats  /cost /export /stats
   bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
-  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts the harness `dsh-user-questions` seam + `dsh-tool-ask-user` AskUserQuestion, and `dsh-schedule`)
+  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts the harness `dsh-user-questions` seam + `dsh-tool-ask-user` AskUserQuestion, the `dsh-lsp`/`dsh-lsp-stdio`/`dsh-tool-lsp` LSP trio, and `dsh-schedule`)
   test-support/agent-loop-mock     vendored test fixture (not a plugin)
 ```
 
@@ -133,6 +137,6 @@ Upstream types resolve through `link:` devDeps into a sibling dsh checkout at
 `../deepseek-harness` (built once with `pnpm run build` there). To publish for real,
 replace link: devDeps with released version ranges and publish the vendored set under the @jianxx scope.
 
-> Local release-age verification: after edits that touch `pnpm-lock.yaml`, re-run the
-> cached-record refresh (see `docs/dev.md`) so pnpm's supply-chain verification keeps
-> its fast path on network-restricted hosts.
+> Working on `pnpm-lock.yaml` or dependency declarations on a
+> network-restricted host: see `docs/dev.md` for what the frozen-lockfile
+> check actually verifies and the test-time dependency declaration contract.
