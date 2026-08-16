@@ -6,7 +6,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, type ToolExecutionInput, type ToolExecutionResult } from '@jianxx/dsh-cc-tools'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import PermissionRules, { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, type Config } from '@jianxx/dsh-cc-permission-rules'
+import PermissionRules, { PERMISSION_SETTINGS_NAMESPACE, type Config } from '@jianxx/dsh-cc-permission-rules'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
 const testToolSignal = new AbortController().signal
@@ -249,7 +249,7 @@ describe('settings config and hot reload', () => {
   })
 })
 
-describe('session mode overrides (durable)', () => {
+describe('session mode overrides (in-memory)', () => {
   it('applies the latest setMode and leaves other sessions at the deployment default', async () => {
     const ctx = await mount({ rules: { deny: ['edit(/tmp/private*)'] } })
     const agent = openTurnAgent('one')
@@ -261,23 +261,6 @@ describe('session mode overrides (durable)', () => {
     // …while another session stays at the default mode and remains denied.
     const denied = await ctx.tools.execute(exec('edit', { file_path: '/tmp/private/x' }, other))
     expect(denied.isError).toBe(true)
-  })
-
-  it('records setMode as a permission/mode event and survives resume', async () => {
-    const ctx = await mount()
-    const agent = openTurnAgent('durable')
-    ctx.permissionRules.setMode(agent, 'acceptEdits')
-
-    // The live log carries the durable mode override.
-    const events = agent.session.events
-    expect(events.some(event => event.type === 'permission/mode'
-      && (event.data as { mode?: string }).mode === 'acceptEdits')).toBe(true)
-    expect(foldPermissionMode(events)).toBe('acceptEdits')
-
-    // Simulate resume: rebuild the session FROM the persisted event log and
-    // confirm the override is still effective on the reloaded session.
-    const reloaded = Session.create(SessionId('durable-reloaded'), Object.freeze([...events]))
-    expect(foldPermissionMode(reloaded.events)).toBe('acceptEdits')
   })
 })
 

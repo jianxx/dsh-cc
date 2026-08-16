@@ -33,7 +33,7 @@ command counts below follow that build.
 | Plugin system | ✅ | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `plugin.json`) + cc-shell-glue auto-discovery |
 | Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
 | Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
-| Permission rules | ✅ + 🔶 | rule engine + `permission/mode` durable overrides + dangerous-command/path risk classifier. Missing vs CC: ML/bash risk classifier service, managed/enterprise remote settings |
+| Permission rules | ✅ + 🔶 | rule engine + dangerous-command/path risk classifier. Per-session mode overrides are **in-memory** (resume reverts to deployment default) — durable `permission/mode` appends are staged separately, gated on the harness pin carrying the event type. Missing vs CC: ML/bash risk classifier service, managed/enterprise remote settings |
 | Hooks | 🔶 | 16 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off) |
 | MCP client | ✅ | tools + resources + prompts + OAuth 2.1 |
 | Memory / CLAUDE.md | ✅ | `memory` + `memory-consolidation` (AutoDream analog) |
@@ -89,10 +89,12 @@ commands (🚫 vendor-bound).
 
 ## Deferred upstream items
 
-1. SSRF host allowlist for `web-fetch-http` (then un-caveat WebFetch).
-2. Cron-expression selector for `dsh-schedule` (then full `ScheduleCronTool`
+1. Durable permission-mode overrides — needs `permission/mode` in the pinned
+   harness's session event vocabulary (the type already exists locally in
+   deepseek-harness master; bump the presubmit pin once that harness build
+   is the one CI builds).
+2. SSRF host allowlist for `web-fetch-http` (then un-caveat WebFetch).
+3. Cron-expression selector for `dsh-schedule` (then full `ScheduleCronTool`
    parity).
-3. `PreCompact` interception seam in `dsh-compaction`.
-4. Human-facing todo-list seam for `/tasks`.
-5. `pnpm install` lockfile sync after this branch lands in the main checkout
-   (`link:` paths are main-checkout-relative; the worktree cannot resolve them).
+4. `PreCompact` interception seam in `dsh-compaction`.
+5. Human-facing todo-list seam for `/tasks`.

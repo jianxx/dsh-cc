@@ -7,8 +7,7 @@
  * escalation stage hard-denies catastrophic commands and asks on protected or
  * out-of-scope file writes before the normal waterfall. Rules fail loud at
  * load; settings hot-reloads by rebuilding merged state and re-registering
- * guards. Session mode overrides are recorded durably as `permission/mode`
- * events, surviving resume.
+ * guards.
  *
  * @module @jianxx/dsh-cc-permission-rules
  */
@@ -18,6 +17,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 // Side-effect type import: declaration-merges `ctx.shell` (the capability fact
@@ -30,7 +30,6 @@ import { assessBashCommand, assessFilePath, type RiskAssessment } from './classi
 import {
   PERMISSION_MODES,
   SOURCE_PRIORITY,
-  foldPermissionMode,
   type PermissionDecision,
   type PermissionMode,
   type PermissionRule,
@@ -182,6 +181,12 @@ export class PermissionRulesService extends Service {
   private settingsRead: () => PermissionSettings = () => ({})
   /** Live merged state; rebuilt on settings change so listeners read a fresh snapshot. */
   private state: { rules: PermissionRuleSet; defaultMode: PermissionMode }
+  /**
+   * Per-session mode overrides, keyed by the live Session object (weak: the
+   * session registry owns lifetime). In-memory by necessity — see setMode's
+   * note on the session-vocabulary boundary for out-of-repo plugins.
+   */
+  private readonly sessionModes = new WeakMap<Session, PermissionMode>()
   /** Disposers for the currently registered monotonic guards. */
   private guardDisposers: (() => void)[] = []
 
@@ -284,7 +289,8 @@ export class PermissionRulesService extends Service {
   private effectiveMode(exec: ToolExecution): PermissionMode {
     const agent = exec.agent
     if (agent !== undefined && foldPlanMode(agent.session.events)) return 'plan'
-    return (agent === undefined ? undefined : foldPermissionMode(agent.session.events)) ?? this.state.defaultMode
+    const sessionMode = agent === undefined ? undefined : this.sessionModes.get(agent.session)
+    return sessionMode ?? this.state.defaultMode
   }
 
   /** Whether a call is sandboxed bash for the whole-tool-ask exemption. */
@@ -349,9 +355,10 @@ export class PermissionRulesService extends Service {
   }
 
   /**
-   * Record a session's permission-mode override durably by appending a
-   * `permission/mode` event to the session log, so the override survives a
-   * resume. Plan activation, when active, still overlays at call time.
+   * Record a session's permission-mode override in memory. Plan activation,
+   * when active, still overlays at call time. NOTE: the override is per-process
+   * — a resumed session falls back to the deployment default until the session
+   * event vocabulary is extended for out-of-repo plugins (upstream follow-up).
    * @param agent - the live agent whose mode is changing.
    * @param mode - the new permission mode; unknown modes throw.
    */
@@ -359,7 +366,7 @@ export class PermissionRulesService extends Service {
     if (!PERMISSION_MODES.includes(mode)) {
       throw new TypeError(`permission mode must be one of ${PERMISSION_MODES.join(', ')}`)
     }
-    agent.session.append('permission/mode', { mode })
+    this.sessionModes.set(agent.session, mode)
   }
 
   /** The currently merged rule set (for introspection and host preview). */
@@ -369,4 +376,3 @@ export class PermissionRulesService extends Service {
 }
 
 export default PermissionRulesService
-export { foldPermissionMode } from './types.ts'

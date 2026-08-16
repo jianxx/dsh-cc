@@ -15,9 +15,9 @@ export const name = 'cc-permission-rules-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: rule settings fail loud at the settings boundary.
- * setMode appends a durable `permission/mode` event to the session log; this
- * invariant validates its vocabulary rather than the engine's writing.
+ * No runtime invariant: rule settings fail loud at the settings boundary and
+ * the engine no longer writes session events (out-of-repo plugins cannot
+ * extend the upstream session vocabulary).
  */
 const install: InvariantInstaller = () => {}
 
