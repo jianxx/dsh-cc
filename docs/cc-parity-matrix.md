@@ -33,6 +33,7 @@ command counts below follow that build.
 | Plugin system | ✅ | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `plugin.json`) + cc-shell-glue auto-discovery |
 | Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
 | Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
+| Settings migrations | ✅ | `settings/settings-migrations` (`@jianxx/dsh-cc-settings-migrations`) — version-gated `runMigrations` over an atomically-written settings.json, auto-run on mount; mechanism only (no real migrations yet) |
 | Permission rules | ✅ + 🔶 | rule engine + dangerous-command/path risk classifier. Per-session mode overrides are **in-memory** (resume reverts to deployment default) — durable `permission/mode` appends are staged separately, gated on the harness pin carrying the event type. Missing vs CC: ML/bash risk classifier service, managed/enterprise remote settings |
 | Hooks | 🔶 | 16 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off) |
 | MCP client | ✅ | tools + resources + prompts + OAuth 2.1 |
@@ -40,6 +41,9 @@ command counts below follow that build.
 | Cost / token tracking | ✅ | `token-meter` (base) + `/cost`; CC quota/limit surfaces are Anthropic-billing-bound 🚫 |
 | Schedule / reminders | 🔶 | `@deepseek-ai/dsh-schedule` mounted: `after_seconds` / `at` / `every_seconds` (≥300s). CC's cron-expression selectors unsupported — upstream extension planned |
 | Worktree tools | ✅ | `EnterWorktree`/`ExitWorktree` |
+| Sleep tool | ✅ | `tool-sleep` (`@jianxx/dsh-cc-tool-sleep`) — `Sleep` with cooperative interrupt-cancel and concurrency-safe semantics aligned to CC's SleepTool |
+| StructuredOutput (synthetic output tool) | ✅ | `core/tool-structured-output` (`@jianxx/dsh-cc-tool-structured-output`) — `StructuredOutput` validates the model's final output against a caller-supplied JSON schema and echoes it back, aligned to CC's SyntheticOutputTool; registered only when a schema is declared |
+| NotebookEdit | ✅ | `core/tool-notebook-edit` (`@jianxx/dsh-cc-tool-notebook-edit`) — `NotebookEdit` edits Jupyter notebook (.ipynb) cells over the `ctx.fs` seam with CC's replace/insert/delete, real-id + `cell-<n>` addressing, and a read-before-write gate on `fs/observed` |
 | ToolSearch (deferred tools) | ✅ | `core/tool-search` |
 | Sandbox | ✅ | `dsh-sandbox-local` + policy (base) |
 | Credentials | ✅ | `dsh-credentials-local` (base) |
