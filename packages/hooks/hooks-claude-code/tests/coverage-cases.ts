@@ -802,7 +802,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       http.close()
     }, 15_000)
 
-    it('surfaces a prompt hook as a warned no-op (parsed, not run)', async () => {
+    it('surfaces a prompt hook as a warned no-op when disabled by default', async () => {
       const d = dir()
       const path = hooks(d, { PreToolUse: [{ hooks: [{ type: 'prompt', prompt: 'approve?' }] }] })
       const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
@@ -812,13 +812,13 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      // The prompt hook is a no-op, so the tool ran; a warning named it.
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('prompt hook is parsed but not yet run'))
+      // Without enablePromptHooks the prompt hook is a disabled no-op, so the tool ran.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('prompt hook is disabled (set enablePromptHooks to run it)'))
       const res = events(agent).find(e => e.type === 'hook/result')
       expect(res?.type === 'hook/result' && res.data.decision).toBe('pass')
     })
 
-    it('surfaces an agent hook as a warned no-op (parsed, not run)', async () => {
+    it('surfaces an agent hook as a warned no-op when disabled by default', async () => {
       const d = dir()
       const path = hooks(d, { Stop: [{ hooks: [{ type: 'agent', prompt: 'verify' }] }] })
       const adapter = new MockAdapter([textResponse('one')])
@@ -827,7 +827,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('agent hook is parsed but not yet run'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('agent hook is disabled (set enableAgentHooks to run it)'))
       expect(adapter.requests).toHaveLength(1) // no-op, not blocked
     })
   })

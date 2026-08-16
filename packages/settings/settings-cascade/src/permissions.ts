@@ -28,6 +28,10 @@ export interface Permissions {
   disableBypassPermissionsMode?: 'disable'
   /** Additional directories included in the permission scope. */
   additionalDirectories?: string[]
+  /** Protected file wildcard patterns — file writes to them are high risk. */
+  protectedFiles?: string[]
+  /** Raw dangerous-command regex sources for the risk classifier. */
+  dangerousPatterns?: string[]
 }
 
 /**
@@ -41,4 +45,6 @@ export const PermissionsSchema: z<Permissions> = z.object({
   defaultMode: z.union(PERMISSION_MODES),
   disableBypassPermissionsMode: z.union(['disable']),
   additionalDirectories: z.array(z.string()),
+  protectedFiles: z.array(z.string()),
+  dangerousPatterns: z.array(z.string()),
 })

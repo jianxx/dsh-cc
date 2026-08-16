@@ -16,8 +16,22 @@ describe('PermissionsSchema', () => {
       defaultMode: 'acceptEdits',
       disableBypassPermissionsMode: 'disable',
       additionalDirectories: ['/workspace/other'],
+      protectedFiles: ['.bashrc', '.msh/**'],
+      dangerousPatterns: ['drop database'],
     }
     expect(parse(value)).toEqual(value)
+  })
+
+  it('parses protectedFiles and dangerousPatterns on their own', () => {
+    const value = { protectedFiles: ['.ssh/**'], dangerousPatterns: ['sudo'] }
+    expect(parse(value)).toEqual({
+      allow: [],
+      deny: [],
+      ask: [],
+      additionalDirectories: [],
+      protectedFiles: ['.ssh/**'],
+      dangerousPatterns: ['sudo'],
+    })
   })
 
   it('parses an empty permissions object, normalizing missing arrays to empty', () => {
@@ -26,6 +40,8 @@ describe('PermissionsSchema', () => {
       deny: [],
       ask: [],
       additionalDirectories: [],
+      protectedFiles: [],
+      dangerousPatterns: [],
     })
   })
 

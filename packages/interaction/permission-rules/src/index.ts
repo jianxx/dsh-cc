@@ -3,7 +3,9 @@
  * set (Config `rules` merged with the optional `permissions` settings section),
  * a `tools/pre-execute` listener that folds a mode-aware decision, and the
  * monotonic guard layer that enforces bypass-immune content rules so neither a
- * mode switch nor `bypassPermissions` can override them. Rules fail loud at
+ * mode switch nor `bypassPermissions` can override them. A risk-classifier
+ * escalation stage hard-denies catastrophic commands and asks on protected or
+ * out-of-scope file writes before the normal waterfall. Rules fail loud at
  * load; settings hot-reloads by rebuilding merged state and re-registering
  * guards.
  *
@@ -24,6 +26,7 @@ import { installSettingsSection, settingsNamespace, type SettingsNamespace } fro
 import type {} from '@deepseek-ai/dsh-shell'
 import { parseRule, ruleString, contentMatches } from './parser.ts'
 import { evaluatePermission, mergeRuleSets } from './evaluate.ts'
+import { assessBashCommand, assessFilePath, type RiskAssessment } from './classifier.ts'
 import {
   PERMISSION_MODES,
   SOURCE_PRIORITY,
@@ -54,6 +57,12 @@ export interface PermissionSettings {
   ask?: string[]
   /** Default permission mode for sessions without a recorded override. */
   defaultMode?: PermissionMode
+  /** Additional directories included in the permission scope (escape-check base). */
+  additionalDirectories?: string[]
+  /** Protected file wildcard patterns — writes to them are high risk. */
+  protectedFiles?: string[]
+  /** Raw dangerous-command regex sources replacing the curated defaults. */
+  dangerousPatterns?: string[]
 }
 
 /** The Config-provided rule set: strings parsed as source-`config` rules. */
@@ -103,6 +112,12 @@ export interface Config {
   exemptSandboxedBashFromToolAsk?: boolean
   /** Whether `bypassPermissions` mode is disabled (falls back to `default`). */
   disableBypassPermissionsMode?: boolean
+  /**
+   * Whether the risk-classifier escalation stage runs inside the decision
+   * flow (catastrophic commands hard-deny; protected/out-of-scope file writes
+   * ask unless under `bypassPermissions`). Defaults to `true`.
+   */
+  classifierEnabled?: boolean
 }
 
 /** The standard file-edit tool set, applied when {@link Config.fileEditTools} is omitted. */
@@ -118,6 +133,9 @@ function permissionSettingsSchema(): z<PermissionSettings> {
     deny: z.array(z.string()),
     ask: z.array(z.string()),
     defaultMode: z.union(PERMISSION_MODES as PermissionMode[]),
+    additionalDirectories: z.array(z.string()),
+    protectedFiles: z.array(z.string()),
+    dangerousPatterns: z.array(z.string()),
   })
 }
 
@@ -148,6 +166,7 @@ export class PermissionRulesService extends Service {
     readOnlyTools: z.array(z.string()).default(DEFAULT_READ_ONLY_TOOLS),
     exemptSandboxedBashFromToolAsk: z.boolean().default(false),
     disableBypassPermissionsMode: z.boolean().default(false),
+    classifierEnabled: z.boolean().default(true),
   })
 
   static inject = ['tools']
@@ -282,8 +301,44 @@ export class PermissionRulesService extends Service {
     return mode !== undefined && mode !== 'danger-full-access'
   }
 
-  /** Fold the engine decision for one call. Bypass-immune matches fall to the guard layer, not here. */
+  /**
+   * Classify the risk of one call for the escalation stage. Bash-like tools
+   * classify their command; file-edit tools classify their target path; other
+   * tools are LOW. Skipped entirely when `classifierEnabled` is false.
+   */
+  private classify(exec: ToolExecution): RiskAssessment {
+    if (this.config.classifierEnabled === false) return { level: 'LOW', reasons: [] }
+    const args = exec.arguments as Record<string, unknown>
+    const session = exec.agent?.session
+    if (exec.name === this.bashToolName && typeof args.command === 'string') {
+      return assessBashCommand(args.command, this.settingsSection().dangerousPatterns)
+    }
+    if (this.fileEditTools.has(exec.name) && typeof args.file_path === 'string') {
+      const settings = this.settingsSection()
+      return assessFilePath(args.file_path, {
+        cwd: session?.header?.cwd ?? '',
+        ...settings.additionalDirectories === undefined ? {} : { additionalDirectories: settings.additionalDirectories },
+        ...settings.protectedFiles === undefined ? {} : { protectedFiles: settings.protectedFiles },
+      })
+    }
+    return { level: 'LOW', reasons: [] }
+  }
+
+  /**
+   * Fold the engine decision for one call. Bypass-immune matches fall to the
+   * guard layer, not here. The risk-classifier escalation runs first (a
+   * hard-deny HIGH in every mode; an ask MEDIUM outside bypassPermissions),
+   * then the normal waterfall proceeds unchanged.
+   */
   private decide(exec: ToolExecution): PermissionDecision {
+    const risk = this.classify(exec)
+    if (risk.level === 'HIGH') {
+      return { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` }
+    }
+    if (risk.level === 'MEDIUM') {
+      if (this.effectiveMode(exec) === 'bypassPermissions') return { kind: 'allow' }
+      return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
+    }
     const subject = this.subjectOf(exec)
     return evaluatePermission({
       toolName: exec.name,
@@ -300,12 +355,10 @@ export class PermissionRulesService extends Service {
   }
 
   /**
-   * Record a session's permission-mode override. Plan activation, when active,
-   * still overlays at call time.
-   * The override is in-memory only: an out-of-repo plugin cannot extend the
-   * session event vocabulary (`Session.append` accepts envelope metadata only
-   * for surface events; the persistence read path refuses unknown non-ignorable
-   * types), so a resumed session starts back at the deployment default mode.
+   * Record a session's permission-mode override in memory. Plan activation,
+   * when active, still overlays at call time. NOTE: the override is per-process
+   * — a resumed session falls back to the deployment default until the session
+   * event vocabulary is extended for out-of-repo plugins (upstream follow-up).
    * @param agent - the live agent whose mode is changing.
    * @param mode - the new permission mode; unknown modes throw.
    */

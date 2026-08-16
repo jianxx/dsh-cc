@@ -388,7 +388,7 @@ describe('hooks-claude-code bridge — load resilience', () => {
 
   it('an invalid matcher on an unsupported event does not disable supported hooks', async () => {
     const dir = writeConfig({
-      Setup: [{ matcher: '(', hooks: [{ type: 'command', command: 'exit 0' }] }],
+      PreCompact: [{ matcher: '(', hooks: [{ type: 'command', command: 'exit 0' }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'exit 2' }] }],
     })
     const adapter = new MockAdapter([textResponse('should not run')])

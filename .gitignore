@@ -144,3 +144,9 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Accidental in-place tsc emit (tsc -b run without the repo's lib outDir)
+packages/**/src/*.js
+packages/**/src/*.d.ts
+packages/**/src/*.js.map
+packages/**/src/*.d.ts.map

@@ -62,10 +62,52 @@
       "path": "./packages/session/command-stats"
     },
     {
-      "path": "./packages/interaction/command-status"
+      "path": "./packages/interaction/command-branch"
+    },
+    {
+      "path": "./packages/interaction/command-config"
+    },
+    {
+      "path": "./packages/interaction/command-diff"
     },
     {
       "path": "./packages/interaction/command-doctor"
+    },
+    {
+      "path": "./packages/interaction/command-help"
+    },
+    {
+      "path": "./packages/interaction/command-init"
+    },
+    {
+      "path": "./packages/interaction/command-mcp"
+    },
+    {
+      "path": "./packages/interaction/command-memory"
+    },
+    {
+      "path": "./packages/interaction/command-permissions"
+    },
+    {
+      "path": "./packages/interaction/command-plugin"
+    },
+    {
+      "path": "./packages/interaction/command-release-notes"
+    },
+    {
+      "path": "./packages/interaction/command-resume"
+    },
+    {
+      "path": "./packages/interaction/command-skills"
+    },
+    {
+      "path": "./packages/interaction/command-status"
+    },
+    {
+      "path": "./packages/interaction/command-tasks"
+    },
+    {
+      "path": "./packages/interaction/command-version"
     },
     {
       "path": "./packages/test-support/agent-loop-mock"

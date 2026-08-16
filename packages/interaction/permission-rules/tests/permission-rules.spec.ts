@@ -84,6 +84,18 @@ function openTurnAgent(id: string): Agent {
   return { id, session } as unknown as Agent
 }
 
+/** An agent whose session carries a working directory (enables the escape check). */
+function openAgentWithCwd(id: string, cwd: string): Agent {
+  const session = Session.create(SessionId(id), undefined, {
+    version: 0,
+    id: SessionId(id),
+    createdAt: Date.now(),
+    cwd,
+  })
+  session.append('turn/start', { turn: 1 })
+  return { id, session } as unknown as Agent
+}
+
 describe('plugin pre-execute decisions', () => {
   it('allows a call with no matching rule', async () => {
     const ctx = await mount()
@@ -249,5 +261,78 @@ describe('session mode overrides (in-memory)', () => {
     // …while another session stays at the default mode and remains denied.
     const denied = await ctx.tools.execute(exec('edit', { file_path: '/tmp/private/x' }, other))
     expect(denied.isError).toBe(true)
+  })
+})
+
+describe('risk-classifier escalation', () => {
+  it('hard-denies a catastrophic command in every mode, including bypassPermissions', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('high-bypass')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    const result = await ctx.tools.execute(exec('Bash', { command: 'rm -rf /' }, agent))
+    expect(result.isError).toBe(true)
+    expect(text(result)).toMatch(/risk classifier/)
+  })
+
+  it('hard-denies a protected-file write', async () => {
+    const ctx = await mount()
+    const agent = openAgentWithCwd('high-file', '/work')
+    const result = await ctx.tools.execute(exec('edit', { file_path: '/work/.bashrc' }, agent))
+    expect(result.isError).toBe(true)
+    expect(text(result)).toMatch(/risk classifier/)
+  })
+
+  it('allows an out-of-scope write under bypassPermissions (MEDIUM → allow)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(ApprovalService, { policy: 'ask' })
+    const asked: unknown[] = []
+    ctx.on('approval/request', async request => { asked.push(request); return 'allowed-once' })
+    await ctx.plugin(PermissionRules, { fileEditTools: ['edit'], readOnlyTools: ['read'], bashToolName: 'Bash' })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit file',
+      parameters: { file_path: { type: 'string' } },
+      async execute(args) { return [{ type: 'text', text: `edited:${(args as { file_path: string }).file_path}` }] },
+    }))
+
+    const agent = openAgentWithCwd('medium-bypass', '/work')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    const result = await ctx.tools.execute(exec('edit', { file_path: '/tmp/out.txt' }, agent))
+    expect(result.isError).toBe(false)
+    expect(asked).toHaveLength(0)
+  })
+
+  it('asks on an out-of-scope write under default mode (MEDIUM → ask)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(ApprovalService, { policy: 'ask' })
+    const asked: unknown[] = []
+    ctx.on('approval/request', async request => { asked.push(request); return 'allowed-once' })
+    await ctx.plugin(PermissionRules, { fileEditTools: ['edit'], readOnlyTools: ['read'], bashToolName: 'Bash' })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit file',
+      parameters: { file_path: { type: 'string' } },
+      async execute(args) { return [{ type: 'text', text: `edited:${(args as { file_path: string }).file_path}` }] },
+    }))
+
+    const agent = openAgentWithCwd('medium-default', '/work')
+    const result = await ctx.tools.execute(exec('edit', { file_path: '/tmp/out.txt' }, agent))
+    expect(asked).toHaveLength(1)
+    expect(result.isError).toBe(false)
+  })
+
+  it('skips the classifier stage when classifierEnabled is false', async () => {
+    const ctx = await mount({ classifierEnabled: false })
+    const agent = openTurnAgent('disabled')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    // The catastrophic command is no longer hard-denied once the stage is off.
+    const result = await ctx.tools.execute(exec('Bash', { command: 'rm -rf /' }, agent))
+    expect(result.isError).toBe(false)
   })
 })

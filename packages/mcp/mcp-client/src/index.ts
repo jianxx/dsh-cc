@@ -17,14 +17,17 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
-import type { ReconnectConfig } from './connection.ts'
+import type { ConnectionHandle, ConnectionOutcome, ReconnectConfig } from './connection.ts'
 import type { OAuthConfig } from './auth.ts'
+import { McpConnectionsService, type McpConnectionControl } from './registry.ts'
 // Side-effect type import: declaration-merges `ctx.tools` onto Context.
 import type {} from '@jianxx/dsh-cc-tools'
 
 export type { McpResult } from './tools.ts'
-export type { ReconnectConfig, ResolvedReconnectPolicy } from './connection.ts'
+export type { ReconnectConfig, ResolvedReconnectPolicy, ConnectionHandle } from './connection.ts'
 export type { OAuthConfig } from './auth.ts'
+export { McpConnectionsService } from './registry.ts'
+export type { McpConnectionState, McpConnectionEntry, McpConnectionControl } from './registry.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'mcp-client'
@@ -205,13 +208,64 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     return () => void names.delete(config.serverName)
   }, 'mcp-client.serverName')
 
+  // The MCP registry is an optional seam: provide one when the scope lacks it,
+  // otherwise reuse the shared instance so every mcp-client under one scope
+  // reports into a single service. Standalone (no consumer) still connects.
+  let registry = ctx.get('mcpConnections') as McpConnectionsService | undefined
+  if (registry === undefined) {
+    registry = new McpConnectionsService(ctx)
+  }
+  const authRequired = config.transport !== 'stdio' && config.oauth !== undefined
+
   // The supervisor owns the client/transport generations, the reconnect
   // loop, and the live tool registrations; disposal stops reconnection,
   // quiesces in-flight work, and unregisters the current generation.
-  const connection = startConnection(ctx, config, reconnect)
+  let current: ConnectionHandle | undefined
+
+  /** Dispose whatever supervisor is live (idempotent; used by disconnect & teardown). */
+  async function disposeConnection(): Promise<void> {
+    const handle = current
+    current = undefined
+    if (handle) await handle.dispose()
+  }
+
+  /**
+   * Establish a fresh connection: dispose any prior supervisor, kick off a new
+   * one, and settle the startup/blocking outcome. Reports state transitions to
+   * the registry and refreshes the tool count on success.
+   */
+  async function connect(): Promise<ConnectionOutcome> {
+    await disposeConnection()
+    registry!.report(config.serverName, 'connecting')
+    const handle = startConnection(ctx, config, reconnect)
+    current = handle
+    const outcome = await handle.ready
+    if (outcome.error !== undefined) {
+      registry!.report(config.serverName, 'error', { error: String(outcome.error) })
+    } else {
+      registry!.report(config.serverName, 'ready')
+      registry!.setToolCount(config.serverName, countServerTools(ctx, config.serverName))
+    }
+    return outcome
+  }
+
+  const control: McpConnectionControl = {
+    async disconnect() {
+      await disposeConnection()
+      registry!.report(config.serverName, 'disconnected')
+    },
+    async reconnect() {
+      const outcome = await connect()
+      if (outcome.error !== undefined) throw outcome.error
+    },
+  }
+  registry.register(config.serverName, control, authRequired)
 
   ctx.effect(() => {
-    return () => connection.dispose()
+    return async () => {
+      await disposeConnection()
+      registry!.unregister(config.serverName)
+    }
   }, 'mcp-client.connection')
 
   // Block plugin activation on the initial connection + tool discovery so
@@ -219,8 +273,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // When failOnStartupError is true, a failed initial attempt rejects the
   // fiber (Cordis rolls it back); otherwise the error is logged and the
   // supervisor enters its reconnect loop.
-  const outcome = await connection.ready
+  const outcome = await connect()
   if (outcome.error !== undefined && config.failOnStartupError) {
     throw new Error(`mcp-client(${config.serverName}): initial connection or tool synchronization failed`, { cause: outcome.error })
   }
+}
+
+/** Count the tools a server currently exposes under its qualified namespace. */
+function countServerTools(ctx: Context, serverName: string): number {
+  const prefix = `mcp__${serverName}__`
+  return ctx.tools.schemas().filter(schema => schema.name.startsWith(prefix)).length
 }

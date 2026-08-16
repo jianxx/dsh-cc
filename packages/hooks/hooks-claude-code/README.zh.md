@@ -16,6 +16,8 @@ const config: Config = {
   projectDir: '/path/to/project',    // optional: replaces ${CLAUDE_PROJECT_DIR} AND sets the hook env var; defaults to the session cwd when omitted
   defaultTimeoutMs: 600_000,         // optional: per-hook timeout when a hook sets none (CC default)
   stderrSummaryMaxChars: 500,        // optional: char cap on the hook/result event's persisted stderr summary
+  enablePromptHooks: false,          // optional: run `prompt` hooks by forking a small-model subagent (default off)
+  enableAgentHooks: false,           // optional: run `agent` hooks by forking a verification subagent (default off)
 }
 ```
 
@@ -28,7 +30,7 @@ const config: Config = {
     projectDir: .
 ```
 
-配置只在加载时解析**一次**。`configPath` 是**进程级**配置：相对路径在加载时根据进程启动 cwd 解析，因此一份配置应用于整个进程。尚未进行每会话（`session/new.cwd`）配置发现（`TODO(per-session-hook-config)`）。读取／解析失败会被隔离处理，其中包括实际消费 matcher 的事件所带的无效 matcher 正则（会报告其 pattern 与事件）：桥接记录警告且不注册任何内容，而不是使启动崩溃（路径拼写错误不应使 agent（智能体）停止）。只运行 shell 形式 `type: 'command'` hook；`http`／`mcp_tool`／`prompt`／`agent` hook 会被解析并跳过，同时记录警告。没有每 hook `timeout` 的 hook 会使用协议参考默认值 `DEFAULT_HOOK_TIMEOUT_MS`（来自 `dsh-hook-protocol`，10 分钟，即 CC 默认值）。
+配置只在加载时解析**一次**。`configPath` 是**进程级**配置：相对路径在加载时根据进程启动 cwd 解析，因此一份配置应用于整个进程。尚未进行每会话（`session/new.cwd`）配置发现（`TODO(per-session-hook-config)`）。读取／解析失败会被隔离处理，其中包括实际消费 matcher 的事件所带的无效 matcher 正则（会报告其 pattern 与事件）：桥接记录警告且不注册任何内容，而不是使启动崩溃（路径拼写错误不应使 agent（智能体）停止）。`command`、`http`、`prompt`、`agent` 四种执行器都会运行（后两者仅在对应开关开启时运行，见下）；未知 handler `type` 会被跳过并记录警告。没有每 hook `timeout` 的 hook 会使用协议参考默认值 `DEFAULT_HOOK_TIMEOUT_MS`（来自 `dsh-hook-protocol`，10 分钟，即 CC 默认值；`prompt`／`agent` hook 的每 hook `timeout` 不会应用到 fork —— 由父操作 signal 管控）。
 
 hook **本身**会在 agent 的会话工作区中运行：对 agent scope 点，桥接会将会话 `cwd`（`session/new.cwd`）作为 hook 进程工作目录，因此 hook 的 `pwd`／相对路径／marker 作用于用户项目树，而非服务器启动目录。
 
@@ -43,8 +45,17 @@ hook **本身**会在 agent 的会话工作区中运行：对 agent scope 点，
 | `Stop` | `agent/turn-stopping`（serial） | 阻塞 Stop hook 通过 `steer()` 送入其原因，强制再执行一步 |
 | `SubagentStart` | `subagent/start`（emit） | additionalContext → `agent.inject()` 到仍在运行的同进程 child；远程 child 没有本地注入目标 |
 | `SubagentStop` | `subagent/end`（emit） | 只观测 |
+| `PermissionRequest` | `approval/request`（waterfall（瀑布式事件）） | `deny` → 拒绝审批；`allow`/`approve` → 预审批（`allowed-once`）；无决策 → 委托给应答者链 |
+| `PermissionDenied` | `session/event` 观测 `approval/decided {outcome:'rejected'}`（emit） | 只观测 |
+| `Notification` | `session/event` 观测 `approval/asked`（emit） | **部分支持**：仅 `permission_prompt` 子类型触发；payload 携带 `notification_type: 'permission_prompt'` |
+| `PostCompact` | `session/event` 观测 `compaction/end`（emit） | 只观测 |
+| `SessionEnd` | `session/disposed`（emit） | 只观测；`reason` 恒为 `'other'`（该 seam 无法推导） |
+| `StopFailure` | `agent/error`（emit） | 只观测；将错误映射到 CC 错误码词汇（`rate_limit`、`authentication_failed`、`billing_error`、`invalid_request`、`server_error`、`max_output_tokens`，否则 `unknown`） |
+| `TaskCreated` | `ctx.jobs` 变更 diff（emit） | 桥接对 `list()` 快照做 diff，对每个新出现的 job id 触发一次（无主或变更 owner scope 的 job） |
+| `TeammateIdle` | `agent/status` → `idle`（emit） | 只观测；仅对被视为 subagent 的 agent 触发（根 agent 的 idle 不触发） |
+| `Setup` | `agent/session-start` `source:'startup'`（emit） | **部分的一键近似**：仅对全新（seeded）会话触发，payload 为 `source:'init'`；resume/clear/compact 源不触发 |
 
-三个 emit 点都以分离方式运行：没有扩展点会等待 `SessionStart`／`SubagentStart`／`SubagentStop` hook。每条运行链都会被跟踪；对桥接执行 dispose（资源释放）时，会中止仍在运行的 hook 进程，并在 dispose 完成前排空 continuation（`createDetachedRuns`，位于 `dsh-hook-protocol`）。
+以上 emit 点都以分离方式运行：没有扩展点会等待这些 hook；`PermissionRequest` 是其中唯一的拦截点，并同步返回其决策。每条运行链都会被跟踪；对桥接执行 dispose（资源释放）时，会中止仍在运行的 hook 进程，并在 dispose 完成前排空 continuation（`createDetachedRuns`，位于 `dsh-hook-protocol`）。
 
 matcher subject 是工具名称（`PreToolUse`／`PostToolUse`）、会话源（`SessionStart`），或常量 `agent_type`，其值为 `general-purpose`（`SubagentStart`／`SubagentStop`）。harness subagent seam 不携带每 kind label，因此桥接报告 Claude Code 自身 Task 工具默认值；默认／`*`／空 `agent_type` matcher 会触发，特定 kind matcher 不会触发。`UserPromptSubmit`／`Stop` 忽略 matcher。一个点上文件配置的多个 hook 会**按配置顺序串行运行**，并按最严格方式折叠（`deny > ask > allow`，见 `dsh-hook-protocol`）。串行使每个 hook 的 `hook/invoked`／`hook/result` 对在日志中相邻，权限决策的折叠结果与顺序无关（见 Agent Note 的「run serially, not concurrently」说明）。
 
@@ -86,7 +97,7 @@ hook 不返回上下文时没有成本。Hook 文本取决于数据，会被记�
 
 ## 已知限制与暂缓事项
 
-- **不支持的 hook 事件（Claude Code 当前 30 项中的 23 项）：** `Setup`、`InstructionsLoaded`、`UserPromptExpansion`、`MessageDisplay`、`PermissionRequest`、`PostToolUseFailure`、`PostToolBatch`、`PermissionDenied`、`Notification`、`TaskCreated`、`TaskCompleted`、`StopFailure`、`TeammateIdle`、`ConfigChange`、`CwdChanged`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`PreCompact`、`PostCompact`、`SessionEnd`、`Elicitation` 和 `ElicitationResult`。这些事件的配置会在配置组解析前被忽略，因此不支持的事件既不会使配置失效，也不会注册 hook。比较基线是 Claude Code [官方 hook 事件参考](https://code.claude.com/docs/en/hooks#hook-events)。
+- **已支持的 hook 事件（Claude Code 当前 30 项中的 16 项，其余不支持）：** `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStart`、`SubagentStop`、`PermissionRequest`、`PermissionDenied`、`Notification`（部分 —— 仅 `permission_prompt` 子类型）、`PostCompact`、`SessionEnd`、`StopFailure`、`TaskCreated`、`TeammateIdle`、`Setup`（部分 —— 一键近似）。**不支持（14 项）：** `PreCompact`（需要上游 `compaction/start` seam）、`InstructionsLoaded`、`UserPromptExpansion`、`MessageDisplay`、`PostToolUseFailure`、`PostToolBatch`、`TaskCompleted`、`ConfigChange`、`CwdChanged`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`Elicitation`、`ElicitationResult`；另有 `Notification` 的 `idle`／`auth_success`／`elicitation` 子类型（headless 无法映射）。这些事件的配置会在配置组解析前被忽略，因此不支持的事件既不会使配置失效，也不会注册 hook。比较基线是 Claude Code [官方 hook 事件参考](https://code.claude.com/docs/en/hooks#hook-events)。
 - **`SessionStart` 只支持部分功能：** 会消费 JSON `additionalContext`，但不支持纯 stdout 上下文、`initialUserMessage`、`sessionTitle`、`watchPaths`、`reloadSkills` 与 `CLAUDE_ENV_FILE`。hook 脱离运行，因此上下文可能错过第一个请求（`TODO(session-start-gating)`），payload 会省略 `model`、`agent_type` 和 `session_title` 等当前可选字段。
 - **`UserPromptSubmit` 只支持部分功能：** 支持阻塞与 JSON `additionalContext`，但不支持纯 stdout 上下文、`sessionTitle` 和 `suppressOriginalPrompt`。除非被覆盖，否则桥接还会使用自身 600 秒默认值，而非 Claude Code 的事件特定 30 秒 command 超时。
 - **`PreToolUse` 只支持部分功能：** `deny` 与 `ask` 决策可用；`allow` 不会预审批，不支持 `defer`，`additionalContext` 会被忽略，`updatedInput` 会被记录 + 警告但不应用（见 [pre-tool-input-rewrite Agent Note](../../../.agents/notes/proposed/feature/2026-06-30-pre-tool-input-rewrite.md)）。
@@ -94,4 +105,4 @@ hook 不返回上下文时没有成本。Hook 文本取决于数据，会被记�
 - **`SubagentStart` 与 `SubagentStop` 只支持部分功能：** 两者均报告常量 `agent_type`，其值为 `general-purpose`，并在 Claude Code 报告父会话的位置使用 child 会话 id。Start 上下文是尽力而为，且只能到达仍在运行的同进程 child；stop 只观测，无法阻塞 subagent 或向其提供上下文。Start 省略 `transcript_path`；stop 还省略 `agent_transcript_path`、`last_assistant_message`、`background_tasks` 和 `session_crons`，并始终报告 `stop_hook_active: false`。
 - **`Stop` 只支持部分功能：** 阻塞会强制另一个模型轮次，但 `stop_hook_active` 始终为 `false`，会省略 `last_assistant_message`、`background_tasks` 和 `session_crons`，且未实现连续阻塞上限（`TODO(stop-loop-guard)`）。因此，无条件阻塞 hook 会在每个步骤中强制 continuation，除非它自我限制。
 - **通用 payload 与输出字段只支持部分功能：** 已映射事件会省略 Claude Code 原本会提供的 `prompt_id`、`transcript_path`、`permission_mode` 和 `effort`。`systemMessage` 会被记录 + 警告但不呈现；`{"continue": false}` 会被记录但不会停止运行；不会应用 `suppressOutput`、`stopReason` 和 `terminalSequence`（`TODO(hook-continue-false)`）。
-- **Handler 与配置只支持部分功能：** 只运行 shell 形式 command handler。会跳过 `http`、`mcp_tool`、`prompt` 和 `agent` handler；不遵循 `args`、`async`、`asyncRewake`、`shell`、`if`、`once` 和 `statusMessage` 等 command handler 选项。匹配 handler 串行运行且不去重，而 Claude Code 会并行运行并对相同 handler 去重。一个进程级 `configPath` 会在加载时解析一次；尚未实现 Claude Code 的分层项目、用户、插件与策略发现和实时重新加载（`TODO(per-session-hook-config)`）。
+- **Handler 与配置只支持部分功能：** 运行 shell 形式 command handler，并运行 `http` handler（带 `allowedHttpHookUrls` + 拦截 header `allowedEnvVars`）。`prompt`／`agent` handler 仅在 `enablePromptHooks`／`enableAgentHooks` 开启时运行（否则跳过并警告）；未知 handler `type` 被跳过并警告。不遵循 `args`、`async`、`asyncRewake`、`shell`、`if`、`once` 和 `statusMessage` 等 command handler 选项；`prompt`／`agent` 的 `model` 覆盖会映射到 fork 的 `agentOptions.model`，每 hook `timeout` 不会应用到 fork。匹配 handler 串行运行且不去重，而 Claude Code 会并行运行并对相同 handler 去重。一个进程级 `configPath` 会在加载时解析一次；尚未实现 Claude Code 的分层项目、用户、插件与策略发现和实时重新加载（`TODO(per-session-hook-config)`）。

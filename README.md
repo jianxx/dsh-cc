@@ -12,6 +12,20 @@ packages/
   interaction/permission-rules     allow/deny/ask rule engine + mode state (CC /permissions semantics)
   interaction/command-status       /status
   interaction/command-doctor       /doctor
+  interaction/command-memory       /memory — list/read CLAUDE-code-style memories
+  interaction/command-skills       /skills — list installed skills
+  interaction/command-help         /help — usage help
+  interaction/command-config       /config — inspect/set settings
+  interaction/command-permissions  /permissions — allow/deny/ask rules + mode
+  interaction/command-version      /version — show product/version info
+  interaction/command-release-notes  /release-notes — view release notes
+  interaction/command-diff         /diff — diff CLAUDE.md / settings
+  interaction/command-init         /init — scan project and scaffold CLAUDE.md
+  interaction/command-plugin       /plugin — manage plugins
+  interaction/command-mcp          /mcp — manage MCP server connections
+  interaction/command-tasks        /tasks — show open tasks / todo
+  interaction/command-resume        /resume — resume an interrupted session
+  interaction/command-branch       /branch — worktree branch management
   mcp/mcp-client                   MCP client with OAuth 2.1 + resources + prompts (vendored superset)
   mcp/mcp-config                   `.mcp.json` parser → mcp-client registrations (library)
   hooks/hook-protocol              hook wire protocol incl. http executor (vendored superset)
@@ -104,6 +118,8 @@ Subscribers type against upstream service types — the vendored runtime is a st
   - `compaction-micro` no longer appends its log-only decision record; the replacement nodes already carry the deterministic marker, so decisions still reconstruct from replay + code.
 - Track: ask upstream for either ignorable-aware `Session.append` or an event-registration surface; restore the durable records then.
 - `hooks-codex` and `tool-cordis` fork deltas were NOT moved: they were generated-catalog/type-hygiene noise with no behavioral need on top of upstream.
+- `web-fetch-http` ships NO host allowlist. Enabling fetch means model-directed requests can reach any URL the dsh process can reach — enable it only on egress-restricted deployments. An upstream allowlist is a planned follow-up.
+- Schedule (`dsh-schedule`) is session-local only: one-shot `after_seconds` delays, absolute `at` targets, and fixed-rate `every_seconds` (≥300s). Claude Code cron-expression parity is deferred upstream.
 
 ## Develop
 
