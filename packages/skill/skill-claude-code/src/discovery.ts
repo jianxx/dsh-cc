@@ -172,7 +172,8 @@ async function isReadableFile(path: string): Promise<boolean> {
   }
 }
 
-async function findProjectRoot(cwd: string): Promise<string> {
+/** Resolve the project root (nearest ancestor containing `.git`) for a cwd. */
+export async function findProjectRoot(cwd: string): Promise<string> {
   let current = cwd
   while (true) {
     if (await pathExists(join(current, '.git'))) return current

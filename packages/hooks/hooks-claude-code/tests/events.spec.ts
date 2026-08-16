@@ -14,7 +14,8 @@ import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import SubagentRuntime, { SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import ApprovalService, { type ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import * as HooksClaude from '@jianxx/dsh-cc-hooks-claude-code'
-import { MockAdapter } from '@jianxx/dsh-cc-agent-loop-mock'
+import { defineContentToolFixture } from '@jianxx/dsh-cc-tools'
+import { MockAdapter, textResponse, toolCallResponse } from '@jianxx/dsh-cc-agent-loop-mock'
 
 /**
  * Full-loop tests for the expanded observe/interception event set (the 9 events
@@ -239,6 +240,102 @@ describe('hooks-claude-code bridge — TaskCreated (jobs diff)', () => {
     for (const l of jobs.listeners) l(undefined)
     await waitFor(() => existsSync(tdMarker))
     expect(existsSync(tdMarker)).toBe(true)
+  })
+})
+
+describe('hooks-claude-code bridge — PostToolUseFailure', () => {
+  it('fires PostToolUseFailure when a tool result is an error (isError=true)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-events-'))
+    dirs.push(dir)
+    const ptuMarker = join(dir, 'ptu-fail-ran')
+    const ptu = markerHook(dir, 'ptu-fail.sh', ptuMarker)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { PostToolUseFailure: [{ hooks: [{ type: 'command', command: ptu }] }] } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'boom', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    ctx.tools.register(defineContentToolFixture({ name: 'boom', description: 'b', parameters: {}, async execute() { throw new Error('kaput') } }))
+    const agent = ctx.agentLoop.create(SessionId('ptu-session'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitFor(() => existsSync(ptuMarker))
+    expect(existsSync(ptuMarker)).toBe(true)
+  })
+
+  it('does NOT fire PostToolUseFailure when the tool succeeds (isError=false)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-events-'))
+    dirs.push(dir)
+    const ptuMarker = join(dir, 'ptu-ok-ran')
+    const ptu = markerHook(dir, 'ptu-ok.sh', ptuMarker)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { PostToolUseFailure: [{ hooks: [{ type: 'command', command: ptu }] }] } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'ok' }] } }))
+    const agent = ctx.agentLoop.create(SessionId('ptu-ok-session'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    await new Promise(r => setTimeout(r, 150))
+    expect(existsSync(ptuMarker)).toBe(false)
+  })
+
+  it('PostToolUse still fires on success while PostToolUseFailure does not (no regression)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-events-'))
+    dirs.push(dir)
+    const ptuMarker = join(dir, 'ptu-ran')
+    const ptuFailMarker = join(dir, 'ptu-fail-ran')
+    const ptu = markerHook(dir, 'ptu.sh', ptuMarker)
+    const ptuFail = markerHook(dir, 'ptu-fail.sh', ptuFailMarker)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: {
+      PostToolUse: [{ hooks: [{ type: 'command', command: ptu }] }],
+      PostToolUseFailure: [{ hooks: [{ type: 'command', command: ptuFail }] }],
+    } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'ok' }] } }))
+    const agent = ctx.agentLoop.create(SessionId('ptu-reg-session'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    await waitFor(() => existsSync(ptuMarker))
+    expect(existsSync(ptuMarker)).toBe(true)
+    expect(existsSync(ptuFailMarker)).toBe(false)
+  })
+})
+
+describe('hooks-claude-code bridge — SessionResume', () => {
+  it('fires SessionResume when agent/session-start has source=resume', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-events-'))
+    dirs.push(dir)
+    const srMarker = join(dir, 'sr-ran')
+    const sr = markerHook(dir, 'sr.sh', srMarker)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { SessionResume: [{ hooks: [{ type: 'command', command: sr }] }] } }))
+
+    const adapter = new MockAdapter([])
+    const ctx = await harness(dir, adapter)
+    const agent = ctx.agentLoop.create(SessionId('sr-session'), { provider: 'mock', model: 'mock' })
+    ctx.emit(ctx, 'agent/session-start', { agent, source: 'resume' })
+    await waitFor(() => existsSync(srMarker))
+    expect(existsSync(srMarker)).toBe(true)
+  })
+
+  it('does NOT fire SessionResume when source is startup (Setup still fires)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-events-'))
+    dirs.push(dir)
+    const srMarker = join(dir, 'sr-startup-ran')
+    const setupMarker = join(dir, 'setup-ran')
+    const sr = markerHook(dir, 'sr.sh', srMarker)
+    const setup = markerHook(dir, 'setup.sh', setupMarker)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: {
+      SessionResume: [{ hooks: [{ type: 'command', command: sr }] }],
+      Setup: [{ hooks: [{ type: 'command', command: setup }] }],
+    } }))
+
+    const adapter = new MockAdapter([])
+    const ctx = await harness(dir, adapter)
+    const agent = ctx.agentLoop.create(SessionId('sr-startup-session'), { provider: 'mock', model: 'mock' })
+    ctx.emit(ctx, 'agent/session-start', { agent, source: 'startup' })
+    await waitFor(() => existsSync(setupMarker))
+    expect(existsSync(setupMarker)).toBe(true)
+    expect(existsSync(srMarker)).toBe(false)
   })
 })
 

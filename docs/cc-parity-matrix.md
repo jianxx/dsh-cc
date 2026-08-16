@@ -29,46 +29,52 @@ command counts below follow that build.
 | Todo list | 🔶 | `dsh-tool-todo` (base) is model-facing; human-facing `/tasks` lists jobs only — todo seam pending |
 | Auto-compaction | ✅ | `dsh-compaction-basic` + `command-compact` (`/compact`) + tool-result pruner; this repo adds model-free `compaction-micro` |
 | Session persistence / resume / fork | ✅ engine | jsonl/sqlite + projection + checkpoint policy; see command-surface row for `/resume` `/branch` limits |
-| Skills system | ✅ | `skill-claude-code` loader + base `tool-skill`; CC's bundled skills not shipped |
+| Skills system | ✅ | `skill-claude-code` loader + base `tool-skill`; CC `paths` conditional activation ✅; bundled skills subset (debug/simplify/batch) ✅ — CC's `verify`/`stuck` not ported (ant-only, `verify` companion files absent) |
 | Plugin system | ✅ | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `plugin.json`) + cc-shell-glue auto-discovery |
 | Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
 | Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
 | Settings migrations | ✅ | `settings/settings-migrations` (`@jianxx/dsh-cc-settings-migrations`) — version-gated `runMigrations` over an atomically-written settings.json, auto-run on mount; mechanism only (no real migrations yet) |
 | Permission rules | ✅ + 🔶 | rule engine + dangerous-command/path risk classifier. Per-session mode overrides are **in-memory** (resume reverts to deployment default) — durable `permission/mode` appends are staged separately, gated on the harness pin carrying the event type. Missing vs CC: ML/bash risk classifier service, managed/enterprise remote settings |
-| Hooks | 🔶 | 16 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off) |
+| Hooks | 🔶 | 18 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off) |
 | MCP client | ✅ | tools + resources + prompts + OAuth 2.1 |
-| Memory / CLAUDE.md | ✅ | `memory` + `memory-consolidation` (AutoDream analog) |
+| Memory / CLAUDE.md | ✅ | `memory` + `memory-consolidation` (AutoDream analog); recall suppresses reference-doc memories for recently used tools; opt-in `teamEnabled` shared team memory (`memoryHome/team`) with a seam-native symlink/containment validation chain |
 | Cost / token tracking | ✅ | `token-meter` (base) + `/cost`; CC quota/limit surfaces are Anthropic-billing-bound 🚫 |
 | Schedule / reminders | 🔶 | `@deepseek-ai/dsh-schedule` mounted: `after_seconds` / `at` / `every_seconds` (≥300s). CC's cron-expression selectors unsupported — upstream extension planned |
 | Worktree tools | ✅ | `EnterWorktree`/`ExitWorktree` |
 | Sleep tool | ✅ | `tool-sleep` (`@jianxx/dsh-cc-tool-sleep`) — `Sleep` with cooperative interrupt-cancel and concurrency-safe semantics aligned to CC's SleepTool |
 | StructuredOutput (synthetic output tool) | ✅ | `core/tool-structured-output` (`@jianxx/dsh-cc-tool-structured-output`) — `StructuredOutput` validates the model's final output against a caller-supplied JSON schema and echoes it back, aligned to CC's SyntheticOutputTool; registered only when a schema is declared |
 | NotebookEdit | ✅ | `core/tool-notebook-edit` (`@jianxx/dsh-cc-tool-notebook-edit`) — `NotebookEdit` edits Jupyter notebook (.ipynb) cells over the `ctx.fs` seam with CC's replace/insert/delete, real-id + `cell-<n>` addressing, and a read-before-write gate on `fs/observed` |
+| AskUserQuestion | ✅ | mounted via `dsh-user-questions` + `dsh-tool-ask-user` (harness 包，工具名 `ask_user_question`；UI provider 归宿主 app，无 provider 时优雅报错) |
 | ToolSearch (deferred tools) | ✅ | `core/tool-search` |
 | Sandbox | ✅ | `dsh-sandbox-local` + policy (base) |
 | Credentials | ✅ | `dsh-credentials-local` (base) |
 | Notifications (bell/OS/iterm) | ❌ | no notification seam in deepseek-harness; needs a new design |
 | Vim mode / keybindings / statusline / ghost text | ❌ | interactive-terminal features; the harness is headless/web-first — a terminal-REPL shell would be a separate design domain |
-| IDE integration / LSP | 🔶 | upstream `dsh-lsp` exists but is not mounted; no `/ide`, no editor pods |
+| IDE integration / LSP | ✅ | mounted via `dsh-lsp`/`dsh-lsp-stdio`/`dsh-tool-lsp` 三包（`ctx.lsp` provider registry + stdio provider + 模型工具 `lsp`，goToDefinition/findReferences/goToImplementation/hover）；`/ide` 与 editor pods 属交互壳范畴，headless 仍不适用 |
 | Remote / web sessions | 🔶 different | CC `bridge/` is claude.ai-bound 🚫; dsh has its own web/host/sdk/acp stack outside this repo |
 | Voice | 🚫 | vendor feature, no design asset |
 | Buddy / KAIROS / undercover / ultraplan / computer-use | 🚫 | Anthropic-internal or vendor-bound |
 | Onboarding / tips | ❌ | no package or design doc |
 
-## Hook events (16 of 30 bridged)
+## Hook events (18 of 30 bridged)
 
 Supported now: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`Stop`, `SubagentStart`, `SubagentStop`, `PermissionRequest`, `PermissionDenied`,
-`Notification` (`permission_prompt` subtype only), `PostCompact`, `SessionEnd`,
-`StopFailure`, `TaskCreated`, `TeammateIdle`, `Setup` (first-run approximation).
+`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`,
+`PermissionRequest`, `PermissionDenied`, `Notification` (`permission_prompt`
+subtype only), `PostCompact`, `SessionEnd`, `StopFailure`, `TaskCreated`,
+`TeammateIdle`, `Setup` (first-run approximation), `SessionResume` (`resume`
+source only).
 
 Not bridged (with reason):
 - `PreCompact` — needs an upstream compaction waterfall seam (planned).
 - `Notification` subtypes `idle_prompt` / `auth_success` / `elicitation*` — no
   equivalent seam in a headless harness (cannot map).
-- `PostToolUseFailure`, `UserPromptCancel`, `SessionResume`, and the remaining
-  CC event×source payload variants — tracked as hook-bridge follow-ups in the
-  package README.
+- `UserPromptCancel` — no dsh cancel seam; the bridge does not do a lossy
+  approximation (not bridged by design).
+- `SessionResume` `clear`/`compact` sources — no dsh emit point (pending; only
+  `resume` is bridged).
+- The remaining CC event×source payload variants — tracked as hook-bridge
+  follow-ups in the package README.
 
 Executors: `command`, `http` (SSRF-allowlisted via `allowedHttpHookUrls`),
 `prompt`, `agent` (forked subagent; gated by `enablePromptHooks` /
@@ -102,3 +108,8 @@ commands (🚫 vendor-bound).
    parity).
 4. `PreCompact` interception seam in `dsh-compaction`.
 5. Human-facing todo-list seam for `/tasks`.
+6. Memory freshness — CC threads `mtimeMs` through recall and ages memories
+   (`memoryAge`). Both depend on the harness `FsInfo` carrying mtime; the
+   current `dsh-fs` seam does not expose it, so mtime tracking and `memoryAge`
+   are deferred until the seam grows an mtime field (see the Memory row above
+   and the `memory` package README Known Limitations).

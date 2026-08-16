@@ -40,12 +40,28 @@ project 根是最近包含 `.git` 的祖先；若无则使用当前 cwd。skill 
 
 ## 语义翻译
 
-Provider 原样解析并提供 Claude Code 字段；在激活时将它们应用到 harness 接缝是消费方的职责。本包导出的翻译器：
+Provider 原样解析并提供 Claude Code 字段；对大多数字段，在激活时将它们应用到 harness 接缝是消费方的职责（`paths` 是例外 —— 见[条件激活](#条件激活)，由本 Provider 自行接线）。本包导出的翻译器：
 
 - `ccRestriction(allowedTools)` — 将 `allowed-tools` 转成仅允许（allow-only）的 `tools.restrict()` 过滤器（`*` 或空列表给出 `undefined`，因此该 skill 继承调用方的表面）。
-- `ccPathMatcher(patterns)` / `registerPathActivator(ctx, ...)` — 将 gitignore 风格的 `paths` 转为条件激活：当 Read/Write/Edit 工具触碰匹配文件时，`fs/observed` 监听器触发 `onActivate`。
+- `ccPathMatcher(patterns)` / `registerPathActivator(ctx, ...)` — 条件激活背后的低层原语（见下文）。
 - `ccInvocation(parsed)` — 将 `disable-model-invocation` 与 `user-invocable` 解析为注册表的调用策略。
 - `context: fork` — 以 `metadata.executionContext` 形式呈现；消费方将该 skill 与其渲染后的正文一起路由到 `ctx.subagents.start()`。
+
+## 条件激活
+
+frontmatter 声明了 `paths` 的 skill 是*条件* skill，与 Claude Code 语义一致：直到 Read/Write/Edit 工具触碰了匹配其 gitignore 风格、项目相对 `paths` 之一时，它才会被提供。Provider 在 `apply()` 时自行接线：
+
+1. `list()` 解析每个候选；带 `paths` 门控的 skill 在激活前**从目录中排除**。
+2. 在 `fs/observed` 上，`read`/`write`/`edit` actor 触碰项目内匹配路径时将激活该 skill（仅一次 —— 重复触碰是幂等的），随后调用 provider 控制的 `invalidate()`。消费方通过 `skills/change` 重新拉取目录，该 skill 随即出现。
+3. `get()` 正常提供已激活的 skill。
+
+这是 `registerPathActivator` 接在 provider 的按项目实时条件目录上（该辅助函数的静态 `projects` 形态无法表达按 skill 的动态模式，因此 Provider 自行持有监听器，同时复用 `ccPathMatcher`）。已在目录中的 skill 绝不重复通知。
+
+## Bundled skill
+
+Provider 随包提供一个 Claude Code 自带 bundled skills 的可移植子集，作为包内 `SKILL.md` 文档，直接提供（无需落盘）。当前子集：`debug`、`simplify`、`batch`。它们以 `source: 'bundled'`、`rank = BUNDLED_SKILL_RANK`（600）提供，正文可通过 `get()` 获取。由于 600 是本包范围内最大的 rank，任何同名 managed（100）、project（200）、user（300）或 additional（400）skill 都会在同名冲突中胜出 —— 与 Claude Code 本地 skill 覆盖内置内容的优先级一致。
+
+CC 的 `verify` 与 `stuck` bundled skill **未移植**：两者都仅限 `USER_TYPE === 'ant'`，且 `verify` 的伴随正文/示例在 Claude Code 构建面中缺失，无法忠实复现。
 
 ## 渲染
 
@@ -53,6 +69,7 @@ Provider 原样解析并提供 Claude Code 字段；在激活时将它们应用�
 
 ## 已知限制与待办
 
-- **语义翻译在消费方完成** —— `allowed-tools`、`context: fork` 与 `paths` 以元数据和辅助函数形式呈现，而非自动应用，因为 Provider 在加载时没有 agent 引用。
+- **多数语义翻译在消费方完成** —— `allowed-tools`、`context: fork` 与 `argument-hint` 以元数据和辅助函数形式呈现，由消费方应用，因为 Provider 在加载时没有 agent 引用。`paths` 条件激活是例外，由本 Provider 应用。
 - **本包不执行内联 shell** —— 命令被提取并返回，执行是调用方的职责。
 - **单层发现** —— 仅识别 `<root>/<name>/SKILL.md` 与旧的顶层 `.claude/commands/*.md`。
+- **Bundled 子集不完整** —— 省略 `verify` 与 `stuck`（ant-only / 内容缺失）；`batch` 与 `debug` 的运行时注入值（工具名、日志路径）保留为其原文的占位符，而非在调用时解析。

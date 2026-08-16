@@ -40,12 +40,28 @@ Supported fields: `description`, `name`, `allowed-tools`, `argument-hint`, `argu
 
 ## Semantic translation
 
-The provider parses and serves Claude Code fields unchanged; applying them to harness seams is the consumer's job at activation time. The package exports the translators:
+The provider parses and serves Claude Code fields unchanged; for most fields applying them to harness seams is the consumer's job at activation time (`paths` is the exception — see [Conditional activation](#conditional-activation), which the provider wires itself). The package exports the translators:
 
 - `ccRestriction(allowedTools)` — turns `allowed-tools` into an allow-only `tools.restrict()` filter (a `*` or empty list yields `undefined`, so the skill inherits the caller's surface).
-- `ccPathMatcher(patterns)` / `registerPathActivator(ctx, ...)` — turns gitignore-style `paths` into conditional activation: an `fs/observed` listener fires `onActivate` when a Read/Write/Edit tool touches a matching file.
+- `ccPathMatcher(patterns)` / `registerPathActivator(ctx, ...)` — the low-level primitives behind conditional activation (see below).
 - `ccInvocation(parsed)` — resolves `disable-model-invocation` and `user-invocable` into the registry's invocation policy.
 - `context: fork` — surfaced as `metadata.executionContext`; consumers route the skill to `ctx.subagents.start()` with its rendered body.
+
+## Conditional activation
+
+A skill whose frontmatter declares `paths` is a *conditional* skill matching Claude Code's semantics: it is not served until a Read/Write/Edit tool touches a file that matches one of its gitignore-style project-relative `paths`. The provider wires this itself at `apply()`:
+
+1. `list()` parses every candidate; a `paths`-gated skill is **excluded from the catalog** until activated.
+2. On `fs/observed`, a `read`/`write`/`edit` actor touching a matching path inside the project activates that skill (once — repeat touches are idempotent), then calls the provider control's `invalidate()`. Consumers refetch the catalog via `skills/change` and the skill now appears.
+3. `get()` serves the activated skill normally.
+
+This is `registerPathActivator` wired onto the provider's live per-project conditional catalog (the helper's static `projects` shape cannot model per-skill dynamic patterns, so the provider owns the listener while reusing `ccPathMatcher`). Skills already in the catalog never re-notify.
+
+## Bundled skills
+
+The provider ships a portable subset of Claude Code's own bundled skills as in-package `SKILL.md` documents, served directly (no disk extraction). Current subset: `debug`, `simplify`, `batch`. They are provided with `source: 'bundled'`, `rank = BUNDLED_SKILL_RANK` (600), and bodies available via `get()`. Because 600 is the highest rank in this package's range, any managed (100), project (200), user (300), or additional (400) skill of the same name wins the name conflict — matching Claude Code's precedence where local skills override built-ins.
+
+CC's `verify` and `stuck` bundled skills are **not** ported: both are `USER_TYPE === 'ant'`-only, and `verify`'s companion body/examples are absent from the Claude Code build surface, so they cannot be reproduced faithfully.
 
 ## Rendering
 
@@ -53,6 +69,7 @@ The provider parses and serves Claude Code fields unchanged; applying them to ha
 
 ## Known Limitations and Deferred Work
 
-- **Semantic translation is consumer-side** — `allowed-tools`, `context: fork`, and `paths` are surfaced as metadata and helpers, not applied automatically, because a provider has no agent reference at load time.
+- **Most semantic translation is consumer-side** — `allowed-tools`, `context: fork`, and `argument-hint` are surfaced as metadata and helpers and applied by the consumer, because a provider has no agent reference at load time. `paths` conditional activation is the exception and is applied by this provider.
 - **Inline shell is not executed by this package** — commands are extracted and returned; execution is the caller's responsibility.
 - **One-level discovery** — only `<root>/<name>/SKILL.md` and legacy top-level `.claude/commands/*.md` are recognized.
+- **Bundled subset is partial** — `verify` and `stuck` are omitted (ant-only / missing content); `batch`'s and `debug`'s runtime-injected values (tool names, log paths) are kept as authored literal placeholders rather than resolved at invocation.
