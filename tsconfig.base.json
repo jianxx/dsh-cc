@@ -29,6 +29,9 @@
       "@jianxx/dsh-cc-settings-cascade": [
         "./packages/settings/settings-cascade/src/index.ts"
       ],
+      "@jianxx/dsh-cc-settings-migrations": [
+        "./packages/settings/settings-migrations/src/index.ts"
+      ],
       "@jianxx/dsh-cc-permission-rules": [
         "./packages/interaction/permission-rules/src/index.ts"
       ],
@@ -70,6 +73,15 @@
       ],
       "@jianxx/dsh-cc-tool-git-worktree": [
         "./packages/workspace/tool-git-worktree/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tool-sleep": [
+        "./packages/core/tool-sleep/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tool-structured-output": [
+        "./packages/core/tool-structured-output/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tool-notebook-edit": [
+        "./packages/core/tool-notebook-edit/src/index.ts"
       ],
       "@jianxx/dsh-cc-output-styles": [
         "./packages/compat/cc-output-styles/src/index.ts"

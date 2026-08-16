@@ -5,9 +5,15 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
-  "files": ["lib", "cordis.patch.yml"],
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
   "exports": {
-    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
@@ -40,6 +46,9 @@
     "@jianxx/dsh-cc-compaction-micro": "workspace:^",
     "@jianxx/dsh-cc-coordinator": "workspace:^",
     "@jianxx/dsh-cc-tool-git-worktree": "workspace:^",
+    "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
+    "@jianxx/dsh-cc-tool-sleep": "workspace:^",
+    "@jianxx/dsh-cc-tool-structured-output": "workspace:^",
     "@jianxx/dsh-cc-command-branch": "workspace:^",
     "@jianxx/dsh-cc-command-config": "workspace:^",
     "@jianxx/dsh-cc-command-cost": "workspace:^",
@@ -59,7 +68,8 @@
     "@jianxx/dsh-cc-command-status": "workspace:^",
     "@jianxx/dsh-cc-command-tasks": "workspace:^",
     "@jianxx/dsh-cc-command-version": "workspace:^",
-    "@jianxx/dsh-cc-hooks-claude-code": "workspace:^"
+    "@jianxx/dsh-cc-hooks-claude-code": "workspace:^",
+    "@jianxx/dsh-cc-settings-migrations": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
@@ -77,6 +87,7 @@
     "@deepseek-ai/dsh-tools": "link:../../../../deepseek-harness/packages/core/tools",
     "@deepseek-ai/dsh-web": "link:../../../../deepseek-harness/packages/web/web",
     "@deepseek-ai/dsh-web-fetch-http": "link:../../../../deepseek-harness/packages/web/web-fetch-http",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "@deepseek-ai/dsh-fs-local": "link:../../../../deepseek-harness/packages/fs/fs-local"
   }
 }

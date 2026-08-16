@@ -5,6 +5,9 @@
       "path": "./packages/settings/settings-cascade"
     },
     {
+      "path": "./packages/settings/settings-migrations"
+    },
+    {
       "path": "./packages/interaction/permission-rules"
     },
     {
@@ -42,6 +45,15 @@
     },
     {
       "path": "./packages/workspace/tool-git-worktree"
+    },
+    {
+      "path": "./packages/core/tool-sleep"
+    },
+    {
+      "path": "./packages/core/tool-structured-output"
+    },
+    {
+      "path": "./packages/core/tool-notebook-edit"
     },
     {
       "path": "./packages/compat/cc-output-styles"

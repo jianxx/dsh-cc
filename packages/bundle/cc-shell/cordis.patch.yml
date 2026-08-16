@@ -43,6 +43,11 @@
     - id: cc-output-styles
       name: '@jianxx/dsh-cc-output-styles'
 
+    # Settings migrations: apply version-gated settings.json migrations at startup
+    # (equivalent to CC's runMigrations). Empty registry — mechanism only — for now.
+    - id: settings-migrations
+      name: '@jianxx/dsh-cc-settings-migrations'
+
     # Model-free staleness microcompaction (auto: false by default).
     - id: compaction-micro
       name: '@jianxx/dsh-cc-compaction-micro'
@@ -72,6 +77,19 @@
     # ── tools + hooks ───────────────────────────────────────────────────────
     - id: tool-git-worktree
       name: '@jianxx/dsh-cc-tool-git-worktree'
+
+    - id: tool-sleep
+      name: '@jianxx/dsh-cc-tool-sleep'
+
+    # NotebookEdit: edits Jupyter notebook (.ipynb) cells over the ctx.fs seam
+    # with CC's replace/insert/delete, cell addressing, and read-before-write gate.
+    - id: tool-notebook-edit
+      name: '@jianxx/dsh-cc-tool-notebook-edit'
+
+    # StructuredOutput: non-interactive structured-final-response channel, registered
+    # only when the deployment declares a schema (CC's SyntheticOutputTool).
+    - id: tool-structured-output
+      name: '@jianxx/dsh-cc-tool-structured-output'
 
     # Claude Code hook bridge: 16 of 30 hook events (see hooks-claude-code README
     # for the supported set). PreToolUse/PostToolUse et al., command hooks +
