@@ -179,6 +179,9 @@ importers:
       '@deepseek-ai/cordis-plugin-loader':
         specifier: link:../../../../deepseek-harness/vendor/loader
         version: link:../../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-fs-local':
+        specifier: link:../../../../deepseek-harness/packages/fs/fs-local
+        version: link:../../../../deepseek-harness/packages/fs/fs-local
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
@@ -399,6 +402,9 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: link:../../../../deepseek-harness/packages/llm/llm
         version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../../deepseek-harness/packages/core/system-prompt
+        version: link:../../../../deepseek-harness/packages/core/system-prompt
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../tools
