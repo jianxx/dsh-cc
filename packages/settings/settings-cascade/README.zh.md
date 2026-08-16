@@ -34,7 +34,7 @@
 
 ## 权限 schema
 
-`permissions` 字段 schema（`allow`、`deny`、`ask`、`defaultMode`、`disableBypassPermissionsMode`、`additionalDirectories`）与 Claude Code 的 settings.json 一致，以 `PermissionsSchema` 导出（连同 `PermissionRuleSchema` 与 `PERMISSION_MODES`），供权限规则引擎使用。
+`permissions` 字段 schema（`allow`、`deny`、`ask`、`defaultMode`、`disableBypassPermissionsMode`、`additionalDirectories`、`protectedFiles`、`dangerousPatterns`）与 Claude Code 的 settings.json 一致，以 `PermissionsSchema` 导出（连同 `PermissionRuleSchema` 与 `PERMISSION_MODES`），供权限规则引擎使用。
 
 ## 模型体验
 

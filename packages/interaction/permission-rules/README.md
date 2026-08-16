@@ -23,12 +23,13 @@ Malformed rules (unclosed paren, content after the closing paren, content with n
 The plugin registers a `tools/pre-execute` listener and folds one decision per call:
 
 1. **Bypass-immune** content rules (e.g. `.git` internals, shell-config paths) always deny — registered as monotonic **guards**, never overridable by a mode switch or `bypassPermissions`.
-2. **whole-tool deny** → deny.
-3. **whole-tool ask** → ask (a sandboxed, confining `Bash` is exempt and allowed instead when `exemptSandboxedBashFromToolAsk` is set).
-4. **content-level allow/deny/ask** rules by source priority (highest source first; first rule to match decides).
-5. **mode** short-circuits: `bypassPermissions` allows everything (unless `disableBypassPermissionsMode`); `acceptEdits` auto-allows file-edit tools; `plan` auto-allows read-only tools.
-6. **whole-tool allow** is the coarse default for that tool when nothing more specific matched.
-7. **no match** → passthrough to downstream listeners (ultimately the approval seam), which may still `ask`.
+2. **Risk classifier** (when `classifierEnabled`, default on): catastrophic shell commands (`rm -rf /`, `sudo`, `dd of=/dev`, `kill -9 1`, piping curl/wget into sh, redirecting into system paths) are a hard **deny in every mode**; writes to protected files (`.bashrc`, `.ssh/**`, credentials) are also hard denies; writes that escape the working directory scope are **ask** outside `bypassPermissions` (allowed under it).
+3. **whole-tool deny** → deny.
+4. **whole-tool ask** → ask (a sandboxed, confining `Bash` is exempt and allowed instead when `exemptSandboxedBashFromToolAsk` is set).
+5. **content-level allow/deny/ask** rules by source priority (highest source first; first rule to match decides).
+6. **mode** short-circuits: `bypassPermissions` allows everything (unless `disableBypassPermissionsMode`); `acceptEdits` auto-allows file-edit tools; `plan` auto-allows read-only tools.
+7. **whole-tool allow** is the coarse default for that tool when nothing more specific matched.
+8. **no match** → passthrough to downstream listeners (ultimately the approval seam), which may still `ask`.
 
 ## Config
 
@@ -45,6 +46,7 @@ await ctx.plugin(PermissionRules, {
   readOnlyTools: ['read'],        // auto-allowed under plan
   exemptSandboxedBashFromToolAsk: false,
   defaultMode: 'default',
+  classifierEnabled: true,        // risk-classifier escalation stage
 })
 ```
 
@@ -52,7 +54,7 @@ All fields are optional; the service schema applies the illustrated defaults. Ru
 
 ## Settings and hot reload
 
-When `ctx.settings` is mounted, the plugin registers the `permissions` namespace (`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`). Settings rules carry the `settingsSource` label (default `userSettings`) and merge with Config `rules` by source priority — settings rules win. A stored change re-runs the merge and re-registers guards immediately (hot reload); a malformed settings rule fails loud at the settings boundary. When `ctx.settings` is absent, only the Config `rules` are in force.
+When `ctx.settings` is mounted, the plugin registers the `permissions` namespace (`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`, plus `additionalDirectories` / `protectedFiles` / `dangerousPatterns` feeding the risk classifier). Settings rules carry the `settingsSource` label (default `userSettings`) and merge with Config `rules` by source priority — settings rules win. A stored change re-runs the merge and re-registers guards immediately (hot reload); a malformed settings rule fails loud at the settings boundary. When `ctx.settings` is absent, only the Config `rules` are in force (the classifier uses its curated defaults).
 
 ## Sources and modes
 
@@ -64,6 +66,8 @@ Every rule carries a `PermissionRuleSource` (`session` > `cliArg` > `policySetti
 - `evaluatePermission(input)` — fold a `PermissionDecision` for a call (`allow` / `deny` / `ask` / `passthrough`) given tool, subject, rule set, mode, and exemption flags. Use it to preview what a rule hits without mounting the plugin.
 - `mergeRuleSets(...sets)` — merge rule sets by source priority.
 - `foldPermissionMode(events)` — fold a session's recorded mode.
+- `assessBashCommand(command, patterns?)` — risk-classify a shell command (`LOW`/`HIGH`).
+- `assessFilePath(filePath, opts)` — risk-classify a file write (`LOW`/`MEDIUM`/`HIGH`).
 - `PERMISSION_MODES`, `SOURCE_PRIORITY` — closed vocabularies.
 
 Rule parsing and evaluation are browser-safe (pure string logic), so the type/parser/evaluate modules import cleanly into UI previews.

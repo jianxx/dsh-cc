@@ -23,12 +23,13 @@ Claude Code 兼容的权限规则引擎。解析 `ToolName` 与 `ToolName(conten
 插件注册一个 `tools/pre-execute` 监听器，为每次调用收敛一个判定：
 
 1. **Bypass-immune** 内容规则（例如 `.git` 内部、shell 配置文件路径）始终 deny——注册为单调 **guard**，模式切换或 `bypassPermissions` 都不能覆盖。
-2. **整工具 deny** → deny。
-3. **整工具 ask** → ask（当设置了 `exemptSandboxedBashFromToolAsk` 时，被沙箱限制的 `Bash` 豁免并直接 allow）。
-4. **内容级 allow/deny/ask** 规则按来源优先级评估（最高优先级先；首个命中规则决定）。
-5. **模式**短路：`bypassPermissions` 放行一切（除非 `disableBypassPermissionsMode`）；`acceptEdits` 自动放行文件编辑工具；`plan` 自动放行只读工具。
-6. **整工具 allow** 是该工具的粗略默认——没有更具体的规则命中时放行。
-7. **无命中** → passthrough 给下游监听器（最终到审批缝），后者仍可能 `ask`。
+2. **风险分类器**（`classifierEnabled` 开启时，默认开）：灾难性 shell 命令（`rm -rf /`、`sudo`、`dd of=/dev`、`kill -9 1`、将 curl/wget 管道接入 sh、重定向到系统路径）在所有模式下**硬 deny**；写入受保护文件（`.bashrc`、`.ssh/**`、凭据）同样硬 deny；写文件逃逸出工作目录作用域时在 `bypassPermissions` 之外 **ask**（在它之下放行）。
+3. **整工具 deny** → deny。
+4. **整工具 ask** → ask（当设置了 `exemptSandboxedBashFromToolAsk` 时，被沙箱限制的 `Bash` 豁免并直接 allow）。
+5. **内容级 allow/deny/ask** 规则按来源优先级评估（最高优先级先；首个命中规则决定）。
+6. **模式**短路：`bypassPermissions` 放行一切（除非 `disableBypassPermissionsMode`）；`acceptEdits` 自动放行文件编辑工具；`plan` 自动放行只读工具。
+7. **整工具 allow** 是该工具的粗略默认——没有更具体的规则命中时放行。
+8. **无命中** → passthrough 给下游监听器（最终到审批缝），后者仍可能 `ask`。
 
 ## 配置
 
@@ -45,6 +46,7 @@ await ctx.plugin(PermissionRules, {
   readOnlyTools: ['read'],        // auto-allowed under plan
   exemptSandboxedBashFromToolAsk: false,
   defaultMode: 'default',
+  classifierEnabled: true,        // 风险分类器升级阶段
 })
 ```
 
@@ -52,7 +54,7 @@ await ctx.plugin(PermissionRules, {
 
 ## settings 与热更新
 
-当 `ctx.settings` 挂载时，插件注册 `permissions` 命名空间（`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`）。settings 规则携带 `settingsSource` 标签（默认 `userSettings`），并按来源优先级与 Config `rules` 合并——settings 规则优先。存储变更会立即重跑合并并重注册 guard（热更新）；畸形 settings 规则在 settings 边界 fail loud。当 `ctx.settings` 缺席时，仅 Config `rules` 生效。
+当 `ctx.settings` 挂载时，插件注册 `permissions` 命名空间（`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`，另加供风险分类器使用的 `additionalDirectories` / `protectedFiles` / `dangerousPatterns`）。settings 规则携带 `settingsSource` 标签（默认 `userSettings`），并按来源优先级与 Config `rules` 合并——settings 规则优先。存储变更会立即重跑合并并重注册 guard（热更新）；畸形 settings 规则在 settings 边界 fail loud。当 `ctx.settings` 缺席时，仅 Config `rules` 生效（分类器使用其精选默认值）。
 
 ## 来源与模式
 
@@ -64,6 +66,8 @@ await ctx.plugin(PermissionRules, {
 - `evaluatePermission(input)`——为一次调用收敛 `PermissionDecision`（`allow` / `deny` / `ask` / `passthrough`），给定工具、subject、规则集、模式与豁免标志。无需挂载插件即可预览某规则会命中什么。
 - `mergeRuleSets(...sets)`——按来源优先级合并规则集。
 - `foldPermissionMode(events)`——折叠会话记录的模式。
+- `assessBashCommand(command, patterns?)`——对 shell 命令做风险分级（`LOW`/`HIGH`）。
+- `assessFilePath(filePath, opts)`——对文件写入做风险分级（`LOW`/`MEDIUM`/`HIGH`）。
 - `PERMISSION_MODES`、`SOURCE_PRIORITY`——封闭词汇表。
 
 规则解析与评估是浏览器安全的（纯字符串逻辑），因此类型/解析/评估模块可干净地导入 UI 预览。

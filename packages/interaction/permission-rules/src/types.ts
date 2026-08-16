@@ -1,9 +1,12 @@
 /**
  * Shared types for the permission-rule engine: rule, source, mode, and the
- * pure evaluation decision. Browser-safe — no Cordis/session imports, so the
- * host UI (which previews what a rule hits) can import this subpath directly.
+ * pure evaluation decision. Browser-safe — the only session dependency is a
+ * type-only import (erased at emit), so the host UI (which previews what a
+ * rule hits) can import this subpath directly.
  * @module @jianxx/dsh-cc-permission-rules/types
  */
+
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /** Where a {@link PermissionRule} came from, in descending evaluation priority. */
 export type PermissionRuleSource =
@@ -48,6 +51,21 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermiss
 
 /** Every {@link PermissionMode}, for option advertisement and runtime validation of untrusted strings. */
 export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+
+/**
+ * Fold the session's permission mode from its `permission/mode` events; the
+ * last one wins. Plan activation is not recorded here — the engine overlays it
+ * from plan state at call time.
+ * @param events - session events in log order; other types are ignored.
+ * @returns the last recorded mode, or undefined without one.
+ */
+export function foldPermissionMode(events: readonly SessionEvent[]): PermissionMode | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event !== undefined && event.type === 'permission/mode') return event.data.mode
+  }
+  return undefined
+}
 
 /**
  * One parsed permission rule. `toolName` is the exact tool the rule governs;
