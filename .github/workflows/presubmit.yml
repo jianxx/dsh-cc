@@ -12,6 +12,9 @@
 #      restore/save 缓存,命中即跳过 build:lib(占全流水线 ~62%);save 紧跟
 #      build 步(success() 门控防半截产物投毒,且后续测试红推 iteration 仍
 #      能保有已建缓存)。node_modules 1.4G 不入缓存,install 每跑必做。
+#      产物 glob 为固定深度且恰等于 tsdown workspace 声明的 build:lib 输出集,
+#      不用 **:@actions/glob 的 ** 跟随符号链接,会在 pnpm symlink 树上组合
+#      爆炸(实测 save 19min 未果);harness 包深度/tsdown workspace 变更需同步。
 #
 # deepseek-harness pin 升级流程:harness master 验证通过后,更新上方 env 的
 # DSH_HARNESS_REF 到新 SHA 并连同本仓适配修改一起提交。改 ref 即换 cache key,
@@ -71,11 +74,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            deepseek-harness/packages/**/lib
-            deepseek-harness/vendor/**/lib
-            deepseek-harness/apps/**/lib
-            deepseek-harness/native/**/lib
-            !deepseek-harness/**/node_modules/**
+            deepseek-harness/packages/*/*/lib
+            deepseek-harness/vendor/*/lib
+            deepseek-harness/apps/cli/lib
           key: harness-lib-${{ env.DSH_HARNESS_REF }}
 
       - name: Install deepseek-harness deps
@@ -92,11 +93,9 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            deepseek-harness/packages/**/lib
-            deepseek-harness/vendor/**/lib
-            deepseek-harness/apps/**/lib
-            deepseek-harness/native/**/lib
-            !deepseek-harness/**/node_modules/**
+            deepseek-harness/packages/*/*/lib
+            deepseek-harness/vendor/*/lib
+            deepseek-harness/apps/cli/lib
           key: harness-lib-${{ env.DSH_HARNESS_REF }}
 
       - name: Install dsh-cc-plugins deps
