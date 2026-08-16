@@ -107,7 +107,7 @@ describe('parseClaudeCodeConfig', () => {
 
   it('ignores invalid matchers on unsupported events without dropping supported hooks', () => {
     const { config } = parseClaudeCodeConfig({
-      Setup: [{ matcher: '(', hooks: [{ type: 'command', command: 'ignored.sh' }] }],
+      PreCompact: [{ matcher: '(', hooks: [{ type: 'command', command: 'ignored.sh' }] }],
       PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'kept.sh' }] }],
     })
 

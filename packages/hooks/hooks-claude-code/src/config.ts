@@ -24,6 +24,15 @@ const CLAUDE_EVENTS = [
   'Stop',
   'SubagentStart',
   'SubagentStop',
+  'PermissionRequest',
+  'PermissionDenied',
+  'Notification',
+  'PostCompact',
+  'SessionEnd',
+  'StopFailure',
+  'TaskCreated',
+  'TeammateIdle',
+  'Setup',
 ] as const
 
 /** A parsed CC config: event name → its matcher groups (any executor kind). */
