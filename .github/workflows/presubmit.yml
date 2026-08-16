@@ -31,7 +31,7 @@ on:
 
 env:
   # deepseek-harness pin:checkout ref 与 harness 产物 cache key 的单一事实源
-  DSH_HARNESS_REF: master
+  DSH_HARNESS_REF: e3e27afa2e534c15df2b3093b413fe808a4ce7ca
 
 permissions:
   contents: read
