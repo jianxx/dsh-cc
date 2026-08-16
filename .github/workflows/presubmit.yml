@@ -61,7 +61,7 @@ jobs:
         working-directory: deepseek-harness
         run: pnpm install --frozen-lockfile
 
-      - name: Build deepseek-harness lib (link: 的消费点;跳过 build:web)
+      - name: 'Build deepseek-harness lib (link: 的消费点;跳过 build:web)'
         working-directory: deepseek-harness
         run: pnpm run build:lib
 
