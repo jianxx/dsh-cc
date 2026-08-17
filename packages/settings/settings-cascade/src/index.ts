@@ -5,18 +5,22 @@
  * The merged raw document feeds the user-settings seam, whose namespace
  * resolution layers schema defaults, the registrant `base`, and this user
  * layer in turn. A top-level `env` section is split out and applied in two
- * stages, holding dangerous variables until trust.
+ * stages, holding dangerous variables until trust. Writes are write-through
+ * to the user layer: they arrive here as a complete merged section and are
+ * diffed back onto the user settings file, so higher-layer contributions stay
+ * read-side only.
  * @module @jianxx/dsh-cc-settings-cascade
  */
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { readFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { mergeSettingsSection } from './merge.ts'
 import { coerceEnv, type EnvSettings } from './env.ts'
+import { applyOpsToSection, diffSections, readUserFile, writeJsonAtomic } from './persist.ts'
 
 export { mergeValue, mergeSettingsSection, unionDenyPrecedence } from './merge.ts'
 export { PermissionsSchema, PERMISSION_MODES, type Permissions, type PermissionMode } from './permissions.ts'
@@ -122,8 +126,10 @@ export function resolveSpec(config: Config): ResolvedSpec {
  * project, local, flag, and policy sources in low-to-high priority, deep-merges
  * them (permission arrays union with `deny` precedence), resolves policy by
  * first-source-wins, splits out the top-level `env` section, and publishes the
- * merged per-namespace document into `ctx.settings`. Read-only: the seam's
- * in-process `update()`/`replace()` paths reject on this provider.
+ * merged per-namespace document into `ctx.settings`. Writes are write-through
+ * to the user layer: a merged section is persisted as a surgical leaf-delta
+ * applied onto the user settings file, keeping project/local/flag/policy
+ * contributions read-side only.
  */
 export class SettingsCascadeProvider extends SettingsProvider {
   static Config: z<Config> = z.object({
@@ -144,6 +150,15 @@ export class SettingsCascadeProvider extends SettingsProvider {
   private readonly spec: ResolvedSpec
   /** The top-level `env` section split out of the merged document, string-valued. */
   private env: EnvSettings = {}
+  /**
+   * Mirror of exactly what we last published to the seam via `load()`, and what
+   * persist has durably stored. Invariant: shadow moves only when the seam's
+   * document moves — it is updated at the end of a successful `load()` and,
+   * in `persist()`, only AFTER the atomic rename resolves. Never update it in
+   * a `finally` or ahead of a throw. If a file watcher is ever added, any
+   * `publish(doc)` path must also update this shadow.
+   */
+  private shadow: Record<string, unknown> = {}
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -152,22 +167,59 @@ export class SettingsCascadeProvider extends SettingsProvider {
     this.spec = resolveSpec(config)
   }
 
-  /** The cascade is a read-only composition; namespaces write through their leaf provider. */
+  /** The cascade is now writable; writes edit the user layer. */
   get writable(): boolean {
-    return false
+    return true
+  }
+
+  /** Absolute path of the user-editable document (the cascade's user source). */
+  override get documentPath(): string {
+    const path = this.spec.sources.userSettings
+    if (path === undefined) {
+      throw new Error('settings-cascade: userSettings source is not configured; no user layer to edit')
+    }
+    return path
   }
 
   /**
-   * Refuse any write: the seam rejects writes on a read-only provider before
-   * reaching this method, so it never runs; it exists to satisfy the abstract
-   * contract and fails loud if a subclass ever routes a write through it.
+   * Materialize the user-editable document for a native editor. The parent
+   * directory is created and an absent document is seeded with an empty
+   * namespace map. It intentionally does NOT call {@link SettingsProvider.publish}:
+   * the cascade document is the five-layer merge, and publishing `{}` here
+   * would clobber project/local/flag/policy contributions in-process (the
+   * stock file provider publishes `{}` only because its document is the user
+   * file one-to-one).
+   * @returns the absolute local document path after materialization.
+   */
+  override async prepareDocument(): Promise<string> {
+    const path = this.documentPath
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    await writeFile(path, '{}\n', { flag: 'wx', mode: 0o600 }).catch(error => {
+      if (error?.code !== 'EEXIST') throw error
+    })
+    return path
+  }
+
+  /**
+   * Durably persist one namespace's merged user section by editing the user
+   * layer. The section (the seam's complete merged section for the namespace)
+   * is diffed against the shadow of what we last published, the delta is
+   * applied onto the user settings file's own section for that namespace, and
+   * the file is rewritten atomically. The shadow advances only after the
+   * atomic rename resolves, so an interrupted persist never desyncs it.
    * @param ns - the namespace being written.
-   * @param section - the section whose persistence was attempted.
+   * @param section - the complete merged user section to store.
    */
   protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    void ns
-    void section
-    throw new Error('settings-cascade: the cascade provider is read-only and cannot persist')
+    const path = this.documentPath
+    const ops = diffSections(this.shadow[ns] ?? {}, section)
+    const root = await readUserFile(path)
+    if (ops.length > 0) {
+      const next = applyOpsToSection(root[ns], ops)
+      const updated = { ...root, [ns]: next }
+      await writeJsonAtomic(path, updated)
+    }
+    this.shadow[ns] = structuredClone(section)
   }
 
   /**
@@ -203,6 +255,7 @@ export class SettingsCascadeProvider extends SettingsProvider {
 
     const { env, ...document } = merged
     this.env = this.coerceEnvSection(env)
+    this.shadow = structuredClone(document)
     return document
   }
 
