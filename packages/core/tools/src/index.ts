@@ -13,6 +13,7 @@ import { assertNever, deepFreeze, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, UserMessage } from '@deepseek-ai/dsh-session'
+import { createRequire } from 'node:module'
 import type { ToolProviderResult } from '@deepseek-ai/dsh-system-prompt'
 import type { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
 // Type-only: makes `ctx.get('approval')` resolve to the ApprovalService
@@ -459,11 +460,24 @@ export interface ToolRuntimeScheduler {
   finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult
 }
 
+declare const upstreamSchedulerSymbol: unique symbol
+
 /**
  * Scheduler entry point omitted from the generated named service API.
+ * The value MUST be the upstream symbol instance: the in-box agent loop reads
+ * the staged scheduler off the registry through the symbol exported by
+ * `@deepseek-ai/dsh-tools`, and a `Symbol()` is identity-unique — minting a
+ * private one here leaves the loop reading `undefined` and crashing every
+ * turn's first tool call (`undefined.prepare`). The binding is a type-erased
+ * `createRequire` rather than a static import so upstream's declaration graph
+ * (its own `Context` augmentation, whose vendored copy this package also
+ * ships) never enters downstream type programs; the dependency stays
+ * runtime-only (peer-declared).
  * @internal
  */
-export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@jianxx/dsh-cc-tools.scheduler')
+export const TOOL_RUNTIME_SCHEDULER: typeof upstreamSchedulerSymbol = (
+  createRequire(import.meta.url)('@deepseek-ai/dsh-tools') as { TOOL_RUNTIME_SCHEDULER: typeof upstreamSchedulerSymbol }
+).TOOL_RUNTIME_SCHEDULER
 
 /** Canonical error code for cancellation after a tool body was invoked. */
 export const TOOL_ABORTED = 'ABORTED'
