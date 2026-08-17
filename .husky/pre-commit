@@ -3,9 +3,33 @@
 #   不引入 lint-staged:仓内无 eslint/prettier,无 staged 检查可执行。
 # worktree 自愈:worktree 无 node_modules(gitignored);首次 commit 前若未 link
 # 依赖,自动执行幂等的 scripts/link-worktree-deps.sh(主仓内 no-op)。
+set -e   # husky 真实提交路径已是 sh -e;此处为裸调用防护(见下)与 husky 版本漂移防御
+
+# git 会往 hook 环境注入仓库绑定变量(GIT_INDEX_FILE=.git/index,相对顶层;
+# 其他版本另有 GIT_DIR/GIT_PREFIX 等)。子孙进程以非顶层 cwd 调 git(临时仓库
+# 测试、git worktree add 内部在 linked worktree 重跑 reset——那里 .git 是指针
+# 文件)会按自己的 cwd 重解析,读写错位 index。统一摘除,使 gate 内 git 行为
+# 与手工执行一致。未设置的变量 unset 为 no-op。
+unset GIT_INDEX_FILE GIT_PREFIX GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
+# 锁文件护栏:gate 前后均不允许 pnpm-lock.yaml 存在未暂存漂移或冲突态。
+# 改 workspace 依赖须 pnpm install 并把 pnpm-lock.yaml 随同一 commit stage。
+lockfile_guard() {
+  if ! git diff --quiet -- pnpm-lock.yaml; then
+    echo "pre-commit: pnpm-lock.yaml has unstaged drift or a conflict state ($1)." >&2
+    echo "  regenerate and stage it (pnpm install && git add pnpm-lock.yaml)" >&2
+    echo "  or revert it (git restore pnpm-lock.yaml), then recommit." >&2
+    exit 1
+  fi
+}
+lockfile_guard before-gates
+
 if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
 pnpm check:spec-deps
 pnpm typecheck
 pnpm test
 pnpm check:subagent-paste
+
+lockfile_guard after-gates
