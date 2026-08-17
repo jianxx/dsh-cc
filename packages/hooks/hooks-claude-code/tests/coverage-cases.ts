@@ -240,6 +240,60 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
+  if (group === 'config') describe('hooks-claude-code coverage — CC canonical tool names (matchers + payloads)', () => {
+    /**
+     * Drive a direct no-agent PreToolUse call for harness tool `name`. Hooks:
+     * a matcher-gated group (touches `marker` only when the matcher selects the
+     * tool, via its CC aliases) and an always-run no-matcher group that captures
+     * the payload. Returns whether the matcher fired and the captured payload.
+     */
+    async function capturePreToolCall(name: string, matcher: string): Promise<{ fired: boolean; payload: Record<string, unknown> }> {
+      const d = dir()
+      const cap = join(d, 'payload')
+      const marker = join(d, 'fired')
+      const path = hooks(d, {
+        PreToolUse: [
+          { matcher, hooks: [{ type: 'command', command: sh(d, 'gated.sh', `#!/usr/bin/env bash\ntouch "${marker}"\n`) }] },
+          { hooks: [{ type: 'command', command: sh(d, 'cap.sh', `#!/usr/bin/env bash\ncat > "${cap}"\n`) }] },
+        ],
+      })
+      const ctx = await harness(path, new MockAdapter([]))
+      ctx.tools.register(defineContentToolFixture({ name, description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'x' }] } }))
+      const { CallId } = await import('@deepseek-ai/dsh-llm')
+      const result = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('c1'), name, arguments: {} })
+      expect(result.isError).toBe(false)
+      return {
+        fired: existsSync(marker),
+        payload: existsSync(cap) ? JSON.parse(readFileSync(cap, 'utf8')) as Record<string, unknown> : {},
+      }
+    }
+
+    it('a CC Read|Write matcher fires for harness read and write; payload uses the CC Read/Write name', async () => {
+      const read = await capturePreToolCall('read', 'Read|Write')
+      expect(read.fired).toBe(true)
+      expect(read.payload.tool_name).toBe('Read')
+      const write = await capturePreToolCall('write', 'Read|Write')
+      expect(write.fired).toBe(true)
+      expect(write.payload.tool_name).toBe('Write')
+    })
+
+    it('a CC Bash matcher fires for harness bash; payload uses Bash', async () => {
+      const bash = await capturePreToolCall('bash', 'Bash')
+      expect(bash.fired).toBe(true)
+      expect(bash.payload.tool_name).toBe('Bash')
+    })
+
+    it('a harness-only tool (ralph) keeps its name: CC Read does not fire; payload stays ralph', async () => {
+      // A CC matcher for a different tool must not fire for the harness-only name.
+      const ralph = await capturePreToolCall('ralph', 'Read')
+      expect(ralph.fired).toBe(false)
+      expect(ralph.payload.tool_name).toBe('ralph')
+      // Its own-name matcher (the sole alias) does fire.
+      const own = await capturePreToolCall('ralph', 'ralph')
+      expect(own.fired).toBe(true)
+    })
+  })
+
   if (group === 'stop') describe('hooks-claude-code coverage — Stop continuation + subagent inject/catch', () => {
     it('a Stop hook that blocks (exit 2) forces the turn to continue (CC dialect)', async () => {
       const d = dir()

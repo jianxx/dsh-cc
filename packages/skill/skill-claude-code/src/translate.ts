@@ -13,25 +13,35 @@
 import { relative } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsObservation, FsTarget } from '@deepseek-ai/dsh-fs'
-import type { ToolRestriction } from '@jianxx/dsh-cc-tools'
+import { translateToolNames, type ToolRestriction } from '@jianxx/dsh-cc-tools'
 
 /** Mutating first-party fs tools that should trigger path activation. */
 const TOUCH_TOOLS = new Set(['read', 'write', 'edit'])
 
 /**
  * Build an allow-only tool restriction from a Claude Code `allowed-tools` list.
- * A `*` entry (allow every tool) and an empty/missing list produce `undefined`,
+ * Names are translated leniently via {@link translateToolNames}: known CC names
+ * map to harness names (e.g. `Read` → `read` + `read_image`), names already in
+ * the harness registry pass through, and any unknown name is dropped — with a
+ * diagnostic — rather than crashing the session, because skill activation is
+ * user/model-driven. Arg-spec parens are stripped (name-level gate only), and
+ * every input dropping to nothing yields `undefined` (no restriction). A `*`
+ * entry (allow every tool) and an empty/missing list also produce `undefined`,
  * meaning no restriction applies; the skill then inherits the caller's surface.
  * Consumers apply the returned filter via `ctx.tools.restrict()` at activation.
  * @param allowedTools - parsed `allowed-tools` names, or undefined when absent.
+ * @param onDiagnostic - invoked for each dropped name; defaults to a no-op.
  * @returns an allow-only restriction, or `undefined` when nothing to restrict.
  */
 export function ccRestriction(
   allowedTools: readonly string[] | undefined,
+  onDiagnostic?: (message: string) => void,
 ): ToolRestriction | undefined {
   if (allowedTools === undefined || allowedTools.length === 0) return undefined
   if (allowedTools.includes('*')) return undefined
-  return { allow: [...allowedTools] }
+  const translated = translateToolNames(allowedTools, 'lenient', onDiagnostic)
+  if (translated === undefined) return undefined
+  return { allow: translated }
 }
 
 /**

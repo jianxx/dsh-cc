@@ -6,19 +6,29 @@ describe('resolveToolRestriction', () => {
     expect(resolveToolRestriction(undefined, undefined)).toBeUndefined()
   })
 
-  it('maps a tools allow-list to an allow restriction', () => {
-    expect(resolveToolRestriction(['Read', 'Write'], undefined)).toEqual({ allow: ['Read', 'Write'] })
+  it('maps a tools allow-list to an allow restriction, translating CC names to harness names', () => {
+    expect(resolveToolRestriction(['Read', 'Bash'], undefined))
+      .toEqual({ allow: ['read', 'read_image', 'bash'] })
   })
 
-  it('maps a disallowedTools deny-list to a deny restriction', () => {
-    expect(resolveToolRestriction(undefined, ['Write'])).toEqual({ deny: ['Write'] })
+  it('maps a disallowedTools deny-list to a deny restriction, expanding one-to-many CC names', () => {
+    expect(resolveToolRestriction(undefined, ['Read'])).toEqual({ deny: ['read', 'read_image'] })
   })
 
   it('places a name in both lists into allow and deny (deny wins by intersection)', () => {
     // A name in `tools` AND `disallowedTools` is denied: restrictions intersect,
-    // so deny removes it even from the allow list.
+    // so deny removes it even from the allow list. Translation applies to both.
     expect(resolveToolRestriction(['Read', 'Write'], ['Write']))
-      .toEqual({ allow: ['Read', 'Write'], deny: ['Write'] })
+      .toEqual({ allow: ['read', 'read_image', 'write'], deny: ['write'] })
+  })
+
+  it('strips a trailing arg-spec from a CC tool name', () => {
+    expect(resolveToolRestriction(['Bash(npm test)'], undefined)).toEqual({ allow: ['bash'] })
+  })
+
+  it('passes unknown tool names through verbatim so tools.restrict() fails loudly', () => {
+    expect(resolveToolRestriction(['LS', 'mcp__github__foo'], undefined))
+      .toEqual({ allow: ['LS', 'mcp__github__foo'] })
   })
 
   it('throws when tools holds a non-string element', () => {

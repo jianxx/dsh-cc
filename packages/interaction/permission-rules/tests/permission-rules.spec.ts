@@ -264,6 +264,68 @@ describe('session mode overrides (in-memory)', () => {
   })
 })
 
+describe('CC-vs-harness tool-name alias matching', () => {
+  // The harness dispatches tool calls under lowercase names (e.g. `bash`,
+  // `edit`); CC-authored rules keep their authored spelling (`Bash`, `Edit`).
+  // A lowercase harness tool answers to the CC-cased rule and vice versa.
+  function registerLowercaseBash(ctx: Context): void {
+    ctx.tools.register(defineContentToolFixture({
+      name: 'bash',
+      description: 'shell',
+      parameters: { command: { type: 'string' } },
+      async execute(args) { return [{ type: 'text', text: `ran:${(args as { command: string }).command}` }] },
+    }))
+  }
+
+  it('a CC-cased `Bash(npm run *)` rule matches harness exec.name `bash`', async () => {
+    const ctx = await mount({ rules: { deny: ['Bash(npm run *)'] } })
+    registerLowercaseBash(ctx)
+    const ok = await ctx.tools.execute(exec('bash', { command: 'echo hi' }))
+    expect(ok.isError).toBe(false)
+    const denied = await ctx.tools.execute(exec('bash', { command: 'npm run build' }))
+    expect(denied.isError).toBe(true)
+    expect(text(denied)).toMatch(/Bash\(npm run/)
+  })
+
+  it('a lowercase-authored `bash(...)` rule also matches harness exec.name `bash`', async () => {
+    const ctx = await mount({ rules: { deny: ['bash(echo hi)'] } })
+    registerLowercaseBash(ctx)
+    const denied = await ctx.tools.execute(exec('bash', { command: 'echo hi' }))
+    expect(denied.isError).toBe(true)
+    expect(text(denied)).toMatch(/bash\(echo hi\)/)
+  })
+
+  it('a CC-cased `Edit(...)` rule matches harness exec.name `edit`', async () => {
+    const ctx = await mount({ rules: { deny: ['Edit(a.ts)'] } })
+    const ok = await ctx.tools.execute(exec('edit', { file_path: 'b.ts' }))
+    expect(ok.isError).toBe(false)
+    const denied = await ctx.tools.execute(exec('edit', { file_path: 'a.ts' }))
+    expect(denied.isError).toBe(true)
+    expect(text(denied)).toMatch(/Edit\(a\.ts\)/)
+  })
+
+  it('the sandboxed-bash exemption fires for exec.name `bash` under the default `Bash` config', async () => {
+    const ctx = await mount({ rules: { ask: ['Bash'] }, exemptSandboxedBashFromToolAsk: true })
+    ctx.reflect.provide('shell', { get sandboxMode() { return 'workspace-write' } } as never)
+    registerLowercaseBash(ctx)
+    const agent = openTurnAgent('sbx')
+    // Sandbox-confined `bash` is exempted from the whole-tool ask, so it runs.
+    const result = await ctx.tools.execute(exec('bash', { command: 'ls' }, agent))
+    expect(result.isError).toBe(false)
+    expect(text(result)).toBe('ran:ls')
+  })
+
+  it('risk classification extracts the command for exec.name `bash`', async () => {
+    const ctx = await mount()
+    registerLowercaseBash(ctx)
+    const agent = openTurnAgent('rc-bash')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    const result = await ctx.tools.execute(exec('bash', { command: 'rm -rf /' }, agent))
+    expect(result.isError).toBe(true)
+    expect(text(result)).toMatch(/risk classifier/)
+  })
+})
+
 describe('risk-classifier escalation', () => {
   it('hard-denies a catastrophic command in every mode, including bypassPermissions', async () => {
     const ctx = await mount()

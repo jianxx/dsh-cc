@@ -52,11 +52,16 @@ export const PROVIDER = 'cc-plugin-loader'
 
 /**
  * Resolve the tool restriction for a skill from its `allowed-tools` allow-list.
+ * Names are translated leniently; unknown names are dropped with a diagnostic
+ * (routed to `console.warn`) rather than crashing the session.
  * @param metadata - the skill's translated CC metadata.
  * @returns an allow-only restriction, or `undefined` when nothing to restrict.
  */
 export function skillToolRestriction(metadata: CcSkillMetadata): ToolRestriction | undefined {
-  return ccRestriction(metadata.allowedTools)
+  return ccRestriction(metadata.allowedTools, (message: string): void => {
+    // No logging seam reaches here; surface dropped-name diagnostics on stderr.
+    console.warn(`[cc-plugin-loader] ${message}`)
+  })
 }
 
 /**

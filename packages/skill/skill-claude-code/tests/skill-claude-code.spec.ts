@@ -103,7 +103,9 @@ describe('dsh-skill-claude-code plugin', () => {
       paths: ['src'],
       arguments: ['query', 'mode'],
     })
-    expect(SkillCc.ccRestriction(loaded?.metadata?.allowedTools as string[])).toEqual({ allow: ['Bash', 'Read'] })
+    expect(SkillCc.ccRestriction(loaded?.metadata?.allowedTools as string[])).toEqual({
+      allow: ['bash', 'read', 'read_image'],
+    })
   })
 
   it('surfaces legacy commands as deprecated', async () => {

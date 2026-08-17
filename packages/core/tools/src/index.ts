@@ -103,6 +103,14 @@ export type { JsonValue } from '@deepseek-ai/dsh-session'
 export type { CodeDispatchEventData, CodeDispatchStartEventData } from './types.ts'
 
 export { CodeRunFailedError, RUN_CODE_NAME } from './code-mode.ts'
+export {
+  CC_TO_HARNESS_TOOLS,
+  KNOWN_HARNESS_TOOLS,
+  translateToolNames,
+  ccToolAliases,
+  ccCanonicalToolName,
+  type ToolNameTranslationPolicy,
+} from './cc-names.ts'
 export { jsonSchemaToTs, renderToolsSdk } from './ts-types.ts'
 export { jsonSchemaToPy, renderToolsSdkPy } from './py-types.ts'
 export { defineContentToolFixture, type ContentToolFixtureOptions } from './testing.ts'

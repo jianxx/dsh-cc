@@ -8,8 +8,24 @@ import {
 } from '../src/translate.ts'
 
 describe('ccRestriction', () => {
-  it('builds an allow restriction from allowed-tools', () => {
-    expect(ccRestriction(['Bash', 'Read'])).toEqual({ allow: ['Bash', 'Read'] })
+  it('builds a harness allow restriction from CC tool names', () => {
+    expect(ccRestriction(['Read', 'Grep', 'Glob'])).toEqual({
+      allow: ['read', 'read_image', 'grep', 'glob'],
+    })
+  })
+
+  it('strips arg-spec parens from Bash names', () => {
+    expect(ccRestriction(['Bash(git status)'])).toEqual({ allow: ['bash'] })
+  })
+
+  it('returns undefined when every name is dropped, with a diagnostic', () => {
+    const diagnostics: string[] = []
+    expect(ccRestriction(['mcp__github__foo'], (m) => diagnostics.push(m))).toBeUndefined()
+    expect(diagnostics.length).toBeGreaterThan(0)
+  })
+
+  it('passes already-known harness names through', () => {
+    expect(ccRestriction(['read', 'grep'])).toEqual({ allow: ['read', 'grep'] })
   })
 
   it('returns undefined for an empty or match-all list', () => {
