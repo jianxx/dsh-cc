@@ -77,7 +77,7 @@ interface SubagentService {
     parent: Agent
     signal: AbortSignal
     toolFilter?: { allow: readonly string[] }
-  }): { result: Promise<unknown> }
+  }): Promise<{ result: Promise<unknown> }>
 }
 
 /** Structural subset of the sessions seam used here. */
@@ -86,23 +86,27 @@ interface SessionsService {
 }
 
 /**
- * Start a memory-scoped forked subagent as a background job. Returns a control
- * object with an abort hook and a settle promise.
+ * Start a memory-scoped forked subagent as a background job. Resolves to a
+ * control object with an abort hook and a settle promise.
  */
-function startMemoryJob(
+async function startMemoryJob(
   ctx: Context,
   agent: Agent,
   provider: string,
   label: string,
   prompt: string,
-): { abort(reason?: string): void; settled: Promise<boolean> } {
+): Promise<{ abort(reason?: string): void; settled: Promise<boolean> }> {
   const jobs = ctx.get('jobs') as JobService | undefined
   const subagents = ctx.get('subagents') as SubagentService | undefined
   if (jobs === undefined || subagents === undefined) {
     return { abort: () => {}, settled: Promise.resolve(false) }
   }
   const controller = new AbortController()
-  const run = subagents.start(provider, {
+  // `subagents.start` is async upstream — awaiting it is what exposes the run's
+  // `result` promise. Reading `run.result` on the un-awaited Promise throws
+  // "Cannot read properties of undefined (reading 'then')" and poisons the
+  // turn-stopping dispatch.
+  const run = await subagents.start(provider, {
     label,
     signal: controller.signal,
     prompt: [{ type: 'text', text: prompt }],
@@ -148,7 +152,8 @@ export function apply(ctx: Context, config: Config = {}): void {
 
 function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): void {
   const prompt = buildExtractionPrompt(agent.session.events.length, dir, '')
-  startMemoryJob(ctx, agent, provider, 'extract-memories', prompt)
+  // Fire-and-forget: extraction failure must never fail the turn itself.
+  void startMemoryJob(ctx, agent, provider, 'extract-memories', prompt).catch(() => {})
 }
 
 async function runDream(
@@ -174,7 +179,7 @@ async function runDream(
   const priorAt = await tryAcquireLock(fs, dir, process.pid, now)
   if (priorAt === null) return
   const prompt = buildConsolidationPrompt(dir, sessionTranscriptDir(agent), sessionIds)
-  const job = startMemoryJob(ctx, agent, provider, 'memory-consolidation', prompt)
+  const job = await startMemoryJob(ctx, agent, provider, 'memory-consolidation', prompt)
   void job.settled.then((ok) => {
     if (!ok) void rollbackLock(fs, dir, priorAt)
   })
