@@ -10,6 +10,7 @@
  * @module @jianxx/dsh-cc-permission-rules/evaluate
  */
 
+import { ccToolAliases } from '@jianxx/dsh-cc-tools'
 import {
   SOURCE_PRIORITY,
   type EvaluationInput,
@@ -83,7 +84,7 @@ export function evaluatePermission(input: EvaluationInput): PermissionDecision {
   // (b) whole-tool ask, except an exempted sandboxed bash (which allows instead).
   const toolAsk = firstToolLevel(rules.ask, toolName)
   if (toolAsk !== undefined) {
-    if (toolName === 'Bash' && input.sandboxedBashExempt === true) {
+    if (ccToolAliases(toolName).includes('Bash') && input.sandboxedBashExempt === true) {
       return { kind: 'allow' }
     }
     return askOf(toolAsk)
@@ -119,7 +120,14 @@ export function evaluatePermission(input: EvaluationInput): PermissionDecision {
 
 /** The first whole-tool rule for `toolName` in a behavior list. */
 function firstToolLevel(list: readonly PermissionRule[], toolName: string): PermissionRule | undefined {
-  return list.find(rule => rule.content === undefined && rule.toolName === toolName)
+  return list.find(rule => rule.content === undefined && ruleMatchesTool(rule, toolName))
+}
+
+/** Whether an authored rule's tool name answers to the harness call's tool name. */
+function ruleMatchesTool(rule: PermissionRule, toolName: string): boolean {
+  // The harness exec.name is lowercase; the rule preserves its authored CC
+  // spelling, so compare through the CC↔harness alias map.
+  return ccToolAliases(toolName).includes(rule.toolName)
 }
 
 /** The first content rule for `toolName`/`subject` at exactly one source, or undefined. */
@@ -133,7 +141,7 @@ function firstContentMatch(
   for (const rule of list) {
     if (rule.source !== source) continue
     if (rule.content === undefined || rule.matcher === undefined) continue
-    if (rule.toolName === toolName && contentMatches(rule.matcher, subject)) return rule
+    if (ruleMatchesTool(rule, toolName) && contentMatches(rule.matcher, subject)) return rule
   }
   return undefined
 }
@@ -150,7 +158,7 @@ function firstBypassImmune(
   if (subject === undefined) return undefined
   for (const rule of list) {
     if (rule.content === undefined || rule.matcher === undefined) continue
-    if (rule.toolName !== toolName) continue
+    if (!ruleMatchesTool(rule, toolName)) continue
     if (contentMatches(rule.matcher, subject)) return rule
   }
   return undefined

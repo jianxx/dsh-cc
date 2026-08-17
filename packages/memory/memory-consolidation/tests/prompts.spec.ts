@@ -3,8 +3,8 @@ import { MEMORY_AGENT_TOOLS, MEMORY_TOOL_FILTER } from '../src/tools.ts'
 import { buildConsolidationPrompt, buildExtractionPrompt } from '../src/prompts.ts'
 
 describe('MEMORY_TOOL_FILTER', () => {
-  it('allows only read/search and memory-writing file tools', () => {
-    expect([...MEMORY_AGENT_TOOLS].sort()).toEqual(['Edit', 'Glob', 'Grep', 'Read', 'Write'])
+  it('allows only read/search and memory-writing file tools (harness names)', () => {
+    expect([...MEMORY_AGENT_TOOLS].sort()).toEqual(['edit', 'glob', 'grep', 'read', 'read_image', 'write'])
     expect(MEMORY_TOOL_FILTER.allow).toBe(MEMORY_AGENT_TOOLS)
   })
 })
@@ -26,6 +26,6 @@ describe('buildConsolidationPrompt', () => {
     expect(prompt).toContain('`/transcripts`')
     expect(prompt).toContain('- s1')
     expect(prompt).toContain('- s2')
-    expect(prompt).toContain('Read, Grep, Glob, Write, Edit')
+    expect(prompt).toContain('read, read_image, grep, glob, write, edit')
   })
 })

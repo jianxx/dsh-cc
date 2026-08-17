@@ -41,7 +41,7 @@ dsh-web-app surgery criteria).
 
 | CC subsystem | Status | Where / notes |
 |---|---|---|
-| Agent loop + tool pipeline | ✅ | `@deepseek-ai/dsh-agent-loop`, `dsh-tools` (this repo's `core/tools` swap adds `reserve()`/`isAdmitted()` for deferred tools) |
+| Agent loop + tool pipeline | ✅ | `@deepseek-ai/dsh-agent-loop`, `dsh-tools` (this repo's `core/tools` swap adds `reserve()`/`isAdmitted()` for deferred tools). CC↔harness tool-name translation lives in `core/tools/src/cc-names.ts` (`translateToolNames` strict/lenient for `restrict()`-bound lists, `ccToolAliases` for rule/matcher matching, `ccCanonicalToolName` for CC-facing payloads) — agent/skill frontmatter, permission rules, and hook matchers all consume it |
 | File tools (Read/Edit/Write), Glob/Grep | ✅ | `dsh-tool-fs`, `dsh-tool-fs-search`, `dsh-tool-str-replace-editor` |
 | Bash / PowerShell + background jobs | ✅ | `dsh-tool-bash`/`dsh-tool-pwsh` + `dsh-jobs` + `dsh-tool-jobs`; CC's `TaskCreate/Output/Stop` naming not aliased |
 | WebSearch | ✅ | `dsh-tool-web` + `dsh-web-search-deepseek` |

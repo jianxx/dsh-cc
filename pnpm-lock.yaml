@@ -1180,6 +1180,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@jianxx/dsh-cc-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
 
   packages/session/command-cost:
     devDependencies:

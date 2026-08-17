@@ -11,9 +11,16 @@
  * in both `allow` and `deny` is denied: the agent sees only tools its `allow`
  * admits that no `deny` removes.
  *
+ * Claude Code tool names are translated to harness tool names at this
+ * boundary via `translateToolNames`. The mapping is one-to-many (e.g. `Read`
+ * → `read` + `read_image`, so denying `Read` denies both). Unknown names pass
+ * through verbatim so `tools.restrict()` fails loudly at agent-load time with
+ * its own clear error rather than silently dropping a typo.
+ *
  * @module @jianxx/dsh-cc-claude-code-agents/restrict
  */
 
+import { translateToolNames } from '@jianxx/dsh-cc-tools'
 import type { ToolRestriction } from './types.ts'
 
 /**
@@ -32,9 +39,11 @@ export function resolveToolRestriction(
   if (tools === undefined && disallowedTools === undefined) return undefined
   if (tools !== undefined) assertStringArray(tools, 'tools')
   if (disallowedTools !== undefined) assertStringArray(disallowedTools, 'disallowedTools')
+  const allow = tools !== undefined ? translateToolNames(tools, 'strict') : undefined
+  const deny = disallowedTools !== undefined ? translateToolNames(disallowedTools, 'strict') : undefined
   return {
-    ...tools !== undefined ? { allow: tools } : {},
-    ...disallowedTools !== undefined ? { deny: disallowedTools } : {},
+    ...allow !== undefined ? { allow } : {},
+    ...deny !== undefined ? { deny } : {},
   }
 }
 

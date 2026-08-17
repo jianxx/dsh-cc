@@ -26,6 +26,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@jianxx/dsh-cc-tools'
+import { ccCanonicalToolName, ccToolAliases } from '@jianxx/dsh-cc-tools'
 import {
   appendHookInvoked,
   appendHookResult,
@@ -188,7 +189,8 @@ export function apply(ctx: Context, config: Config): void {
    * an open turn. Detached lifecycle points omit the pair. Returns the merged outcome (a neutral,
    * already-most-restrictive view) for the caller to map onto its extension point
    * decision. `matchQuery` is the event's matcher subject (tool name, session
-   * source, …); `''` for events that ignore matchers.
+   * source, …), tested against every CC alias of the subject; `''` for events
+   * that ignore matchers.
    */
   async function runPoint(
     point: string,
@@ -205,8 +207,15 @@ export function apply(ctx: Context, config: Config): void {
     // workspace (the same dir the hook runs in).
     const projectDir = config.projectDir ?? workdir
     const hookEnv = projectDir !== undefined ? { CLAUDE_PROJECT_DIR: projectDir } : undefined
+    // A string matcher subject (tool name, session source, …) may be a harness
+    // tool name the CC config spells differently. Match against every CC alias
+    // (e.g. harness `read` also answers to `Read`, `read_image` to `Read`) so a
+    // CC-written matcher like `Read|Write` or `Bash` fires for the harness
+    // execution. A non-tool subject (a source tag, '' for matcher-less events)
+    // has no aliases and collapses to the input itself.
+    const matchQueries = ccToolAliases(matchQuery)
     for (const group of groups) {
-      if (!matchesMatcher(group.matcher, matchQuery, 'claude-code')) continue
+      if (!matchQueries.some(query => matchesMatcher(group.matcher, query, 'claude-code'))) continue
       for (const hook of group.hooks) {
         const handlerId = nextHandlerId(point)
         const session = opts.agent?.session
@@ -722,11 +731,23 @@ function sessionResumePayload(ctx: Context, agent: Agent, source: string): Recor
 function promptPayload(ctx: Context, agent: Agent, content: ContentBlock[]): Record<string, unknown> {
   return { ...base(ctx, agent, 'UserPromptSubmit'), prompt: blocksToText(content) }
 }
+
+/**
+ * The CC canonical tool name for a hook payload. Claude Code hook scripts spell
+ * tools with their CC names (`Read`, `Bash`, `Task`), so a canonical-name
+ * payload is the CC-parity contract this bridge keeps: a harness `read`/`read_image`
+ * surfaces as `Read`, `subagent_fork` as `Task`; a harness-only tool (e.g.
+ * `ralph`) keeps its own name. See {@link ccCanonicalToolName}.
+ */
+function hookToolName(name: string): string {
+  return ccCanonicalToolName(name)
+}
+
 function preToolPayload(ctx: Context, exec: ToolExecution): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PreToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId }
+  return { ...base(ctx, exec.agent, 'PreToolUse'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId }
 }
 function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PostToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId, tool_response: blocksToText(result.content) }
+  return { ...base(ctx, exec.agent, 'PostToolUse'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId, tool_response: blocksToText(result.content) }
 }
 
 /**
@@ -736,7 +757,7 @@ function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolExecutio
  * the harness seam).
  */
 function postToolFailurePayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PostToolUseFailure'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId, error: blocksToText(result.content) }
+  return { ...base(ctx, exec.agent, 'PostToolUseFailure'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId, error: blocksToText(result.content) }
 }
 function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
   return { ...base(ctx, agent, 'Stop'), stop_hook_active: false }
@@ -777,7 +798,7 @@ function setupPayload(ctx: Context, agent: Agent): Record<string, unknown> {
 
 /** PermissionRequest: the tool the approval is about, from the tool-ext route. */
 function permissionRequestPayload(ctx: Context, req: ApprovalRequest): Record<string, unknown> {
-  return { ...base(ctx, req.agent, 'PermissionRequest'), tool_name: req.toolName }
+  return { ...base(ctx, req.agent, 'PermissionRequest'), tool_name: hookToolName(req.toolName) }
 }
 
 /** PermissionDenied: the observer only records the outcome, so the reason is approximated. */
@@ -790,7 +811,7 @@ function notificationPayload(ctx: Context, session: Session, asked: SessionEvent
   return {
     ...sessionBase(ctx, session, 'Notification'),
     notification_type: 'permission_prompt',
-    tool_name: asked.data.toolName,
+    tool_name: hookToolName(asked.data.toolName),
     ...asked.data.reason !== undefined ? { permission_denial_reason: asked.data.reason } : {},
   }
 }

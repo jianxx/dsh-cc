@@ -189,6 +189,52 @@ describe('modes', () => {
   })
 })
 
+describe('CC-vs-harness tool-name alias matching', () => {
+  it('matches a CC-cased `Bash(npm run *)` rule against harness exec.name `bash`', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'bash',
+      rules: rules({
+        deny: [parseRule('Bash(npm run *)', 'deny', 'config')],
+        allow: [parseRule('Bash', 'allow', 'config')],
+      }),
+      subject: 'npm run build',
+    }))
+    expect(decision).toMatchObject({ kind: 'deny' })
+  })
+
+  it('matches a lowercase-authored `bash(...)` rule too', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'bash',
+      rules: rules({
+        deny: [parseRule('bash(npm run *)', 'deny', 'config')],
+      }),
+      subject: 'npm run build',
+    }))
+    expect(decision).toMatchObject({ kind: 'deny' })
+  })
+
+  it('matches a CC-cased `Edit(...)` rule against harness exec.name `edit`', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'edit',
+      rules: rules({
+        deny: [parseRule('Edit(a.ts)', 'deny', 'config')],
+        allow: [parseRule('Edit', 'allow', 'config')],
+      }),
+      subject: 'a.ts',
+    }))
+    expect(decision).toMatchObject({ kind: 'deny' })
+  })
+
+  it('fires the sandboxed-bash exemption for harness exec.name `bash` against the default `Bash` alias', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'bash',
+      rules: rules({ ask: [parseRule('Bash', 'ask', 'config')] }),
+      sandboxedBashExempt: true,
+    }))
+    expect(decision).toMatchObject({ kind: 'allow' })
+  })
+})
+
 describe('mergeRuleSets', () => {
   it('orders rules by source priority within each behavior', () => {
     const merged = mergeRuleSets(

@@ -62,6 +62,15 @@ The live registry pipeline has three transformable waterfalls, then the definiti
 - Exact signatures and ordering live in the generated region of [tools.md](../../../docs/subsystems/tools.md#cordis-surface) and [pipeline](../../../docs/tool-execution-pipeline.md).
 - MCP servers: one plugin per server, discover tools, call `ctx.tools.register()` with the server's schemas.
 
+### CC tool-name translation (`cc-names`)
+
+The harness registers global tools under its own names (mostly lowercase: `read`, `bash`, `web_fetch`; a few capitalized: `NotebookEdit`, `Sleep`), while Claude Code config authors write CC names (`Read`, `Bash`, `WebFetch`). `tools.restrict()` validates names strictly and throws on unknown ones, so CC names must be translated at the ingestion boundary — never compared or restricted raw:
+
+- `CC_TO_HARNESS_TOOLS` — the one-to-many map (e.g. `Read` → `read` + `read_image`, since the harness splits image reading out of `read`).
+- `translateToolNames(names, policy, onDiagnostic?)` — for allow/deny lists bound for `restrict()`. `strict` (agent frontmatter, load time) passes unknown names through so `restrict()` fails loudly with its own error; `lenient` (skill activation, user/model-driven data) drops unknown names with a diagnostic and yields `undefined` when nothing survives — a dropped name must never kill the session. Parenthesized arg-specs (`Bash(git status)`) are stripped to the bare name, deliberately widening to a name-level gate.
+- `ccToolAliases(name)` / `ccToolAliases`-based matching — for comparisons (permission rules, hook matchers): match a CC-authored name against every alias of the harness `exec.name`, so both `Bash(...)` and `bash(...)` rules work; aliases are match-only and never written back into a restriction.
+- `ccCanonicalToolName(name)` — the CC name for CC-facing payloads (e.g. hook `tool_name`), or the input when no CC alias exists.
+
 ### Typed tool parameter schemas
 
 First-party plugin authors can use the `defineTool()` helper (exported from this package) for typed tool parameter schemas:
