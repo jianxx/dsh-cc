@@ -13,6 +13,30 @@ The Claude Code reference inventory is the feature dump under
 `~/workspace/github.com/claude-code` (external build surface). Event and
 command counts below follow that build.
 
+## Mode placement (host plane vs preset plane)
+
+How the stack is split across dsh's planes when CC Mode is the active preset.
+
+**Host plane — globally retained, no visible change for the four built-in modes:**
+- `@jianxx/dsh-cc-tools` (tools-registry fork + deferred capability)
+- `@jianxx/dsh-cc-settings-cascade` and `@jianxx/dsh-cc-permission-rules`
+  (the `cc-permissions` bundle)
+- `@jianxx/dsh-cc-settings-migrations`
+
+**Preset plane — CC mode only:** `tool-search`, `skill-claude-code`,
+`cc-shell-glue`, `memory`, `memory-consolidation`, `cc-output-styles`,
+`compaction-micro`, `coordinator`, `schedule` (upstream package),
+`tool-git-worktree`, `tool-sleep`, `tool-notebook-edit`,
+`tool-structured-output`, `hooks-claude-code`, and the 19 `command-*` packages.
+Among those, `command-plugin` and `command-mcp` sit in the same `cc-services`
+isolate group as `tool-search`, `compaction-micro`, and `cc-shell-glue`:
+`mcpConnections` must be isolated, and the two command packages consume those
+same services, so they share the group.
+
+**Not reassigned — the untouched upstream host face:** the `system-prompt`
+service, the `subagents` registry, and `tokenMeter` (kept per the existing
+dsh-web-app surgery criteria).
+
 ## Engine subsystems
 
 | CC subsystem | Status | Where / notes |

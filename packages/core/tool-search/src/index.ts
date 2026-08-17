@@ -20,7 +20,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import { NamedEntries, ScopedLayers } from '@deepseek-ai/dsh-scope'
+import { NamedEntries, ScopedLayers, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer } from '@deepseek-ai/dsh-scope'
 import { defineTool } from '@jianxx/dsh-cc-tools'
 import type { ToolResultView, ToolCallView } from '@jianxx/dsh-cc-tools'
@@ -192,17 +192,20 @@ export class DeferredToolRegistry extends Service {
   }
 
   /**
-   * Rank the deferred, not-yet-loaded tools against a query. Returns the top
-   * `maxResults` accessible candidates in descending relevance. This is the pure
-   * matching step; loading (and its restriction gate) happens in
-   * {@link DeferredToolRegistry.activate}.
+   * Rank the deferred, not-yet-loaded tools against a query, searching the scope
+   * chain the caller lives in. Returns the top `maxResults` accessible
+   * candidates in descending relevance. This is the pure matching step; loading
+   * (and its restriction gate) happens in {@link DeferredToolRegistry.activate}.
    * @param query - free-text keyword query.
    * @param maxResults - how many hits to return (default 5).
+   * @param scope - the calling scope whose deferred set (and its ancestors') is
+   *   searched; defaults to this registry's own scope ([`scopeOf`]) on the
+   *   service context, which is global for a global registry.
    * @returns ranked, scored matches that are still deferred.
    */
-  search(query: string, maxResults: number = 5): DeferredSearchHit[] {
+  search(query: string, maxResults: number = 5, scope?: ScopeKey): DeferredSearchHit[] {
     const candidates: Array<{ stored: StoredDeferred; score: number }> = []
-    for (const stored of this.allDeferred()) {
+    for (const stored of this.allDeferred(scope)) {
       if (stored.alwaysLoad || stored.activated) continue
       const score = scoreStored(stored, query)
       if (score > 0) candidates.push({ stored, score })
@@ -226,7 +229,7 @@ export class DeferredToolRegistry extends Service {
    * @returns the load outcome for the model-facing result.
    */
   activate(name: string, scope?: ScopeKey): DeferredActivationResult {
-    const stored = this.allDeferred().find(candidate => candidate.reg.name === name)
+    const stored = this.allDeferred(scope).find(candidate => candidate.reg.name === name)
     if (stored === undefined) {
       return { status: 'unknown', name }
     }
@@ -240,9 +243,17 @@ export class DeferredToolRegistry extends Service {
     return { status: 'loaded', name }
   }
 
-  /** Every deferred entry in scope order (global then scope chain, nearest last). */
-  private allDeferred(): StoredDeferred[] {
-    return [...this.layers.merge(undefined, layer => layer.tools).values()]
+  /**
+   * Every deferred entry in scope order (global then the scope chain nearest
+   * last) for the calling scope. A caller with no explicit scope searches the
+   * registry's own scope: a global registry resolves to the global layer
+   * (`scopeOf(this.ctx)` is `undefined` on an unscoped service context), while
+   * a registry hosted under a scoped preset backs a child scope so its deferred
+   * set — and its ancestors' — stays visible to it.
+   */
+  private allDeferred(scope?: ScopeKey): StoredDeferred[] {
+    const key = scope ?? scopeOf(this.ctx) ?? undefined
+    return [...this.layers.merge(key, layer => layer.tools).values()]
   }
 
   /** Run the entry's activation callback once and retain its disposer. */
@@ -319,7 +330,7 @@ export class DeferredToolRegistry extends Service {
       execute: (args, exec) => {
         const scope = exec.agent
         const maxResults = args.max_results ?? 5
-        const hits = this.search(args.query, maxResults)
+        const hits = this.search(args.query, maxResults, scope)
         const results = hits.map((hit) => {
           const outcome = this.activate(hit.name, scope)
           return {

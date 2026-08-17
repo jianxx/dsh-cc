@@ -62,6 +62,27 @@ async function mintAgent(host: Context, id: string): Promise<{ agent: Agent; sco
   return { agent, scope }
 }
 
+/**
+ * Mint an agent scope that hosts its OWN deferred registry on the scoped
+ * context — as a CC agent preset would, so `this.ctx` (and thus `registerDeferred`
+ * and the no-arg `search` fallback) resolve to that agent's scope rather than
+ * the global host.
+ */
+async function installScopedRegistry(host: Context, id: string): Promise<{ agent: Agent; scope: Scope; registry: DeferredToolRegistry }> {
+  const agent = { id: SessionId(id) } as Agent
+  let scope!: Scope
+  let registry!: DeferredToolRegistry
+  const fiber = host.plugin(Object.assign((inner: Context) => {
+    scope = createScope(inner, agent)
+    scope.ctx.plugin(DeferredToolRegistry)
+    scope.ctx.plugin(Object.assign((c: Context) => {
+      registry = c.toolSearch
+    }, { inject: ['toolSearch'] }))
+  }, { inject: ['tools', 'systemPrompt'] }))
+  await fiber.await()
+  return { agent, scope, registry }
+}
+
 /** Observable model-facing tool names for a scope (undefined = global). */
 async function visibleNames(host: Context, scope?: Agent | Scope) {
   const context: { scope?: Agent | Scope } = scope === undefined ? {} : { scope }
@@ -239,6 +260,56 @@ describe('restriction priority', () => {
     expect(ctx.toolSearch.activate('big_tool').status).toBe('loaded')
     // The restricting agent still does not see it.
     expect(await visibleNames(ctx, agent)).not.toContain('big_tool')
+  })
+})
+
+describe('scoped deferred visibility', () => {
+  it('makes a deferred tool visible to its owning scope chain, invisible to siblings and the global view', async () => {
+    const ctx = await host()
+    // A global registration stays visible everywhere (regression).
+    deferred(ctx, 'global_tool', 'Global capability.', 'global')
+
+    const a = await installScopedRegistry(ctx, 'scope-a')
+    a.registry.registerDeferred({
+      name: 'scoped_tool',
+      description: 'Scoped-only capability.',
+      searchHint: 'scoped',
+      activate: () => a.scope.ctx.tools.register(bigTool('scoped_tool', 'Scoped-only capability.')),
+    })
+    const b = await installScopedRegistry(ctx, 'scope-b')
+
+    // Scope A sees its own deferred tool — through an explicit scope and via the
+    // no-arg fallback onto its own scoped context — and still the global one.
+    expect(a.registry.search('scoped', 5, a.agent).map(hit => hit.name)).toEqual(['scoped_tool'])
+    expect(a.registry.search('scoped').map(hit => hit.name)).toEqual(['scoped_tool'])
+    expect(a.registry.search('global').map(hit => hit.name)).toEqual(['global_tool'])
+
+    // Sibling scope B never sees A's deferred tool; it does see the global one.
+    expect(b.registry.search('scoped')).toEqual([])
+    expect(b.registry.search('global').map(hit => hit.name)).toEqual(['global_tool'])
+
+    // The global registry (host scope) sees only the global deferred tool.
+    expect(ctx.toolSearch.search('scoped')).toEqual([])
+    expect(ctx.toolSearch.search('global').map(hit => hit.name)).toEqual(['global_tool'])
+  })
+
+  it('activates a scoped deferred tool for its owner scope only', async () => {
+    const ctx = await host()
+    const a = await installScopedRegistry(ctx, 'scope-a')
+    a.registry.registerDeferred({
+      name: 'scoped_tool',
+      description: 'Scoped-only capability.',
+      searchHint: 'scoped',
+      activate: () => a.scope.ctx.tools.register(bigTool('scoped_tool', 'Scoped-only capability.')),
+    })
+    const b = await installScopedRegistry(ctx, 'scope-b')
+
+    // Scope A loads its own deferred tool.
+    expect(a.registry.activate('scoped_tool', a.agent).status).toBe('loaded')
+    // A sibling scope cannot even find it.
+    expect(b.registry.activate('scoped_tool', b.agent).status).toBe('unknown')
+    // Nor can the global registry.
+    expect(ctx.toolSearch.activate('scoped_tool').status).toBe('unknown')
   })
 })
 

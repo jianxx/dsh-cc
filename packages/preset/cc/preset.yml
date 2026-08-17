@@ -1,0 +1,3 @@
+name: CC mode
+description: Full Standard-mode capability, plus the Claude Code surface — .claude plugin directories, Claude hooks, slash commands, persistent memory, output styles, and fetch-enabled Web tools.
+order: 5
