@@ -18,12 +18,12 @@
       "default": "./lib/invariant.js"
     },
     "./types": {
-      "types": "./lib/types/types.d.ts",
-      "default": "./lib/types/types.js"
+      "types": "./lib/types.d.ts",
+      "default": "./lib/types.js"
     },
     "./presentation": {
-      "types": "./lib/types/presentation.d.ts",
-      "default": "./lib/types/presentation.js"
+      "types": "./lib/presentation.d.ts",
+      "default": "./lib/presentation.js"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"

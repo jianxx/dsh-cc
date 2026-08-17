@@ -47,7 +47,7 @@ packages/
   compaction/compaction-micro      model-free stale-result microcompaction
   session/command-cost|export|stats  /cost /export /stats
   bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
-  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts the harness `dsh-user-questions` seam + `dsh-tool-ask-user` AskUserQuestion, the `dsh-lsp`/`dsh-lsp-stdio`/`dsh-tool-lsp` LSP trio, and `dsh-schedule`)
+  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts `dsh-tool-ask-user` AskUserQuestion over the base-owned `dsh-user-questions` seam and `dsh-schedule`)
   test-support/agent-loop-mock     vendored test fixture (not a plugin)
 ```
 
@@ -56,8 +56,8 @@ packages/
 Prereq: a dsh CLI installation (`dsh` on PATH, version ≥ 0.1.0-rc.5).
 
 ```sh
-# pick a profile name (created on first use)
-dsh plugin cc add <this-repo>            # or the published npm names / file: links
+# pick a profile name (created on first use); rc.6 add syntax:
+dsh plugin --profile cc add <this-repo>   # or the published npm names / file: links
 
 # compose: bundles are hoisted into the profile and listed in dsh.profile.bundles *ahead* of
 # your own patch file, their roofs sorted before your cordis.patch.yml.
@@ -85,6 +85,23 @@ Recommended order in `~/.dsh/profiles/cc/package.json`:
 
 Your own tweaks land in `~/.dsh/profiles/cc/cordis.patch.yml` (applied after every bundle).
 
+### Local development without publishing
+
+To test unpublished changes against a real profile instead of publishing first:
+
+```sh
+pnpm run build                       # emit lib/ per package
+bash scripts/sync-local-profile.sh web   # flat-copy @jianxx/* into the profile
+dsh web                             # profile bundles registration already in place, boots to a UI
+```
+
+`scripts/sync-local-profile.sh` copies (not symlinks) the built packages into the
+profile so every `@deepseek-ai/*` import resolves through the installation's single
+cordis instance — the same way a published bundle does. Re-run it after every build.
+
+> On a network-restricted host, `pnpm install` stalls fetching per-package registry
+> attestations even with `--offline`; see `docs/dev.md` for the offline recovery.
+
 ## How the loading works (the mechanism our names rely on)
 
 1. Bundles list "rows" in `cordis.patch.yml`; each row is an entry `{id, name, config?, insert?…}` the Loader interprets.
@@ -103,15 +120,17 @@ Four packages vendor upstream dsh packages plus our changes, because the deltas 
 | `hooks/hook-protocol` | +http executor + dispatch options | wire-protocol module shape |
 | `hooks/hooks-claude-code` | full CC event/executor bridge | only exists at all through the fork's expansion |
 
-At runtime each sits beside its upstream peer under a different npm name. Where service identity matters, the bundle patch disables the in-box row and mounts ours under the same cordis `id`:
+At runtime each sits beside its upstream peer under a different npm name. Where service identity matters, the bundle patch disables the in-box row by id and remounts ours under a **unique** id:
 
 ```yaml
 - id: tools
   disabled: true
 - insert:
-    - id: tools
+    - id: tools-cc
       name: '@jianxx/dsh-cc-tools'
 ```
+
+The disable marker targets the base row by its id, and the remount registers under a distinct id, because `cordis-plugin-loader` dup-checks *every* incoming entry (a `{id, disabled: true}` marker included) — reusing the same id for the insert would throw `duplicate loader entry id` at mount. Service injection is name-keyed, not row-id-keyed, so the remount resolves the same underlying service. NOTE (upstream TODO): the id-keyed dump/compose path renders this disable+rename pattern fine, so the loader's stricter dup check diverges from it; worth splitting out an issue upstream.
 
 Subscribers type against upstream service types — the vendored runtime is a structural superset; the two nominal `ToolExecutionToken` brands are bridged by explicit casts at the 6 mixed call sites (see coordinator / hooks-claude-code sources; documented in code) — never routed at runtime because only one `tools` registration exists per scope.
 
@@ -122,7 +141,12 @@ Subscribers type against upstream service types — the vendored runtime is a st
   - `compaction-micro` no longer appends its log-only decision record; the replacement nodes already carry the deterministic marker, so decisions still reconstruct from replay + code.
 - Track: ask upstream for either ignorable-aware `Session.append` or an event-registration surface; restore the durable records then.
 - `hooks-codex` and `tool-cordis` fork deltas were NOT moved: they were generated-catalog/type-hygiene noise with no behavioral need on top of upstream.
-- `web-fetch-http` ships NO host allowlist. Enabling fetch means model-directed requests can reach any URL the dsh process can reach — enable it only on egress-restricted deployments. An upstream allowlist is a planned follow-up.
+- `tool-web-cc` mounts a fetch-capable web tool at the host plane (`fetch: true`, 60s search timeout), carrying the base `tool-web` row's caps. Because `dsh-web-app` deliberately moves `tool-web` behind agent presets and disables the base row, this host-plane insert intentionally bypasses that scoping for CC parity — watch for a duplicate/missing web tool in a UI pass.
+- The LSP trio (`dsh-lsp` / `dsh-lsp-stdio` / `dsh-tool-lsp`) and the `web-fetch-http` executor are NOT shipped by the CLI dependency tree through rc.6, so their rows cannot resolve from the installation and are removed from `bundle/cc-shell`. Re-add them once the installation carries them (they are cordis-peer packages; version-skew untested).
+- `user-questions` is owned by `dsh-base` (it has been since before rc.5), so the bundle no longer inserts it; `tool-ask-user` consumes the base-owned seam. A missing UI provider yields a graceful `NO_PROVIDER` tool error.
+- On the WEB profile the native `/export` (a browser download stub from `dsh-web-app`'s session-log-download row) holds the name; our file-writing `/export` registers only where the name is free (CLI profiles). The plugin skips registration when `/export` is already registered.
+- hooks `configPath` defaults to `$DSH_HOME/hooks.json` (resolved via `ctx.dshHomePath`); per-session project-local hook discovery remains a TODO.
+- `/cost` ships an empty price table by default (`modelTable: []` in the bundle row). The schema stays strict because composition decides pricing — deployments must supply pricing where needed.
 - Schedule (`dsh-schedule`) is session-local only: one-shot `after_seconds` delays, absolute `at` targets, and fixed-rate `every_seconds` (≥300s). Claude Code cron-expression parity is deferred upstream.
 
 ## Develop

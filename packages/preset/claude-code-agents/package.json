@@ -26,8 +26,8 @@
       "default": "./lib/discovery.js"
     },
     "./types": {
-      "types": "./lib/types/types.d.ts",
-      "default": "./lib/types/types.js"
+      "types": "./lib/types.d.ts",
+      "default": "./lib/types.js"
     },
     "./invariant": {
       "types": "./lib/invariant.d.ts",

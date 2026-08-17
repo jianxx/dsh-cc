@@ -21,8 +21,8 @@ export interface Config {
 
 /** Loader schema; an empty default directory falls back to the current working directory. */
 export const Config = z.object({
-  defaultDir: z.string(),
-}).required()
+  defaultDir: z.string().default(''),
+})
 
 /** One parsed `/export` invocation. */
 export interface ExportRequest {
@@ -111,10 +111,27 @@ function joinPath(dir: string, name: string): string {
  * @param config - default export directory.
  */
 export function apply(ctx: Context, config: Config): void {
-  ctx.commands.register({
-    name: 'export',
-    description: 'export this session transcript to a markdown or json file',
-    input: { hint: '[json] [<path>]' },
-    handler: (invocation: CommandInvocation) => executeExport(ctx, config, parseExport(invocation.rawInput), invocation),
-  })
+  // Native /export comes from @deepseek-ai/dsh-session-log-export, mounted by
+  // dsh-web-app's session-log-download row on the WEB profile (a browser-download
+  // stub); it is absent on CLI-only profiles. We defer to it where the name is
+  // taken and register our file-writing /export only where it is free.
+  //
+  // This behaviour depends on mount-order luck: bundles mount after base/web-app
+  // rows, so ours registers LAST — the native command is already registered on
+  // web when we get here, absent when not. Relies on the loader throwing a plain
+  // Error whose message matches /is already registered/ for a duplicate name.
+  try {
+    ctx.commands.register({
+      name: 'export',
+      description: 'export this session transcript to a markdown or json file',
+      input: { hint: '[json] [<path>]' },
+      handler: (invocation: CommandInvocation) => executeExport(ctx, config, parseExport(invocation.rawInput), invocation),
+    })
+  } catch (error: unknown) {
+    if (error instanceof Error && /is already registered/.test(error.message)) {
+      ctx.logger.info('native /export present, ours skipped')
+      return
+    }
+    throw error
+  }
 }

@@ -15,8 +15,12 @@
 
 - insert:
     # ── core swaps ────────────────────────────────────────────────────────────
-    - id: tools
+    - id: tools-cc
       name: '@jianxx/dsh-cc-tools'
+      config:
+        # Carry the base tools row's DSH_TOOLS_MODE toggle forward (dsh-web-app
+        # patches `tools` with it). Absent env ⇒ undefined, the established semantics.
+        mode: !!js process.env.DSH_TOOLS_MODE
 
     # ── discovery + gating ─────────────────────────────────────────────────
     # ToolSearch: model-called search that activates deferred tools per scope.
@@ -56,19 +60,16 @@
     - id: coordinator
       name: '@jianxx/dsh-cc-coordinator'
 
-    # WebFetch: model-directed fetch is an SSRF surface — web-fetch-http has
-    # NO host allowlist yet. Fetch is enabled for egress-restricted
-    # deployments; see README "Known limits". Tightened caps.
-    - id: tool-web
+    # WebFetch: model-directed fetch is an SSRF surface — the web-fetch-http
+    # executor row is unshipped by the CLI through rc.6, so it is not mounted
+    # here (re-add once the installation carries it; cordis-peer, version-skew
+    # untested). Fetch itself stays enabled for egress-restricted deployments;
+    # see README "Known limits". Carries the base tool-web row's timeout forward.
+    - id: tool-web-cc
       name: '@deepseek-ai/dsh-tool-web'
       config:
         fetch: true
-    - id: web-fetch-http
-      name: '@deepseek-ai/dsh-web-fetch-http'
-      config:
-        timeoutMs: 20000
-        maxResponseBytes: 2000000
-        maxRedirects: 3
+        searchTimeoutMs: 60000
     # Durable session-local reminders (SessionCron parity; cron-expression
     # selectors not yet supported upstream).
     - id: schedule
@@ -91,34 +92,27 @@
     - id: tool-structured-output
       name: '@jianxx/dsh-cc-tool-structured-output'
 
-    # AI-human interaction: the ctx.userQuestions capability seam (UI provider is
-    # owned by the host app — no provider yields a graceful NO_PROVIDER tool error)
-    # plus the model-facing ask_user_question tool that consumes it. Seam must
-    # mount before the tool that injects it.
-    - id: user-questions
-      name: '@deepseek-ai/dsh-user-questions'
+    # AI-human interaction: the model-facing ask_user_question tool consumes the
+    # ctx.userQuestions capability seam. The seam itself (dsh-user-questions) is
+    # owned by dsh-base in both rc.5 and rc.6, so it is not inserted here; a UI
+    # provider absent yields a graceful NO_PROVIDER tool error.
     - id: tool-ask-user
       name: '@deepseek-ai/dsh-tool-ask-user'
 
-    # LSP: the ctx.lsp provider registry (dsh-lsp) + the stdio language-server
-    # provider (dsh-lsp-stdio) compose the model-facing `lsp` tool (dsh-tool-lsp,
-    # four read-only operations). Seam must mount before the tool that injects it.
-    - id: lsp
-      name: '@deepseek-ai/dsh-lsp'
-    - id: lsp-stdio
-      name: '@deepseek-ai/dsh-lsp-stdio'
-    - id: tool-lsp
-      name: '@deepseek-ai/dsh-tool-lsp'
-
-    # Claude Code hook bridge: 16 of 30 hook events (see hooks-claude-code README
+    # Claude Code hook bridge: 18 of 30 hook events (see hooks-claude-code README
     # for the supported set). PreToolUse/PostToolUse et al., command hooks +
-    # http executors over the vendored hook protocol.
+    # http executors over the vendored hook protocol. Zero config here — the
+    # plugin defaults its configPath to $DSH_HOME/hooks.json itself.
     - id: hooks-claude-code
       name: '@jianxx/dsh-cc-hooks-claude-code'
 
     # ── CC parity slash commands ────────────────────────────────────────────
     - id: command-cost
       name: '@jianxx/dsh-cc-command-cost'
+      config:
+        # Composition decides pricing → the package schema stays strict; ship an
+        # empty price table by default (README "Known limits" /cost entry).
+        modelTable: []
 
     - id: command-export
       name: '@jianxx/dsh-cc-command-export'
