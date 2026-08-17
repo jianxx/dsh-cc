@@ -11,26 +11,84 @@ import { apply } from '../src/index.ts'
  * at the end of every turn.
  */
 
-function fakeAgent(cwd: string): Agent {
-  return { session: { events: [], header: { cwd } } } as unknown as Agent
+function fakeAgent(cwd: string, depth = 0): Agent {
+  return {
+    options: depth < 0 ? { subagentDepth: -1 } : {},
+    session: {
+      events: [],
+      header: {
+        id: `session:${cwd}`,
+        cwd,
+        ...depth > 0 ? { delegationDepth: depth } : {},
+      },
+    },
+  } as unknown as Agent
 }
 
-function mount(config: { memoryHome: string; dreamEnabled?: boolean }) {
+/** A minimal filesystem seam: absent lock by default, seedable via `seed`. */
+function makeFsMock(seed: Record<string, string> = {}) {
+  const backing = new Map(Object.entries(seed))
+  return {
+    backing,
+    async resolve(path: string) { return { targetKey: path, displayPath: path } },
+    async stat(target: unknown) {
+      const key = String((target as { targetKey: unknown }).targetKey)
+      return backing.has(key) ? { version: 'v1', type: 'file', size: 1 } : undefined
+    },
+    async readText(target: unknown) {
+      const c = backing.get(String((target as { targetKey: unknown }).targetKey))
+      if (c === undefined) throw new Error('not found')
+      return c
+    },
+    async writeText(target: unknown, content: string) {
+      backing.set(String((target as { targetKey: unknown }).targetKey), content)
+      return {}
+    },
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function mount(config: { memoryHome: string; dreamEnabled?: boolean; extractEnabled?: boolean; fs?: unknown; sessions?: unknown }) {
   const ctx = new Context()
   const jobs = { start: vi.fn() }
   const subagents = { start: vi.fn() }
+  const fs = config.fs ?? makeFsMock()
+  const sessions = config.sessions ?? { list: vi.fn(() => []) }
   // Provide on the root context so the plugin under test (mounted on the same
   // root) sees the services through ctx.get.
   ctx.provide('jobs' as never, jobs as never)
   ctx.provide('subagents' as never, subagents as never)
+  ctx.provide('fs' as never, fs as never)
+  ctx.provide('sessions' as never, sessions as never)
   apply(ctx, config)
-  return { ctx, jobs, subagents }
+  return { ctx, jobs, subagents, fs, sessions }
 }
 
 /** Dispatch turn-stopping the way the agent loop does: serially, awaiting listeners. */
 async function stopTurn(ctx: Context, agent: Agent): Promise<void> {
   const signal = new AbortController().signal
   await ctx.serial('agent/turn-stopping' as never, { agent, signal } as never)
+}
+
+/** Count subagent starts with a given label. */
+function startsWithLabel(subagents: { start: ReturnType<typeof vi.fn> }, label: string): number {
+  return subagents.start.mock.calls.filter((c) => c[1]?.label === label).length
+}
+
+/** The done/cancel control captured on a jobs.start call with the given label. */
+function controlsOf(
+  jobs: { start: ReturnType<typeof vi.fn> },
+  label: string,
+): Array<{ cancel: (reason?: string) => void; done: Promise<{ status: string }> }> {
+  return jobs.start.mock.calls
+    .filter((c) => c[0]?.label === label)
+    .map((c) => c[0].run())
 }
 
 describe('agent/turn-stopping listener', () => {
@@ -60,5 +118,190 @@ describe('agent/turn-stopping listener', () => {
     subagents.start.mockRejectedValue(new Error('no such provider'))
 
     await expect(stopTurn(ctx, fakeAgent('/tmp'))).resolves.toBeUndefined()
+  })
+})
+
+describe('agent/turn-stopping recursion & single-flight gates', () => {
+  it('a subagent (delegationDepth 1) turn-end spawns nothing', async () => {
+    const { ctx, jobs, subagents } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent('/tmp', 1))
+
+    expect(subagents.start).not.toHaveBeenCalled()
+    expect(jobs.start).not.toHaveBeenCalled()
+  })
+
+  it('depth gate fails closed: invalid subagentDepth spawns nothing without throwing', async () => {
+    const { ctx, jobs, subagents } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+    const agent = fakeAgent('/tmp', -1) // delegates to delegationDepthOf, which throws
+
+    await expect(stopTurn(ctx, agent)).resolves.toBeUndefined()
+
+    expect(subagents.start).not.toHaveBeenCalled()
+    expect(jobs.start).not.toHaveBeenCalled()
+  })
+
+  it('extraction is single-flight per session', async () => {
+    const { ctx, jobs, subagents } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    const agent = fakeAgent('/tmp')
+    const pending = deferred<{ status: string }>()
+    subagents.start.mockImplementation(async () => ({ result: pending.promise }))
+
+    await stopTurn(ctx, agent)
+    await stopTurn(ctx, agent) // still in flight
+
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalledTimes(1))
+    expect(jobs.start).toHaveBeenCalledTimes(1)
+    pending.resolve({ status: 'completed' })
+  })
+
+  it('content gate: no re-spawn on unchanged events, spawns again on growth', async () => {
+    const { ctx, jobs, subagents } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    const agent = fakeAgent('/tmp')
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    // First turn: some events exist, spawns.
+    agent.session.events.push({ source: 'user', message: 'a' } as never)
+    await stopTurn(ctx, agent)
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(controlsOf(jobs, 'extract-memories').length).toBe(1))
+    // Let the extraction settle so the in-flight flag clears.
+    await vi.waitFor(() => expect(subagents.start.mock.calls.length).toBe(1))
+
+    // Same event count again: content gate skips (no in-flight either).
+    await stopTurn(ctx, agent)
+    expect(subagents.start).toHaveBeenCalledTimes(1)
+
+    // Events grew: spawns again.
+    agent.session.events.push({ source: 'assistant', message: 'b' } as never)
+    await stopTurn(ctx, agent)
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalledTimes(2))
+  })
+
+  it('job outcome: run.result rejection maps onto a resolves-only done (failed / killed / completed)', async () => {
+    // failed
+    const a = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    a.subagents.start.mockImplementation(async () => ({ result: Promise.reject(new Error('boom')) }))
+    await stopTurn(a.ctx, fakeAgent('/tmp'))
+    await vi.waitFor(() => expect(a.jobs.start).toHaveBeenCalledTimes(1))
+    const [failedDone] = controlsOf(a.jobs, 'extract-memories')
+    await expect(failedDone.done).resolves.toEqual({ status: 'failed', detail: 'Error: boom' })
+
+    // completed
+    const b = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    b.subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+    await stopTurn(b.ctx, fakeAgent('/tmp'))
+    await vi.waitFor(() => expect(b.jobs.start).toHaveBeenCalledTimes(1))
+    const [completedDone] = controlsOf(b.jobs, 'extract-memories')
+    await expect(completedDone.done).resolves.toEqual({ status: 'completed' })
+
+    // killed: aborted before the result rejects.
+    const c = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    const pending = deferred<{ status: string }>()
+    c.subagents.start.mockImplementation(async () => ({ result: pending.promise }))
+    await stopTurn(c.ctx, fakeAgent('/tmp'))
+    await vi.waitFor(() => expect(c.jobs.start).toHaveBeenCalledTimes(1))
+    const [cancellable] = controlsOf(c.jobs, 'extract-memories')
+    cancellable.cancel('disposed')
+    pending.reject(new Error('cancel'))
+    await expect(cancellable.done).resolves.toEqual({ status: 'killed' })
+  })
+
+  it('forwards maxDepth: 1 on the subagent request', async () => {
+    const { ctx, subagents } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent('/tmp'))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalledTimes(1))
+
+    expect(subagents.start.mock.calls[0][1]).toMatchObject({ maxDepth: 1 })
+  })
+})
+
+describe('dream listNewSessions filtering', () => {
+  const NOW = 2_000_000_000_000
+
+  function dreamSessions() {
+    // lastAt = 1000 => only the "old" session predates it.
+    const seed = { '/mem/.consolidation-lock': '1\n1000\n' }
+    const fs = makeFsMock(seed)
+    const sessions = {
+      list: vi.fn(() => [
+        { id: 'old', header: { id: 'old', createdAt: 100 } },
+        { id: 'depth', header: { id: 'depth', createdAt: NOW, delegationDepth: 1 } },
+        { id: 'new-1', header: { id: 'new-1', createdAt: NOW } },
+        { id: 'invalid', header: { id: 'invalid', createdAt: -1 } },
+        { id: 'missing', header: { id: 'missing' } },
+        { id: 'fill-1', header: { id: 'fill-1', createdAt: NOW + 1 } },
+        { id: 'fill-2', header: { id: 'fill-2', createdAt: NOW + 2 } },
+      ]),
+    }
+    const { ctx, jobs, subagents } = mount({ memoryHome: '/mem', fs, sessions })
+    return { ctx, jobs, subagents }
+  }
+
+  function dreamPromptOf(subagents: { start: ReturnType<typeof vi.fn> }): string {
+    const call = subagents.start.mock.calls.find((c) => c[1]?.label === 'memory-consolidation')
+    return call ? call[1].prompt[0].text : ''
+  }
+
+  it('excludes old/delegated sessions and counts invalid/missing createdAt as new', async () => {
+    const { ctx, jobs, subagents } = dreamSessions()
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent('/mem'))
+
+    await vi.waitFor(() =>
+      expect(startsWithLabel(subagents, 'memory-consolidation')).toBe(1),
+      { timeout: 2000 },
+    )
+    const prompt = dreamPromptOf(subagents)
+    expect(prompt).toContain('new-1')
+    expect(prompt).toContain('invalid')
+    expect(prompt).toContain('missing')
+    expect(prompt).toContain('fill-1')
+    expect(prompt).toContain('fill-2')
+    // Excluded: older than lastAt, or a delegated session.
+    expect(prompt).not.toContain('old')
+    expect(prompt).not.toContain('depth')
+    // One memory-consolidation job (extraction runs a separate one).
+    expect(startsWithLabel(subagents, 'memory-consolidation')).toBe(1)
+  })
+
+  it('dream is single-flight across interleaved turn-stopping dispatches', async () => {
+    // Keep the first dream pending (deferred stat) so the flag stays set when
+    // the second dispatch fires.
+    const dreamStat = deferred<unknown>()
+    const base = makeFsMock({ '/mem/.consolidation-lock': '1\n1000\n' })
+    const fs = {
+      ...base,
+      async stat(target: unknown) {
+        const key = String((target as { targetKey: unknown }).targetKey)
+        if (key.endsWith('/.consolidation-lock')) return dreamStat.promise
+        return base.stat(target)
+      },
+    }
+    const sessions = {
+      list: vi.fn(() => [
+        { id: 'a', header: { id: 'a', createdAt: NOW } },
+        { id: 'b', header: { id: 'b', createdAt: NOW } },
+        { id: 'c', header: { id: 'c', createdAt: NOW } },
+        { id: 'd', header: { id: 'd', createdAt: NOW } },
+        { id: 'e', header: { id: 'e', createdAt: NOW } },
+      ]),
+    }
+    const { ctx, subagents } = mount({ memoryHome: '/mem', fs, sessions })
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent('/mem'))
+    await stopTurn(ctx, fakeAgent('/mem'))
+    dreamStat.resolve(undefined)
+
+    await vi.waitFor(() =>
+      expect(startsWithLabel(subagents, 'memory-consolidation')).toBe(1),
+      { timeout: 2000 },
+    )
   })
 })
