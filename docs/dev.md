@@ -58,6 +58,9 @@ package's `package.json` **and** add the matching lockfile entry (see above).
 
 ## Worktree local setup
 
+- After `bash scripts/sync-local-profile.sh web`, also run
+  `bash scripts/sync-cc-preset.sh` — it rsyncs the CC preset combo into
+  `~/.dsh/.agent-presets/cc` so the `cc` preset is available in any profile.
 - Deps in a fresh worktree: `bash scripts/link-worktree-deps.sh` (idempotent;
   symlinks each package's node_modules from the main checkout).
 - The worktree root may additionally need `link:` targets flattened into

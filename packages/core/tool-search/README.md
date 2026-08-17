@@ -29,6 +29,7 @@ The design rides the repo's effect conventions:
 - **Deferred registration is an effect.** The returned disposer reclaims the deferred entry *and* any activated `ctx.tools` registration together, so a plugin unloading mid-session tears down both.
 - **Activation is idempotent.** Re-activating an already-loaded tool is a no-op; re-registration (which would throw on a duplicate name) never happens.
 - **Restriction stays authoritative.** `registerDeferred` reserves the tool's name in the `dsh-tools` registry (known but not visible), so a scoped `restrict()` can deny it *before* it loads. ToolSearch checks that gate: a deferred tool a scope denies is **not** activated for that scope, and the result says why.
+- **Search is scope-visible.** A deferred registration lands in the calling scope's layer, and ToolSearch searches the *calling agent's* scope chain (itself and ancestors) — so a tool an agent deferred is visible to that agent's search and its descendants, but a sibling scope or the global view never sees it. A globally-deferred tool remains globally visible as before.
 - **Deferred names never leak into the prompt.** Only activated (`alwaysLoad` or loaded) tools enter the schema; reserved-but-unloaded names are known for restriction/`toolOrder` purposes but never model-visible.
 
 ## Model Experience

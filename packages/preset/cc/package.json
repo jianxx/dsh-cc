@@ -1,0 +1,58 @@
+{
+  "name": "@jianxx/dsh-cc-preset-cc",
+  "description": "dsh「CC 模式」agent preset:composition-only package mounting the Claude Code surface",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/preset/cc"
+  },
+  "files": [
+    "agent.cordis.yml",
+    "preset.yml",
+    "README.md",
+    "README.zh.md"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@jianxx/dsh-cc-bundle-shell": "workspace:^",
+    "@jianxx/dsh-cc-command-branch": "workspace:^",
+    "@jianxx/dsh-cc-command-config": "workspace:^",
+    "@jianxx/dsh-cc-command-cost": "workspace:^",
+    "@jianxx/dsh-cc-command-diff": "workspace:^",
+    "@jianxx/dsh-cc-command-doctor": "workspace:^",
+    "@jianxx/dsh-cc-command-export": "workspace:^",
+    "@jianxx/dsh-cc-command-help": "workspace:^",
+    "@jianxx/dsh-cc-command-init": "workspace:^",
+    "@jianxx/dsh-cc-command-mcp": "workspace:^",
+    "@jianxx/dsh-cc-command-memory": "workspace:^",
+    "@jianxx/dsh-cc-command-permissions": "workspace:^",
+    "@jianxx/dsh-cc-command-plugin": "workspace:^",
+    "@jianxx/dsh-cc-command-release-notes": "workspace:^",
+    "@jianxx/dsh-cc-command-resume": "workspace:^",
+    "@jianxx/dsh-cc-command-skills": "workspace:^",
+    "@jianxx/dsh-cc-command-stats": "workspace:^",
+    "@jianxx/dsh-cc-command-status": "workspace:^",
+    "@jianxx/dsh-cc-command-tasks": "workspace:^",
+    "@jianxx/dsh-cc-command-version": "workspace:^",
+    "@jianxx/dsh-cc-compaction-micro": "workspace:^",
+    "@jianxx/dsh-cc-coordinator": "workspace:^",
+    "@jianxx/dsh-cc-hooks-claude-code": "workspace:^",
+    "@jianxx/dsh-cc-memory": "workspace:^",
+    "@jianxx/dsh-cc-memory-consolidation": "workspace:^",
+    "@jianxx/dsh-cc-output-styles": "workspace:^",
+    "@jianxx/dsh-cc-skill-loader": "workspace:^",
+    "@jianxx/dsh-cc-tool-git-worktree": "workspace:^",
+    "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
+    "@jianxx/dsh-cc-tool-search": "workspace:^",
+    "@jianxx/dsh-cc-tool-sleep": "workspace:^",
+    "@jianxx/dsh-cc-tool-structured-output": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis-plugin-include": "link:../../../../deepseek-harness/vendor/include",
+    "js-yaml": "^4.1.0",
+    "vitest": "^4.1.8"
+  }
+}

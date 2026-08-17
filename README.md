@@ -102,6 +102,33 @@ cordis instance — the same way a published bundle does. Re-run it after every 
 > On a network-restricted host, `pnpm install` stalls fetching per-package registry
 > attestations even with `--offline`; see `docs/dev.md` for the offline recovery.
 
+### CC Mode preset
+
+CC Mode is dsh's **fifth** agent preset (the four built-in modes are unchanged —
+see below). It exposes the full CC-parity surface from this repo as a single
+selectable preset.
+
+Install in two steps:
+
+```sh
+bash scripts/sync-local-profile.sh web   # install the @jianxx/* packages into the profile
+bash scripts/sync-cc-preset.sh           # install the CC preset combo into ~/.dsh/.agent-presets/cc
+```
+
+The second script rsyncs `packages/preset/cc/agent.cordis.yml` and
+`packages/preset/cc/preset.yml` into `~/.dsh/.agent-presets/cc` (respecting
+`$DSH_HOME`). Re-run it whenever those files change, then restart dsh — the
+preset list is re-scanned at the next boot.
+
+Select the preset either through the web UI's preset selector, or by setting
+`agent-presets.default="cc"` in settings. To uninstall, delete the
+`~/.dsh/.agent-presets/cc` directory.
+
+The four built-in modes are behaviorally unchanged: the host plane keeps only
+the tools-registry fork, the five-level settings cascade + permission rules, and
+settings migrations — none of which produces a visible change on the stock
+modes.
+
 ## How the loading works (the mechanism our names rely on)
 
 1. Bundles list "rows" in `cordis.patch.yml`; each row is an entry `{id, name, config?, insert?…}` the Loader interprets.

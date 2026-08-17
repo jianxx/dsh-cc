@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-bundle-shell",
   "version": "0.1.0",
-  "description": "Claude Code shell-surface parity layer: hooks bridge, skill loader, agents presets, memory, CC commands, deferred tool search, worktree tools, microcompaction, coordinator mode",
+  "description": "CC shell host-plane infra: tools registry swap (deferred-name support) + settings migrations; the glue plugin code lives here but is mounted by the CC preset (packages/preset/cc)",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -33,43 +33,10 @@
     "@deepseek-ai/cordis": ">=0.1.0-rc.5"
   },
   "dependencies": {
-    "@jianxx/dsh-cc-tools": "workspace:^",
-    "@jianxx/dsh-cc-tool-search": "workspace:^",
-    "@jianxx/dsh-cc-skill-loader": "workspace:^",
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@jianxx/dsh-cc-plugin-loader": "workspace:^",
-    "@jianxx/dsh-cc-output-styles": "workspace:^",
-    "@jianxx/dsh-cc-memory": "workspace:^",
-    "@jianxx/dsh-cc-memory-consolidation": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",
-    "@jianxx/dsh-cc-mcp-config": "workspace:^",
-    "@jianxx/dsh-cc-compaction-micro": "workspace:^",
-    "@jianxx/dsh-cc-coordinator": "workspace:^",
-    "@jianxx/dsh-cc-tool-git-worktree": "workspace:^",
-    "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
-    "@jianxx/dsh-cc-tool-sleep": "workspace:^",
-    "@jianxx/dsh-cc-tool-structured-output": "workspace:^",
-    "@jianxx/dsh-cc-command-branch": "workspace:^",
-    "@jianxx/dsh-cc-command-config": "workspace:^",
-    "@jianxx/dsh-cc-command-cost": "workspace:^",
-    "@jianxx/dsh-cc-command-diff": "workspace:^",
-    "@jianxx/dsh-cc-command-doctor": "workspace:^",
-    "@jianxx/dsh-cc-command-export": "workspace:^",
-    "@jianxx/dsh-cc-command-help": "workspace:^",
-    "@jianxx/dsh-cc-command-init": "workspace:^",
-    "@jianxx/dsh-cc-command-mcp": "workspace:^",
-    "@jianxx/dsh-cc-command-memory": "workspace:^",
-    "@jianxx/dsh-cc-command-permissions": "workspace:^",
-    "@jianxx/dsh-cc-command-plugin": "workspace:^",
-    "@jianxx/dsh-cc-command-release-notes": "workspace:^",
-    "@jianxx/dsh-cc-command-resume": "workspace:^",
-    "@jianxx/dsh-cc-command-skills": "workspace:^",
-    "@jianxx/dsh-cc-command-stats": "workspace:^",
-    "@jianxx/dsh-cc-command-status": "workspace:^",
-    "@jianxx/dsh-cc-command-tasks": "workspace:^",
-    "@jianxx/dsh-cc-command-version": "workspace:^",
-    "@jianxx/dsh-cc-hooks-claude-code": "workspace:^",
-    "@jianxx/dsh-cc-settings-migrations": "workspace:^"
+    "@jianxx/dsh-cc-mcp-config": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
@@ -93,6 +60,11 @@
     "@deepseek-ai/dsh-web": "link:../../../../deepseek-harness/packages/web/web",
     "@deepseek-ai/dsh-web-fetch-http": "link:../../../../deepseek-harness/packages/web/web-fetch-http",
     "typescript": "6.0.3",
-    "@deepseek-ai/dsh-fs-local": "link:../../../../deepseek-harness/packages/fs/fs-local"
+    "@deepseek-ai/dsh-fs-local": "link:../../../../deepseek-harness/packages/fs/fs-local",
+    "@jianxx/dsh-cc-tools": "workspace:^",
+    "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
+    "@jianxx/dsh-cc-tool-sleep": "workspace:^",
+    "@jianxx/dsh-cc-tool-structured-output": "workspace:^",
+    "@jianxx/dsh-cc-settings-migrations": "workspace:^"
   }
 }

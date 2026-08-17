@@ -1,7 +1,11 @@
-# Claude Code shell-surface parity layer. Mounts the vendored tool registry
-# (deferred-name support) plus the CC surface plugins. Every package here is a
-# plain composition row — zero config keeps upstream defaults, which already
-# resolve against $DSH_HOME and process.cwd().
+# CC shell host-plane infra swap: the tools registry (deferred-name support)
+# plus settings migrations. Everything agent-facing (tool-search, skill-loader,
+# glue-driven hooks/commands, memory, coordinator, worktree/sleep/notebook/
+# structured-output tools, 19 slash commands, the hook bridge) moved to
+# packages/preset/cc. Rationale: globally registered tools/commands/system-prompt/
+# skills mounted here leak into every agent preset; preset-izing them is what
+# isolates each surface. glue plugin code still lives here but is mounted by the
+# CC preset, not this bundle.
 
 # Swap the in-box tool registry for the vendored one. reserve()/isAdmitted()
 # join the restrictable-name universe so permission gates may name deferred
@@ -9,12 +13,8 @@
 - id: tools
   disabled: true
 
-# Remount below (in the insert list) with fetch enabled and the fetch provider.
-- id: tool-web
-  disabled: true
-
 - insert:
-    # ── core swaps ────────────────────────────────────────────────────────────
+    # Remount below (in the insert list) with fetch enabled and the fetch provider.
     - id: tools-cc
       name: '@jianxx/dsh-cc-tools'
       config:
@@ -22,136 +22,7 @@
         # patches `tools` with it). Absent env ⇒ undefined, the established semantics.
         mode: !!js process.env.DSH_TOOLS_MODE
 
-    # ── discovery + gating ─────────────────────────────────────────────────
-    # ToolSearch: model-called search that activates deferred tools per scope.
-    - id: tool-search
-      name: '@jianxx/dsh-cc-tool-search'
-
-    # Claude Code skills from user/project/additional roots.
-    - id: skill-claude-code
-      name: '@jianxx/dsh-cc-skill-loader'
-
-    # CC plugins on disk (agents/skills/commands/hooks/mcp servers) plus the
-    # base agent preset dirs and .mcp.json server wiring — see the glue plugin.
-    - id: cc-shell-glue
-      name: '@jianxx/dsh-cc-bundle-shell'
-
-    # ── session features ────────────────────────────────────────────────────
-    - id: memory
-      name: '@jianxx/dsh-cc-memory'
-
-    - id: memory-consolidation
-      name: '@jianxx/dsh-cc-memory-consolidation'
-
-    # Render CLAUDE.md-style output styles to the system prompt.
-    - id: cc-output-styles
-      name: '@jianxx/dsh-cc-output-styles'
-
     # Settings migrations: apply version-gated settings.json migrations at startup
     # (equivalent to CC's runMigrations). Empty registry — mechanism only — for now.
     - id: settings-migrations
       name: '@jianxx/dsh-cc-settings-migrations'
-
-    # Model-free staleness microcompaction (auto: false by default).
-    - id: compaction-micro
-      name: '@jianxx/dsh-cc-compaction-micro'
-
-    # Coordinator mode: DSH_COORDINATOR_MODE=1 or config enabled.
-    - id: coordinator
-      name: '@jianxx/dsh-cc-coordinator'
-
-    # WebFetch: model-directed fetch is an SSRF surface — the web-fetch-http
-    # executor row is unshipped by the CLI through rc.6, so it is not mounted
-    # here (re-add once the installation carries it; cordis-peer, version-skew
-    # untested). Fetch itself stays enabled for egress-restricted deployments;
-    # see README "Known limits". Carries the base tool-web row's timeout forward.
-    - id: tool-web-cc
-      name: '@deepseek-ai/dsh-tool-web'
-      config:
-        fetch: true
-        searchTimeoutMs: 60000
-    # Durable session-local reminders (SessionCron parity; cron-expression
-    # selectors not yet supported upstream).
-    - id: schedule
-      name: '@deepseek-ai/dsh-schedule'
-
-    # ── tools + hooks ───────────────────────────────────────────────────────
-    - id: tool-git-worktree
-      name: '@jianxx/dsh-cc-tool-git-worktree'
-
-    - id: tool-sleep
-      name: '@jianxx/dsh-cc-tool-sleep'
-
-    # NotebookEdit: edits Jupyter notebook (.ipynb) cells over the ctx.fs seam
-    # with CC's replace/insert/delete, cell addressing, and read-before-write gate.
-    - id: tool-notebook-edit
-      name: '@jianxx/dsh-cc-tool-notebook-edit'
-
-    # StructuredOutput: non-interactive structured-final-response channel, registered
-    # only when the deployment declares a schema (CC's SyntheticOutputTool).
-    - id: tool-structured-output
-      name: '@jianxx/dsh-cc-tool-structured-output'
-
-    # AI-human interaction: the model-facing ask_user_question tool consumes the
-    # ctx.userQuestions capability seam. The seam itself (dsh-user-questions) is
-    # owned by dsh-base in both rc.5 and rc.6, so it is not inserted here; a UI
-    # provider absent yields a graceful NO_PROVIDER tool error.
-    - id: tool-ask-user
-      name: '@deepseek-ai/dsh-tool-ask-user'
-
-    # Claude Code hook bridge: 18 of 30 hook events (see hooks-claude-code README
-    # for the supported set). PreToolUse/PostToolUse et al., command hooks +
-    # http executors over the vendored hook protocol. Zero config here — the
-    # plugin defaults its configPath to $DSH_HOME/hooks.json itself.
-    - id: hooks-claude-code
-      name: '@jianxx/dsh-cc-hooks-claude-code'
-
-    # ── CC parity slash commands ────────────────────────────────────────────
-    - id: command-cost
-      name: '@jianxx/dsh-cc-command-cost'
-      config:
-        # Composition decides pricing → the package schema stays strict; ship an
-        # empty price table by default (README "Known limits" /cost entry).
-        modelTable: []
-
-    - id: command-export
-      name: '@jianxx/dsh-cc-command-export'
-
-    - id: command-stats
-      name: '@jianxx/dsh-cc-command-stats'
-
-    - id: command-status
-      name: '@jianxx/dsh-cc-command-status'
-
-    - id: command-doctor
-      name: '@jianxx/dsh-cc-command-doctor'
-
-    # ── CC parity slash commands, batch 2 ────────────────────────────────────
-    - id: command-memory
-      name: '@jianxx/dsh-cc-command-memory'
-    - id: command-skills
-      name: '@jianxx/dsh-cc-command-skills'
-    - id: command-help
-      name: '@jianxx/dsh-cc-command-help'
-    - id: command-config
-      name: '@jianxx/dsh-cc-command-config'
-    - id: command-permissions
-      name: '@jianxx/dsh-cc-command-permissions'
-    - id: command-version
-      name: '@jianxx/dsh-cc-command-version'
-    - id: command-release-notes
-      name: '@jianxx/dsh-cc-command-release-notes'
-    - id: command-diff
-      name: '@jianxx/dsh-cc-command-diff'
-    - id: command-init
-      name: '@jianxx/dsh-cc-command-init'
-    - id: command-plugin
-      name: '@jianxx/dsh-cc-command-plugin'
-    - id: command-mcp
-      name: '@jianxx/dsh-cc-command-mcp'
-    - id: command-tasks
-      name: '@jianxx/dsh-cc-command-tasks'
-    - id: command-resume
-      name: '@jianxx/dsh-cc-command-resume'
-    - id: command-branch
-      name: '@jianxx/dsh-cc-command-branch'
