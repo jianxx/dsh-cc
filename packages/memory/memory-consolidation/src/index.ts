@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
 import { MEMORY_TOOL_FILTER } from './tools.ts'
 import { buildConsolidationPrompt, buildExtractionPrompt } from './prompts.ts'
@@ -77,12 +78,13 @@ interface SubagentService {
     parent: Agent
     signal: AbortSignal
     toolFilter?: { allow: readonly string[] }
+    maxDepth?: number
   }): Promise<{ result: Promise<unknown> }>
 }
 
 /** Structural subset of the sessions seam used here. */
 interface SessionsService {
-  list(): Array<{ id: string }>
+  list(): Array<{ id: string; header?: { createdAt?: unknown; delegationDepth?: unknown } }>
 }
 
 /**
@@ -112,17 +114,28 @@ async function startMemoryJob(
     prompt: [{ type: 'text', text: prompt }],
     parent: agent,
     toolFilter: MEMORY_TOOL_FILTER,
+    // Defense-in-depth recursion cap: the top-level listener already gates on
+    // depth zero, so this fork's child never delegates. maxDepth is compared
+    // against the CHILD's resolved depth (parent + 1); a top-level parent's
+    // child resolves to 1 and passes, a grandchild to 2 is rejected.
+    maxDepth: 1,
   })
-  const settled = run.result
-    .then(() => true)
-    .catch(() => false)
+  // Real job-done wiring: `done` maps the subagent outcome onto the JobHooks
+  // contract (must never reject). Aborted → killed (rolls back the dream lock),
+  // otherwise failure → failed. Both branches resolve.
+  const done = run.result.then(
+    (): { status: 'completed' } => ({ status: 'completed' }),
+    (err): { status: 'killed' } | { status: 'failed'; detail: string } =>
+      controller.signal.aborted ? { status: 'killed' } : { status: 'failed', detail: String(err) },
+  )
+  const settled = done.then(o => o.status === 'completed')
   jobs.start({
     kind: 'subagent',
     label,
     owner: agent,
     run: () => ({
       cancel: (reason?: string) => { controller.abort(reason) },
-      done: Promise.resolve({ status: 'completed' as const }),
+      done,
     }),
   })
   return { abort: (reason?: string) => { controller.abort(reason) }, settled }
@@ -139,21 +152,130 @@ export function apply(ctx: Context, config: Config = {}): void {
   const minHours = config.minHours ?? 24
   const minSessions = config.minSessions ?? 5
 
+  // Per-session extraction single-flight. Keyed by session id so each top-level
+  // agent's in-flight flag and last-spawned event count are isolated.
+  const flight = new Map<string, { extracting: boolean; lastEvents: number }>()
+  // One dream in flight across the whole plugin instance (per memory dir).
+  let dreamInFlight = false
+  // Reset the flight state when this plugin fiber is disposed (hygiene / test
+  // isolation). cordis `ctx.on` is typed strictly to `keyof Events`, so cleanup
+  // is registered as a fiber effect rather than a 'dispose' listener.
+  ctx.effect(() => () => {
+    flight.clear()
+    dreamInFlight = false
+  }, 'memory-consolidation: reset flight state')
+
   ctx.on('agent/turn-stopping', ({ agent, signal }) => {
+    // All predicates are synchronous and run before any await, so the flags
+    // below are set before a second, interleaved turn-stopping could observe
+    // them.
     if (signal.aborted) return
+    if (!isTopLevel(agent)) return
+    const sessionId = agent.session.header.id
     if (config.extractEnabled ?? true) {
-      runExtraction(ctx, agent, dir, provider)
+      const entry = flight.get(sessionId)
+      // Single-flight: skip while an extraction is in flight or when no new
+      // events have arrived since the last spawn.
+      if (!entry?.extracting && agent.session.events.length !== entry?.lastEvents) {
+        flight.set(sessionId, { extracting: true, lastEvents: agent.session.events.length })
+        void runExtraction(ctx, agent, dir, provider).finally(() => {
+          const cur = flight.get(sessionId)
+          if (cur) cur.extracting = false
+        })
+      }
     }
     if (config.dreamEnabled ?? true) {
-      runDream(ctx, agent, dir, provider, minHours, minSessions).catch(() => {})
+      if (!dreamInFlight) {
+        dreamInFlight = true
+        void runDream(ctx, agent, dir, provider, minHours, minSessions)
+          .catch(() => {})
+          .finally(() => { dreamInFlight = false })
+      }
     }
   })
 }
 
-function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): void {
-  const prompt = buildExtractionPrompt(agent.session.events.length, dir, '')
-  // Fire-and-forget: extraction failure must never fail the turn itself.
-  void startMemoryJob(ctx, agent, provider, 'extract-memories', prompt).catch(() => {})
+/**
+ * Whether an agent is top-level (not a delegated subagent). This is the root
+ * fix for the extraction/dream recursion: a subagent's own turn-end must never
+ * spawn another memory fork. Fails CLOSED — any throw from reading the depth
+ * treats the agent as a child so nothing is spawned.
+ */
+function isTopLevel(agent: Agent): boolean {
+  try {
+    return delegationDepthOf(agent) === 0
+  } catch {
+    return false
+  }
+}
+
+/** Surface event types whose count a single extraction batch reviews. */
+const SURFACE_EVENT_TYPES = new Set(['user/message', 'assistant/message', 'tool/result'])
+/** Upper bound on the injected index: first 200 lines or 8 KiB, whichever first. */
+const INDEX_CAP_LINES = 200
+const INDEX_CAP_BYTES = 8 * 1024
+const INDEX_TRUNCATED_MARKER = '(index truncated; rely on MEMORY.md in-dir for the rest)'
+
+async function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): Promise<void> {
+  // Only model-visible surface events count toward the batch size.
+  const surfaceCount = agent.session.events.filter((e) => SURFACE_EVENT_TYPES.has(e.type)).length
+  // The index read happens AFTER the in-flight/content gates (runExtraction is
+  // only reached once a spawn is committed), so a skipped spawn never pays the
+  // fs cost. Any failure here degrades to an empty index and still spawns.
+  const existingIndex = await readExistingIndex(ctx, dir)
+  const prompt = buildExtractionPrompt(surfaceCount, dir, existingIndex)
+  // Fire-and-forget: extraction failure must never fail the turn itself. The
+  // resolved value is discarded so the returned promise is always `void`.
+  return startMemoryJob(ctx, agent, provider, 'extract-memories', prompt)
+    .catch(() => {})
+    .then(() => {})
+}
+
+/**
+ * Read the existing topic index to inject into the extraction prompt: the
+ * MEMORY.md body when present, else the names of sibling topic `.md` files.
+ * Swallow-all: any error or an absent fs yields an empty index so a spawn is
+ * never blocked by the read. Content is capped at 200 lines / 8 KiB so a huge
+ * index cannot bloat the prompt.
+ */
+async function readExistingIndex(ctx: Context, dir: string): Promise<string> {
+  const fs = ctx.get('fs')
+  if (fs === undefined) return ''
+  try {
+    const memoryTarget = await fs.resolve(join(dir, 'MEMORY.md'))
+    const info = await fs.stat(memoryTarget)
+    let raw: string
+    if (info !== undefined) {
+      raw = await fs.readText(memoryTarget)
+    } else {
+      // No index file: fall back to listing topic `.md` files in the directory.
+      const dirTarget = await fs.resolve(dir)
+      const entries = await fs.listDir(dirTarget)
+      raw = entries
+        .filter((e) => e.type === 'file' && e.name.endsWith('.md') && e.name !== 'MEMORY.md')
+        .map((e) => e.name)
+        .sort()
+        .join('\n')
+    }
+    if (raw === '') return ''
+    // Cap at the first 200 lines OR 8 KiB, whichever comes first; append a
+    // marker when truncated so the model knows to rely on the in-dir file.
+    const lines = raw.split('\n')
+    const kept: string[] = []
+    let bytes = 0
+    let truncated = false
+    for (const line of lines) {
+      if (kept.length >= INDEX_CAP_LINES) { truncated = true; break }
+      const add = line.length + (kept.length > 0 ? 1 : 0)
+      if (bytes + add > INDEX_CAP_BYTES) { truncated = true; break }
+      kept.push(line)
+      bytes += add
+    }
+    const capped = kept.join('\n')
+    return truncated ? `${capped}\n${INDEX_TRUNCATED_MARKER}` : capped
+  } catch {
+    return ''
+  }
 }
 
 async function runDream(
@@ -191,19 +313,32 @@ function listNewSessions(ctx: Context, lastAt: number): string[] {
   if (sessions === undefined) return []
   return sessions
     .list()
+    // Subagent sessions (validated delegationDepth > 0) are excluded from both
+    // the min-sessions count and the dream input: their content is already
+    // covered by turn-end extraction. Absent/invalid depth is treated as 0.
+    .filter(session => {
+      const d = session.header?.delegationDepth
+      return !(Number.isSafeInteger(d) && (d as number) > 0)
+    })
     .map(session => ({ id: session.id, at: sessionStartOf(session) }))
     .filter(session => session.at > lastAt)
     .sort((a, b) => a.at - b.at)
     .map(session => session.id)
 }
 
-/** Session start epoch uses the current time as the conservative lower bound absent a clock in the seam. */
-function sessionStartOf(_session: { id: string }): number {
-  // The sessions seam exposes no per-session clock through this structural
-  // view; treating every live session as new is a safe over-count for an
-  // already-conservative skip gate.
-  return Number.MAX_SAFE_INTEGER
+/**
+ * Session start epoch, defensively read from the header. The dream gate is
+ * skip-oriented, so an unreadable or absent timestamp conservatively counts as
+ * NEW (over-inclusion only costs a re-read). Accepted limitation: a session
+ * created before `lastAt` but still active after it is excluded from the dream
+ * input — turn-end extraction covers recent content; dream is a coarse
+ * periodic pass.
+ */
+function sessionStartOf(session: { header?: { createdAt?: unknown } }): number {
+  const at = session.header?.createdAt
+  return Number.isSafeInteger(at) && (at as number) > 0 ? (at as number) : Number.MAX_SAFE_INTEGER
 }
+
 
 /** The transcript directory is the agent's cwd. */
 function sessionTranscriptDir(agent: Agent): string {

@@ -67,6 +67,13 @@ async function makeFs(): Promise<FakeFs> {
   return ctx.fs as FakeFs
 }
 
+/** A fake whose read-back always reports a different holder than the one we write. */
+class MismatchFs extends FakeFs {
+  override async readText(t: FsTarget): Promise<string> {
+    return `999999\n0\n`
+  }
+}
+
 const dir = '/mem'
 const now = 2_000_000
 
@@ -99,6 +106,23 @@ describe('tryAcquireLock', () => {
     const fs = await makeFs()
     await tryAcquireLock(fs, dir, 1, now)
     expect(await tryAcquireLock(fs, dir, 2, now + 1000)).toBeNull()
+  })
+
+  it('returns null when the write-verify read-back does not match (race lost)', async () => {
+    const mo = new Context()
+    await mo.plugin(MismatchFs)
+    const fs = mo.fs as MismatchFs
+    expect(await tryAcquireLock(fs, dir, 123, now)).toBeNull()
+  })
+
+  it('returns null when the write-verify read-back throws', async () => {
+    class ThrowingReadFs extends FakeFs {
+      override async readText(): Promise<string> { throw new Error('io gone') }
+    }
+    const ctx = new Context()
+    await ctx.plugin(ThrowingReadFs)
+    const fs = ctx.fs as ThrowingReadFs
+    expect(await tryAcquireLock(fs, dir, 123, now)).toBeNull()
   })
 })
 

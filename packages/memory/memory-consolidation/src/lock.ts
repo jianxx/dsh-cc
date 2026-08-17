@@ -86,6 +86,20 @@ export async function tryAcquireLock(
     }
   }
   await fs.writeText(target, format(pid, now))
+  // Read the lock back once to verify we own it. If the content is not EXACTLY
+  // ours, a cross-process writer interleaved between our read and write and we
+  // lost the race. This narrows the TOCTOU window to a sub-millisecond
+  // symmetric-collision; the residual race is accepted (the stale-window
+  // reclaim handles crashes, and the worst case is a redundant MEMORY.md
+  // rewrite bounded by minHours). A read-back THROW is treated as a
+  // verify-failure too (conservative).
+  let owned = false
+  try {
+    owned = (await fs.readText(target)) === format(pid, now)
+  } catch {
+    owned = false
+  }
+  if (!owned) return null
   return priorAt
 }
 

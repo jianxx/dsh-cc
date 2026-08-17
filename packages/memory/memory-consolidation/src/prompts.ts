@@ -12,23 +12,26 @@ const ENTRYPOINT_NAME = 'MEMORY.md'
 /**
  * Build the <system-reminder> user prompt that extracts durable facts from a
  * batch of recent model-visible messages into topic files.
- * @param messageCount - how many messages this run reviews.
+ * @param surfaceMessageCount - how many model-visible surface events (user/message
+ *   + assistant/message + tool/result) this run reviews.
  * @param memoryDir - the memory directory to write into.
  * @param existingIndex - a prior topic manifest, if any.
  * @returns the prompt text.
  */
 export function buildExtractionPrompt(
-  messageCount: number,
+  surfaceMessageCount: number,
   memoryDir: string,
   existingIndex: string,
 ): string {
   return [
-    `Extract durable memories from the last ${messageCount} messages of this conversation and save them to the memory directory \`${memoryDir}\`.`,
+    `Extract durable memories from the last ${surfaceMessageCount} messages of this conversation and save them to the memory directory \`${memoryDir}\`.`,
     'A memory is a fact or preference that will be useful in FUTURE conversations, not ephemeral task detail.',
     'Write each memory to its own `.md` topic file with YAML frontmatter: name, description, and type (`user` | `feedback` | `project` | `reference`).',
     `Add or update a one-line pointer in \`${ENTRYPOINT_NAME}\` for each topic (.md). Do not put memory bodies in the index.`,
-    'Never duplicate an existing memory; prefer updating the matching topic file.',
-    `You may use only: ${MEMORY_AGENT_TOOLS.join(', ')}. Write only inside \`${memoryDir}\`.`,
+    'Never duplicate a topic listed under "Existing topics" below; prefer updating the matching topic file instead of creating a new one.',
+    `You may use only: ${MEMORY_AGENT_TOOLS.join(', ')}. Read and write only inside \`${memoryDir}\`.`,
+    'The conversation to review is already in your context — do not open files or browse directories outside the memory directory.',
+    'If the reviewed messages contain no new durable fact worth remembering, write nothing at all (no files, no index update) and finish immediately.',
     '',
     'Existing topics:',
     existingIndex.length > 0 ? existingIndex : '(none yet)',
