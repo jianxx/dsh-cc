@@ -29,7 +29,7 @@ Defaulting is one explicit `resolveSpec(config)` step.
 - **Policy is first-source-wins.** The policy layer takes the first non-empty of its sub-sources in priority order: remote > system file > user file. An empty or absent higher source falls through to the next.
 - **Flag settings merge file-then-inline.** If both a `--settings` file and inline content are present, the inline content merges over the file within the flag layer.
 - **Misconfiguration fails loud.** A present-but-invalid settings document (unparsable JSON, or a non-object root) fails plugin load; an absent source file contributes nothing and is not an error.
-- **The provider is read-only composition.** `writable` is `false`, so the seam's in-process `update()`/`replace()`/`mutate()` paths reject; namespaces write through their leaf provider.
+- **The provider is writable through the user layer.** `writable` is `true`, so the seam's in-process `update()`/`replace()`/`mutate()` paths are accepted. A write is applied as a surgical delta onto the user-layer settings file (default `$DSH_HOME/settings.json`): only the keys the caller actually changed land in the user file. Values the write did not touch are not copied in, even if they were inherited from a higher layer. The seam still owns validation, revision, and update events; project/local/flag/policy sources remain read-side-only contributors.
 - **`env` applies in two stages.** A top-level `env` section is split out of the merged document and exposed through `getEnv()` with every value coerced to a string. `applyEnv()` assigns ordinary variables; `applyTrustedEnv()` additionally assigns environment-altering variables (`LD_PRELOAD`, `PATH`, `DYLD_INSERT_LIBRARIES`, and the other `DANGEROUS_ENV_VARS`) and runs only after the user grants trust.
 
 ## Permissions schema
@@ -38,7 +38,7 @@ The `permissions` field schema (`allow`, `deny`, `ask`, `defaultMode`, `disableB
 
 ## Model Experience
 
-Indirectly, through consumers of `ctx.settings`: this provider only composes and publishes namespace sections, and each consumer's own surface documents any model effect.
+Indirectly, through consumers of `ctx.settings`: composition remains the read model, with writes supported through the user layer, and each consumer's own surface documents any model effect.
 
 #### KV Cache effect
 
@@ -46,6 +46,9 @@ No direct invalidation; the consuming plugin owns any request-prefix changes.
 
 ## Known Limitations and Deferred Work
 
-- **Read-only, JSON-only sources.** The cascade composes existing documents; leaf writes are out of scope. Sources must be `.json` (the settings.json convention); YAML and write-through to user/project files are deferred.
+- **JSON-only sources.** Sources must be `.json` (the settings.json convention); YAML is deferred.
+- **Unsetting an inherited key is not persisted.** Unsetting a key that comes from a lower-priority source (project/local/flag/policy) cannot be persisted to the user file; the unset holds for the running process, but the value reappears on restart. Also, `describe()`'s `user` field reflects the merged section rather than the literal user file, so GUI override markers are approximate (pre-existing behavior).
+- **Concurrent writers can lose updates.** Concurrent writes from multiple dsh processes to the same user settings file can silently lose updates — atomic rename prevents file corruption, not lost writes; the stock provider's cross-process lock was dropped for this port. Single-process profiles (the norm) are unaffected.
+- **No file hot-reload.** External edits to any source file take effect only on restart (pre-existing).
 - **No per-source provenance.** The merged result does not record which source supplied each resolved value, and `describe()` cannot mark a field's origin across the five layers the way a single user layer does.
 - **Dangerous env is a static allowlist.** `DANGEROUS_ENV_VARS` names a fixed set; deployment-specific variables need an explicit extension point before first use.
