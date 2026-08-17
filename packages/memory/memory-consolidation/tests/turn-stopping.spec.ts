@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { apply } from '../src/index.ts'
+import { buildConsolidationPrompt } from '../src/prompts.ts'
+import { MEMORY_AGENT_TOOLS } from '../src/tools.ts'
 
 /**
  * Regression coverage for the turn-stopping listener. Upstream
@@ -28,21 +30,35 @@ function fakeAgent(cwd: string, depth = 0): Agent {
 /** A minimal filesystem seam: absent lock by default, seedable via `seed`. */
 function makeFsMock(seed: Record<string, string> = {}) {
   const backing = new Map(Object.entries(seed))
+  const stat = vi.fn(async (target: unknown) => {
+    const key = String((target as { targetKey: unknown }).targetKey)
+    const c = backing.get(key)
+    return c === undefined ? undefined : { version: 'v1', type: 'file', size: c.length }
+  })
+  const readText = vi.fn(async (target: unknown) => {
+    const key = String((target as { targetKey: unknown }).targetKey)
+    const c = backing.get(key)
+    if (c === undefined) throw new Error('not found')
+    return c
+  })
   return {
     backing,
+    stat,
+    readText,
     async resolve(path: string) { return { targetKey: path, displayPath: path } },
-    async stat(target: unknown) {
-      const key = String((target as { targetKey: unknown }).targetKey)
-      return backing.has(key) ? { version: 'v1', type: 'file', size: 1 } : undefined
-    },
-    async readText(target: unknown) {
-      const c = backing.get(String((target as { targetKey: unknown }).targetKey))
-      if (c === undefined) throw new Error('not found')
-      return c
-    },
     async writeText(target: unknown, content: string) {
       backing.set(String((target as { targetKey: unknown }).targetKey), content)
       return {}
+    },
+    async listDir(target: unknown) {
+      const root = String((target as { targetKey: unknown }).targetKey)
+      const out: Array<{ name: string; type: 'file' }> = []
+      for (const key of backing.keys()) {
+        if (key.startsWith(`${root}/`) && !key.slice(root.length + 1).includes('/')) {
+          out.push({ name: key.slice(root.length + 1), type: 'file' })
+        }
+      }
+      return out
     },
   }
 }
@@ -303,5 +319,143 @@ describe('dream listNewSessions filtering', () => {
       expect(startsWithLabel(subagents, 'memory-consolidation')).toBe(1),
       { timeout: 2000 },
     )
+  })
+})
+
+describe('extract-memories index injection', () => {
+  const MEM = '/mem'
+
+  function extractionPromptOf(subagents: { start: ReturnType<typeof vi.fn> }): string {
+    const call = subagents.start.mock.calls.find((c) => c[1]?.label === 'extract-memories')
+    return call ? call[1].prompt[0].text : ''
+  }
+
+  function agentWithTypes(types: readonly string[]): Agent {
+    const agent = fakeAgent(MEM)
+    agent.session.events = types.map((type) => ({ type })) as never
+    return agent
+  }
+
+  function mountExtract(fs: unknown) {
+    return mount({ memoryHome: MEM, dreamEnabled: false, fs })
+  }
+
+  it('injects the MEMORY.md index into the prompt under "Existing topics:"', async () => {
+    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md\n  - summary of a' })
+    const { ctx, subagents } = mountExtract(fs)
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    const prompt = extractionPromptOf(subagents)
+    expect(prompt).toContain('Existing topics:')
+    expect(prompt).toContain('topic-a.md\n  - summary of a')
+  })
+
+  it('performs the MEMORY.md read before the subagent start', async () => {
+    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md' })
+    const { ctx, subagents } = mountExtract(fs)
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    expect(fs.stat.mock.invocationCallOrder[0]).toBeLessThan(subagents.start.mock.invocationCallOrder[0])
+    expect(fs.readText.mock.invocationCallOrder[0]).toBeLessThan(subagents.start.mock.invocationCallOrder[0])
+  })
+
+  it('falls back to listing topic .md files when MEMORY.md is absent', async () => {
+    const fs = makeFsMock({ [`${MEM}/topic-b.md`]: 'b', [`${MEM}/topic-a.md`]: 'a' })
+    const { ctx, subagents } = mountExtract(fs)
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    const prompt = extractionPromptOf(subagents)
+    expect(prompt).toContain('topic-a.md')
+    expect(prompt).toContain('topic-b.md')
+
+    // With neither an index nor topic files, the "(none yet)" placeholder shows.
+    const fs2 = makeFsMock({})
+    const c2 = mountExtract(fs2)
+    c2.subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+    await stopTurn(c2.ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(c2.subagents.start).toHaveBeenCalled())
+    expect(extractionPromptOf(c2.subagents)).toContain('(none yet)')
+  })
+
+  it('caps a large index at 200 lines plus a truncation marker', async () => {
+    const big = Array.from({ length: 500 }, (_, i) => `line-${i}`).join('\n')
+    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: big })
+    const { ctx, subagents } = mountExtract(fs)
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    const prompt = extractionPromptOf(subagents)
+    expect(prompt).toContain('line-0')
+    expect(prompt).toContain('line-199')
+    expect(prompt).not.toContain('line-200')
+    expect(prompt).toContain('(index truncated; rely on MEMORY.md in-dir for the rest)')
+  })
+
+  it('contains the index read and still spawns when the fs read throws', async () => {
+    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md' })
+    fs.readText.mockRejectedValueOnce(new Error('io gone'))
+    const { ctx, jobs, subagents } = mountExtract(fs)
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await expect(stopTurn(ctx, fakeAgent(MEM))).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalledTimes(1))
+
+    expect(extractionPromptOf(subagents)).toContain('(none yet)')
+    expect(jobs.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds the read-scope and early-exit prompt contract lines', async () => {
+    const { ctx, subagents } = mountExtract(makeFsMock())
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, fakeAgent(MEM))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    const prompt = extractionPromptOf(subagents)
+    expect(prompt).toContain('The conversation to review is already in your context — do not open files or browse directories outside the memory directory.')
+    expect(prompt).toContain('If the reviewed messages contain no new durable fact worth remembering, write nothing at all (no files, no index update) and finish immediately.')
+    expect(prompt).toContain('Read and write only inside')
+  })
+
+  it('counts only surface events for the batch size', async () => {
+    const types = [
+      'user/message', 'user/message',
+      'assistant/message', 'assistant/message', 'assistant/message',
+      'tool/result',
+      'system', 'system', 'system', 'system', 'system', 'system', 'system', 'system', 'system', 'system',
+    ] as const
+    const { ctx, subagents } = mountExtract(makeFsMock())
+    subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ status: 'completed' }) }))
+
+    await stopTurn(ctx, agentWithTypes(types))
+    await vi.waitFor(() => expect(subagents.start).toHaveBeenCalled())
+
+    expect(extractionPromptOf(subagents)).toContain('last 6 messages')
+  })
+
+  it('keeps buildConsolidationPrompt byte-equal (no collateral change)', () => {
+    const expected = [
+      'You are consolidating persistent memory from past sessions. Review the sessions listed below (transcripts in `/transcripts`), distill durable facts, and rewrite `/mem`.',
+      'The memory directory contains MEMORY.md (an index of topic files) and topic `.md` files with YAML frontmatter (name, description, type).',
+      'Rewrite `MEMORY.md` to be a concise index (one line per topic) and keep topic files organized by semantic topic, not chronology.',
+      'Remove memories that are wrong or outdated. Do not drop a fact that is still load-bearing.',
+      `You may use only: ${MEMORY_AGENT_TOOLS.join(', ')}. Write only inside \`/mem\`.`,
+      '',
+      'Sessions since the last consolidation:',
+      '- s1',
+      '- s2',
+    ].join('\n')
+    expect(buildConsolidationPrompt('/mem', '/transcripts', ['s1', 's2'])).toBe(expected)
   })
 })

@@ -209,13 +209,73 @@ function isTopLevel(agent: Agent): boolean {
   }
 }
 
-function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): Promise<void> {
-  const prompt = buildExtractionPrompt(agent.session.events.length, dir, '')
+/** Surface event types whose count a single extraction batch reviews. */
+const SURFACE_EVENT_TYPES = new Set(['user/message', 'assistant/message', 'tool/result'])
+/** Upper bound on the injected index: first 200 lines or 8 KiB, whichever first. */
+const INDEX_CAP_LINES = 200
+const INDEX_CAP_BYTES = 8 * 1024
+const INDEX_TRUNCATED_MARKER = '(index truncated; rely on MEMORY.md in-dir for the rest)'
+
+async function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): Promise<void> {
+  // Only model-visible surface events count toward the batch size.
+  const surfaceCount = agent.session.events.filter((e) => SURFACE_EVENT_TYPES.has(e.type)).length
+  // The index read happens AFTER the in-flight/content gates (runExtraction is
+  // only reached once a spawn is committed), so a skipped spawn never pays the
+  // fs cost. Any failure here degrades to an empty index and still spawns.
+  const existingIndex = await readExistingIndex(ctx, dir)
+  const prompt = buildExtractionPrompt(surfaceCount, dir, existingIndex)
   // Fire-and-forget: extraction failure must never fail the turn itself. The
   // resolved value is discarded so the returned promise is always `void`.
   return startMemoryJob(ctx, agent, provider, 'extract-memories', prompt)
     .catch(() => {})
     .then(() => {})
+}
+
+/**
+ * Read the existing topic index to inject into the extraction prompt: the
+ * MEMORY.md body when present, else the names of sibling topic `.md` files.
+ * Swallow-all: any error or an absent fs yields an empty index so a spawn is
+ * never blocked by the read. Content is capped at 200 lines / 8 KiB so a huge
+ * index cannot bloat the prompt.
+ */
+async function readExistingIndex(ctx: Context, dir: string): Promise<string> {
+  const fs = ctx.get('fs')
+  if (fs === undefined) return ''
+  try {
+    const memoryTarget = await fs.resolve(join(dir, 'MEMORY.md'))
+    const info = await fs.stat(memoryTarget)
+    let raw: string
+    if (info !== undefined) {
+      raw = await fs.readText(memoryTarget)
+    } else {
+      // No index file: fall back to listing topic `.md` files in the directory.
+      const dirTarget = await fs.resolve(dir)
+      const entries = await fs.listDir(dirTarget)
+      raw = entries
+        .filter((e) => e.type === 'file' && e.name.endsWith('.md') && e.name !== 'MEMORY.md')
+        .map((e) => e.name)
+        .sort()
+        .join('\n')
+    }
+    if (raw === '') return ''
+    // Cap at the first 200 lines OR 8 KiB, whichever comes first; append a
+    // marker when truncated so the model knows to rely on the in-dir file.
+    const lines = raw.split('\n')
+    const kept: string[] = []
+    let bytes = 0
+    let truncated = false
+    for (const line of lines) {
+      if (kept.length >= INDEX_CAP_LINES) { truncated = true; break }
+      const add = line.length + (kept.length > 0 ? 1 : 0)
+      if (bytes + add > INDEX_CAP_BYTES) { truncated = true; break }
+      kept.push(line)
+      bytes += add
+    }
+    const capped = kept.join('\n')
+    return truncated ? `${capped}\n${INDEX_TRUNCATED_MARKER}` : capped
+  } catch {
+    return ''
+  }
 }
 
 async function runDream(
