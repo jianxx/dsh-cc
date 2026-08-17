@@ -23,7 +23,7 @@ Both scripts copy, they do not symlink; plugin code and preset files are read at
 
 ## Select
 
-- **Web UI**: pick "CC模式" from the agent-preset selector; or
+- **Web UI**: pick "CC mode" from the agent-preset selector; or
 - **settings**: `~/.dsh/settings.json` → `"agent-presets": { "default": "cc" }`.
 
 ## Known limits

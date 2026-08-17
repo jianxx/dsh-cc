@@ -23,7 +23,7 @@ bash scripts/sync-cc-preset.sh           # 把 cc preset 装进 ~/.dsh/.agent-pr
 
 ## 选用
 
-- **Web UI**:预设选择器里选「CC模式」;或
+- **Web UI**:预设选择器里选「CC mode」;或
 - **settings**:`~/.dsh/settings.json` → `"agent-presets": { "default": "cc" }`。
 
 ## Known limits(已知限制)
