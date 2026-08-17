@@ -20,6 +20,18 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as ToolGitWorktree from '@jianxx/dsh-cc-tool-git-worktree'
 import { clearActiveWorktreeSession } from '../src/worktree.ts'
 
+// Hook-environment hermeticity. Under a git hook (or any process inheriting
+// one), git exports repo-pinning vars — GIT_INDEX_FILE relative to the
+// worktree root — which re-resolve against each spawned git's own cwd and
+// break the real-git fixtures below (proven: `git worktree add` respawns
+// reset inside the linked worktree, where .git is a pointer file, and the
+// inherited relative index path resolves to "Not a directory"). Strip the
+// repo-pinning family so this suite is identical inside and outside hooks.
+for (const v of [
+  'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE',
+]) delete process.env[v]
+
 const signal = new AbortController().signal
 
 beforeEach(() => clearActiveWorktreeSession())
