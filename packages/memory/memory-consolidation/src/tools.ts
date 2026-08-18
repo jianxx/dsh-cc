@@ -1,15 +1,17 @@
 /**
  * Model-facing tool restrictions for memory subagents.
  *
- * Extraction and dream forks may read/review broadly, may write only files in
- * the memory directory, and must not run arbitrary computation. `ctx.tools.restrict`
- * works by tool name, and validates against the harness-registered names, so this
- * allow-list holds those harness tool names plus the memory-writing file tools;
- * path-scoping of write/edit is enforced by the prompt contract and the targeted
- * review task, not by the name-level gate.
+ * Extraction and dream forks REVIEW broadly but hold no write capability: the
+ * memory directory lives outside the session workspace, so model-side writes
+ * are fenced by the fs sandbox with no escalation path from a background job.
+ * Instead the forks report their file set through the driver-injected
+ * `structured_output` tool and the plugin performs the writes host-side (see
+ * `writeback.ts`). `structured_output` is allow-listed defensively: the driver
+ * installs it AFTER the tool filter is applied, so a name-level filter must
+ * not shadow it.
  *
- * `read_image` pairs with `read` to mirror Claude Code's `Read`, which covers both
- * text and images (the harness splits image reading into its own tool).
+ * `read_image` pairs with `read` to mirror Claude Code's `Read`, which covers
+ * both text and images (the harness splits image reading into its own tool).
  * @module @jianxx/dsh-cc-memory-consolidation/tools
  */
 
@@ -19,8 +21,7 @@ export const MEMORY_AGENT_TOOLS: readonly string[] = [
   'read_image',
   'grep',
   'glob',
-  'write',
-  'edit',
+  'structured_output',
 ]
 
 /** A `toolFilter` value usable as a subagent-start request restriction. */

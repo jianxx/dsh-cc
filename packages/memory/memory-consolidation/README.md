@@ -9,12 +9,13 @@ reads.
 ## What this package provides
 
 - **extractMemories** — an `agent/turn-stopping` listener starts a background
-  forked subagent (via `ctx.jobs` + `ctx.subagents`, tools restricted to the
-  memory directory) that extracts durable facts from the turn and appends them
-  to the matching topic files.
+  forked subagent (via `ctx.jobs` + `ctx.subagents`, read/search tools only)
+  that extracts durable facts from the turn and reports them as structured
+  output; the plugin validates the batch and writes the matching topic files
+  host-side.
 - **Dream consolidation** — three configurable gates that must all pass before
-  a read-only forked subagent reviews past sessions and rewrites `MEMORY.md`
-  and the topic files:
+  a read-only forked subagent reviews past sessions and reports the rewritten
+  `MEMORY.md` + topic file set the same way:
   1. **Time** — at least `minHours` (default 24) since the last consolidation.
   2. **Session count** — at least `minSessions` (default 5) new transcripts.
   3. **Lock** — a `.consolidation-lock` file whose stored timestamp enforces
@@ -26,6 +27,34 @@ reads.
   re-assembles the `memory` system-prompt section via `system-prompt/change`
   after the memory directory changes. This package introduces no new session
   events for the memory files themselves.
+
+## Sandbox interaction: why the plugin writes, not the fork
+
+The memory directory lives in the harness home, OUTSIDE any session
+workspace. A forked subagent inherits the parent session's sandbox policy, so
+under `workspace-write` (or `read-only`) every model-side `write`/`edit`
+aimed at the memory directory is fenced (`FS_SANDBOX_DENIED`), and a
+background job cannot use the escalation retry — escalation prompts, and the
+job's approval policy is `never`. Model-side memory writes are therefore
+guaranteed to fail in any sandboxed session.
+
+So the forks hold no write tools at all. They report their file set through
+`outputSchema` (the driver-injected `structured_output` tool), and the plugin
+— trusted host code — performs the writes itself:
+
+1. `validateMemoryWrites` checks the untrusted payload: flat `.md` filenames
+   only (no separators, `..`, absolute paths, or dotfiles), no duplicates,
+   and hard caps (32 files / 64 KiB per file / 256 KiB per batch). Any
+   violation rejects the WHOLE batch.
+2. `writeMemoryFiles` writes the batch via the `ctx.fs` seam, stamping a
+   per-call policy of `{ mode: 'workspace-write', workspaceRoot: <memory dir> }`
+   — confinement is kept, but the writable root IS the memory directory. The
+   sandbox still fences each write behind the validation above; nothing
+   outside the memory directory becomes writable.
+
+The job status reflects the real outcome: a non-completed `stopReason`, a
+missing/invalid payload, or a write-back failure maps to `failed` with detail
+instead of a silent fake-`completed`.
 
 ## Usage
 
@@ -50,17 +79,21 @@ await ctx.plugin(consolidation, { minHours: 24, minSessions: 5 })
 
 The turn-stopping listener is nearly free when the gates are closed (one lock
 read). When the time and session gates open, one forked subagent runs per
-consolidation, restricted to read/search plus memory-write tools; its output is
-not appended to the main transcript. Per turn, extraction may start a
-short background fork.
+consolidation, restricted to read/search tools plus the `structured_output`
+report tool; its output is not appended to the main transcript. Per turn,
+extraction may start a short background fork.
 
 ## API
 
-- `tryAcquireLock(fs, dir, pid, now)` / `rollbackLock(fs, dir, priorAt)` /
+- `tryAcquireLock(fs, dir, pid, now, policy?)` / `rollbackLock(fs, dir, priorAt, policy?)` /
   `readLastConsolidatedAt(fs, dir)` — the consolidation lock.
 - `gatesPass(input)` / `timeGatePasses(...)` / `sessionGatePasses(...)` — the
   gate predicates.
-- `MEMORY_TOOL_FILTER` / `MEMORY_AGENT_TOOLS` — the memory-scoped tool set.
+- `MEMORY_TOOL_FILTER` / `MEMORY_AGENT_TOOLS` — the memory-scoped tool set
+  (read/search + `structured_output`).
+- `MEMORY_WRITES_SCHEMA` — the `outputSchema` contract every fork reports.
+- `validateMemoryWrites(input)` / `writeMemoryFiles(fs, dir, writes)` /
+  `memoryWritePolicy(dir)` — the host-side write-back.
 - `buildExtractionPrompt` / `buildConsolidationPrompt` — the fork prompts.
 
 ## Known Limitations and Deferred Work
@@ -70,5 +103,9 @@ short background fork.
   mtime; crash recovery rests on the stale window, not process-liveness.
 - The session-count gate currently counts live sessions through `ctx.sessions`
   and treats them as new; a clocked transcript query is deferred.
-- Tool path-scoping of Write/Edit is enforced by prompt contract, not by a
-  path-aware tool guard.
+- There is no delete channel: the dream drops outdated memories from
+  `MEMORY.md`, but an orphaned topic file stays on disk until overwritten.
+  Topic-file deletion is deferred (the fork allow-list never had a remove
+  tool either).
+- Concurrent extractions from parallel sessions write last-writer-wins; the
+  dream lock serializes only consolidations.

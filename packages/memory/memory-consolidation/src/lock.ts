@@ -10,6 +10,7 @@
 
 import { join } from 'node:path'
 import type { FileSystem, FsTarget } from '@deepseek-ai/dsh-fs'
+import type { MemoryWritePolicy } from './writeback.ts'
 
 /** Lock filename inside the memory directory. */
 export const LOCK_FILE = '.consolidation-lock'
@@ -63,6 +64,8 @@ export async function readLastConsolidatedAt(fs: FileSystem, dir: string): Promi
  * @param dir - the memory directory holding the lock.
  * @param pid - this process's id.
  * @param now - the current epoch used as the new consolidated timestamp.
+ * @param policy - per-call sandbox policy for the lock write; required when the
+ *   memory directory sits outside the caller's sandbox writable roots.
  * @returns the pre-acquire epoch (0 when none) to roll back on failure, or `null` when blocked.
  */
 export async function tryAcquireLock(
@@ -70,6 +73,7 @@ export async function tryAcquireLock(
   dir: string,
   pid: number,
   now: number,
+  policy?: MemoryWritePolicy,
 ): Promise<number | null> {
   const { target, absent } = await lockTarget(fs, dir)
   let priorAt = 0
@@ -85,7 +89,7 @@ export async function tryAcquireLock(
       // Unreadable or malformed lock: reclaim below, treating it as empty.
     }
   }
-  await fs.writeText(target, format(pid, now))
+  await fs.writeText(target, format(pid, now), undefined, undefined, policy)
   // Read the lock back once to verify we own it. If the content is not EXACTLY
   // ours, a cross-process writer interleaved between our read and write and we
   // lost the race. This narrows the TOCTOU window to a sub-millisecond
@@ -111,9 +115,10 @@ export async function tryAcquireLock(
  * @param fs - the filesystem seam.
  * @param dir - the memory directory holding the lock.
  * @param priorAt - the pre-acquire consolidated epoch to restore.
+ * @param policy - per-call sandbox policy for the lock write (see tryAcquireLock).
  */
-export async function rollbackLock(fs: FileSystem, dir: string, priorAt: number): Promise<void> {
+export async function rollbackLock(fs: FileSystem, dir: string, priorAt: number, policy?: MemoryWritePolicy): Promise<void> {
   const target = await fs.resolve(join(dir, LOCK_FILE)).catch(() => undefined)
   if (target === undefined) return
-  await fs.writeText(target, format(0, priorAt)).catch(() => {})
+  await fs.writeText(target, format(0, priorAt), undefined, undefined, policy).catch(() => {})
 }

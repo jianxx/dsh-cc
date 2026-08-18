@@ -3,10 +3,15 @@
  * dream rewrite.
  *
  * `agent/turn-stopping` fires an extraction subagent (via `ctx.jobs` +
- * `ctx.subagents`, tools restricted to the memory directory) to save durable
- * facts, and evaluates the dream gates (time, session count, lock) to schedule
- * a read-only rewrite of MEMORY.md and topic files. A failed dream rolls back
- * the lock so the time gate re-opens.
+ * `ctx.subagents`, tools restricted to read/search) that reports durable facts
+ * as structured output, and evaluates the dream gates (time, session count,
+ * lock) to schedule a read-only review whose structured output rewrites
+ * MEMORY.md and the topic files. The forks hold no write tools — the memory
+ * directory sits outside the session workspace, so the fs sandbox would fence
+ * every model-side write with no escalation path from a background job; the
+ * plugin validates each reported batch and writes it host-side under a
+ * per-call policy confined to the memory directory (see `writeback.ts`). A
+ * failed dream rolls back the lock so the time gate re-opens.
  *
  * @module @jianxx/dsh-cc-memory-consolidation
  */
@@ -15,18 +20,35 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
 import { MEMORY_TOOL_FILTER } from './tools.ts'
 import { buildConsolidationPrompt, buildExtractionPrompt } from './prompts.ts'
 import { gatesPass } from './gates.ts'
 import { readLastConsolidatedAt, rollbackLock, tryAcquireLock, LOCK_STALE_MS } from './lock.ts'
+import {
+  MEMORY_WRITES_SCHEMA,
+  memoryWritePolicy,
+  validateMemoryWrites,
+  writeMemoryFiles,
+} from './writeback.ts'
 
 export { LOCK_FILE, LOCK_STALE_MS, readLastConsolidatedAt, rollbackLock, tryAcquireLock } from './lock.ts'
 export { gatesPass, timeGatePasses, sessionGatePasses } from './gates.ts'
 export type { ConsolidationGateInput } from './gates.ts'
 export { MEMORY_AGENT_TOOLS, MEMORY_TOOL_FILTER } from './tools.ts'
 export { buildConsolidationPrompt, buildExtractionPrompt } from './prompts.ts'
+export {
+  MEMORY_WRITES_SCHEMA,
+  WRITEBACK_MAX_FILE_BYTES,
+  WRITEBACK_MAX_FILES,
+  WRITEBACK_MAX_TOTAL_BYTES,
+  memoryWritePolicy,
+  validateMemoryWrites,
+  writeMemoryFiles,
+} from './writeback.ts'
+export type { MemoryWrite, MemoryWritePolicy } from './writeback.ts'
 
 export const name = 'memory-consolidation'
 /** Services required for background jobs and the subagent provider. */
@@ -79,7 +101,19 @@ interface SubagentService {
     signal: AbortSignal
     toolFilter?: { allow: readonly string[] }
     maxDepth?: number
-  }): Promise<{ result: Promise<unknown> }>
+    outputSchema?: Record<string, unknown>
+  }): Promise<{ result: Promise<SubagentResultLike> }>
+}
+
+/**
+ * The settled shape of a one-shot subagent run. The promise rejects only on
+ * infrastructure faults; child-level failures (including "outputSchema was
+ * requested but never reported", which upstream downgrades to `error`) arrive
+ * as a resolved value and MUST be inspected here.
+ */
+interface SubagentResultLike {
+  readonly structured?: unknown
+  readonly stopReason?: string
 }
 
 /** Structural subset of the sessions seam used here. */
@@ -87,13 +121,20 @@ interface SessionsService {
   list(): Array<{ id: string; header?: { createdAt?: unknown; delegationDepth?: unknown } }>
 }
 
+/** The job-done outcome: resolves only, per the JobHooks contract. */
+type JobOutcome = { status: 'completed' } | { status: 'killed' } | { status: 'failed'; detail: string }
+
 /**
- * Start a memory-scoped forked subagent as a background job. Resolves to a
- * control object with an abort hook and a settle promise.
+ * Start a memory-scoped forked subagent as a background job. The fork reports
+ * its file set via `outputSchema`; on settlement the plugin validates the
+ * batch and writes it host-side under a policy confined to `dir`. Resolves to
+ * a control object with an abort hook and a settle promise (true only when
+ * the reported writes were validated and persisted).
  */
 async function startMemoryJob(
   ctx: Context,
   agent: Agent,
+  dir: string,
   provider: string,
   label: string,
   prompt: string,
@@ -103,6 +144,7 @@ async function startMemoryJob(
   if (jobs === undefined || subagents === undefined) {
     return { abort: () => {}, settled: Promise.resolve(false) }
   }
+  const fs = ctx.get('fs') as FileSystem | undefined
   const controller = new AbortController()
   // `subagents.start` is async upstream — awaiting it is what exposes the run's
   // `result` promise. Reading `run.result` on the un-awaited Promise throws
@@ -119,13 +161,31 @@ async function startMemoryJob(
     // against the CHILD's resolved depth (parent + 1); a top-level parent's
     // child resolves to 1 and passes, a grandchild to 2 is rejected.
     maxDepth: 1,
+    outputSchema: MEMORY_WRITES_SCHEMA,
   })
   // Real job-done wiring: `done` maps the subagent outcome onto the JobHooks
-  // contract (must never reject). Aborted → killed (rolls back the dream lock),
-  // otherwise failure → failed. Both branches resolve.
-  const done = run.result.then(
-    (): { status: 'completed' } => ({ status: 'completed' }),
-    (err): { status: 'killed' } | { status: 'failed'; detail: string } =>
+  // contract (must never reject). Aborted → killed (rolls back the dream
+  // lock); a non-completed stopReason, a missing/invalid payload, or a
+  // write-back failure → failed with detail; a validated, persisted batch →
+  // completed. All branches resolve.
+  const done: Promise<JobOutcome> = run.result.then(
+    async (res): Promise<JobOutcome> => {
+      if (controller.signal.aborted) return { status: 'killed' }
+      if (res?.stopReason !== 'completed') {
+        return { status: 'failed', detail: `memory fork ended with stopReason ${String(res?.stopReason)}` }
+      }
+      if (fs === undefined) {
+        return { status: 'failed', detail: 'fs seam unavailable for memory write-back' }
+      }
+      try {
+        const writes = validateMemoryWrites(res.structured)
+        await writeMemoryFiles(fs, dir, writes)
+        return { status: 'completed' }
+      } catch (err) {
+        return { status: 'failed', detail: String(err) }
+      }
+    },
+    (err): JobOutcome =>
       controller.signal.aborted ? { status: 'killed' } : { status: 'failed', detail: String(err) },
   )
   const settled = done.then(o => o.status === 'completed')
@@ -225,8 +285,9 @@ async function runExtraction(ctx: Context, agent: Agent, dir: string, provider: 
   const existingIndex = await readExistingIndex(ctx, dir)
   const prompt = buildExtractionPrompt(surfaceCount, dir, existingIndex)
   // Fire-and-forget: extraction failure must never fail the turn itself. The
-  // resolved value is discarded so the returned promise is always `void`.
-  return startMemoryJob(ctx, agent, provider, 'extract-memories', prompt)
+  // job status still reflects the real outcome (the fork's structured report
+  // is validated and written host-side before `done` completes).
+  return startMemoryJob(ctx, agent, dir, provider, 'extract-memories', prompt)
     .catch(() => {})
     .then(() => {})
 }
@@ -298,12 +359,12 @@ async function runDream(
     sessionCount: sessionIds.length,
     minSessions,
   })) return
-  const priorAt = await tryAcquireLock(fs, dir, process.pid, now)
+  const priorAt = await tryAcquireLock(fs, dir, process.pid, now, memoryWritePolicy(dir))
   if (priorAt === null) return
   const prompt = buildConsolidationPrompt(dir, sessionTranscriptDir(agent), sessionIds)
-  const job = await startMemoryJob(ctx, agent, provider, 'memory-consolidation', prompt)
+  const job = await startMemoryJob(ctx, agent, dir, provider, 'memory-consolidation', prompt)
   void job.settled.then((ok) => {
-    if (!ok) void rollbackLock(fs, dir, priorAt)
+    if (!ok) void rollbackLock(fs, dir, priorAt, memoryWritePolicy(dir))
   })
 }
 
