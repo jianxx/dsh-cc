@@ -104,9 +104,22 @@ export class SubagentMemorySelector implements MemorySelector {
       // Provider absent or services unavailable: best-effort recall skips.
       return []
     }
-    const result = await run.result
+    // run.result rejects only on infrastructure faults; child-level failures
+    // arrive RESOLVED with a non-completed stopReason. Both must skip recall
+    // quietly — this path is fire-and-forget, so a throw becomes an unhandled
+    // rejection in the host.
+    let result
+    try {
+      result = await run.result
+    } catch {
+      return []
+    }
     if (result.stopReason === 'error') return []
-    const text = result.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+    // SubagentResult carries the transcript blocks as `output` (not `content`).
+    const text = (result.output ?? [])
+      .filter(block => block.type === 'text')
+      .map(block => block.text ?? '')
+      .join('')
     const names = extractSelectedNames(text)
     const valid = new Set(candidates.map(candidate => candidate.filename))
     return names.filter(name => valid.has(name)).slice(0, MAX_RECALL_MEMORIES)
@@ -122,7 +135,7 @@ interface SubagentLike {
     signal: AbortSignal
     agentOptions?: unknown
   }): Promise<{
-    result: Promise<{ stopReason: string; content: readonly { type: string; text?: string }[] }>
+    result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }>
   }>
 }
 
@@ -208,7 +221,10 @@ export class MemoryRecall {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     signal.throwIfAborted()
+    // Fire-and-forget: recall is model-visible enrichment, never worth an
+    // unhandled rejection in the host — any fault inside skips quietly.
     void this.maybeRecall(agent, messages, signal, this.createSelector(this.ctx, agent))
+      .catch(() => {})
     return decision
   }
 
