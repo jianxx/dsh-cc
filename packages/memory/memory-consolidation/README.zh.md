@@ -78,7 +78,8 @@ await ctx.plugin(consolidation, { minHours: 24, minSessions: 5 })
   `structured_output`)。
 - `MEMORY_WRITES_SCHEMA` —— 每个 fork 上报的 `outputSchema` 契约。
 - `validateMemoryWrites(input)` / `writeMemoryFiles(fs, dir, writes)` /
-  `memoryWritePolicy(dir)` —— host 侧落盘。
+  `memoryWritePolicy(dir)` —— host 侧落盘(由记忆目录的拥有者
+  `@jianxx/dsh-cc-memory` 持有,此处 re-export)。
 - `buildExtractionPrompt` / `buildConsolidationPrompt` —— fork 的提示词。
 
 ## 已知限制与延期工作

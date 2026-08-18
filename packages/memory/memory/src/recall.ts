@@ -19,14 +19,9 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-// Memory observes tool usage for recall suppression without depending on the
-// tools package, so it declares a minimal structural listen-only contract for
-// the `tools/post-execute` waterfall event here.
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    'tools/post-execute'(exec: ToolExecuted, _result: unknown, _next: () => Promise<unknown>): Promise<unknown>
-  }
-}
+// The canonical `tools/post-execute` waterfall signature comes from
+// @jianxx/dsh-cc-tools (a real dependency since save.ts); memory only observes
+// tool usage for recall suppression and delegates to `next()` unchanged.
 
 /** How many topic files the selector may surface per query. */
 export const MAX_RECALL_MEMORIES = 5
@@ -130,11 +125,6 @@ interface SubagentLike {
   }>
 }
 
-/** Structural subset of a `tools/post-execute` payload used to track tools. */
-interface ToolExecuted {
-  name: string
-}
-
 /** Loose JSON extraction tolerant of code fences and prose around the array. */
 export function extractSelectedNames(text: string): string[] {
   const match = /"selected_memories"\s*:\s*(\[[^\]]*\])/.exec(text)
@@ -188,7 +178,7 @@ export class MemoryRecall {
     // waterfall observer: it must delegate to `next()` so the tools pipeline
     // continues unchanged.
     this.disposers.push(
-      this.ctx.on('tools/post-execute', (exec: ToolExecuted, _result, next) => {
+      this.ctx.on('tools/post-execute', (exec, _result, next) => {
         if (exec.name.length > 0) this.recentTools.add(exec.name)
         return next()
       }),

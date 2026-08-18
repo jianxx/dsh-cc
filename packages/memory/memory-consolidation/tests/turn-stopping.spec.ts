@@ -4,7 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { apply } from '../src/index.ts'
 import { buildConsolidationPrompt } from '../src/prompts.ts'
 import { MEMORY_AGENT_TOOLS } from '../src/tools.ts'
-import { MEMORY_WRITES_SCHEMA } from '../src/writeback.ts'
+import { MEMORY_WRITES_SCHEMA } from '../src/index.ts'
 
 /**
  * Regression coverage for the turn-stopping listener. Upstream

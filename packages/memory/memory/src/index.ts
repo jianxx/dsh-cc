@@ -17,6 +17,7 @@ import { resolveMemoryHome } from './paths.ts'
 import { MemorySection } from './section.ts'
 import { MemoryRecall } from './recall.ts'
 import { resolveTeamMemoryRoot } from './team.ts'
+import { registerMemorySaveTool } from './save.ts'
 
 export { parseMemoryFile } from './parser.ts'
 export type { ParsedMemoryFile } from './parser.ts'
@@ -27,10 +28,29 @@ export type { MemoryType, MemoryFrontmatter, MemoryIndexEntry } from './types.ts
 export { scanMemoryDirectory } from './scan.ts'
 export type { MemoryDirectoryState } from './scan.ts'
 export { resolveMemoryHome, resolveProjectMemoryRoot, PROJECT_MEMORY_DIR } from './paths.ts'
-export { MemorySection, renderMemorySection, renderTeamMemorySection, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './section.ts'
+export { MemorySection, renderMemorySection, renderTeamMemorySection, saveGuidance, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './section.ts'
 export { MemoryRecall, SubagentMemorySelector, extractSelectedNames, MAX_RECALL_MEMORIES } from './recall.ts'
 export type { MemorySelector, RecallCandidate } from './recall.ts'
 export { TeamMemoryError, sanitizePathKey, resolveTeamMemoryRoot, validateTeamMemKey, readTeamMemFile, TEAM_MEMORY_DIR, TEAM_ENTRYPOINT_NAME } from './team.ts'
+export {
+  MEMORY_SAVE_TOOL,
+  MemorySaveError,
+  pointerLine,
+  registerMemorySaveTool,
+  renderTopicFile,
+  upsertPointer,
+} from './save.ts'
+export type { MemorySaveArgs } from './save.ts'
+export {
+  MEMORY_WRITES_SCHEMA,
+  WRITEBACK_MAX_FILE_BYTES,
+  WRITEBACK_MAX_FILES,
+  WRITEBACK_MAX_TOTAL_BYTES,
+  memoryWritePolicy,
+  validateMemoryWrites,
+  writeMemoryFiles,
+} from './writeback.ts'
+export type { MemoryWrite, MemoryWritePolicy } from './writeback.ts'
 
 export const name = 'memory'
 /** Core services required for section registration and event listeners. */
@@ -79,6 +99,16 @@ export function apply(ctx: Context, config: Config = {}): void {
       ...(config.teamEnabled === true ? { teamDir: resolveTeamMemoryRoot(dir) } : {}),
     })
     section.start()
+    // The save channel: the memory directory sits outside every session's
+    // sandbox writable roots, so direct write/edit always fails; the tool
+    // writes host-side instead. No-op on hosts without a tools service.
+    registerMemorySaveTool(ctx, dir, section)
+    // Re-scan at each turn boundary so host-side writes (memory_save,
+    // memory-consolidation's write-back, external edits) surface in the
+    // section without a restart; refresh() self-dedupes unchanged content.
+    ctx.on('agent/turn-stopping', () => {
+      void section.refresh()
+    })
   }
   if (config.recallEnabled ?? true) {
     new MemoryRecall(ctx, dir, {

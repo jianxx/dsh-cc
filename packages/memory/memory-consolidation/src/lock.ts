@@ -10,7 +10,7 @@
 
 import { join } from 'node:path'
 import type { FileSystem, FsTarget } from '@deepseek-ai/dsh-fs'
-import type { MemoryWritePolicy } from './writeback.ts'
+import type { MemoryWritePolicy } from '@jianxx/dsh-cc-memory'
 
 /** Lock filename inside the memory directory. */
 export const LOCK_FILE = '.consolidation-lock'

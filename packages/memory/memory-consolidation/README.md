@@ -93,7 +93,8 @@ extraction may start a short background fork.
   (read/search + `structured_output`).
 - `MEMORY_WRITES_SCHEMA` — the `outputSchema` contract every fork reports.
 - `validateMemoryWrites(input)` / `writeMemoryFiles(fs, dir, writes)` /
-  `memoryWritePolicy(dir)` — the host-side write-back.
+  `memoryWritePolicy(dir)` — the host-side write-back (owned by
+  `@jianxx/dsh-cc-memory`, the memory directory owner, and re-exported here).
 - `buildExtractionPrompt` / `buildConsolidationPrompt` — the fork prompts.
 
 ## Known Limitations and Deferred Work

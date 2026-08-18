@@ -78,4 +78,14 @@ export class FakeMemoryFs extends FileSystem {
   seed(path: string, content: string): void {
     this.backing.set(path, content)
   }
+
+  /** Read one backing file's content (test assertion helper). */
+  backingText(path: string): string | undefined {
+    return this.backing.get(path)
+  }
+
+  /** Number of backing files (test assertion helper). */
+  backingSize(): number {
+    return this.backing.size
+  }
 }

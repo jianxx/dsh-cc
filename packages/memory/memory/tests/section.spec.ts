@@ -56,11 +56,14 @@ describe('renderMemorySection', () => {
     expect(rendered).toContain('grep -rn "<search term>" /root/ --include="*.md"')
   })
 
-  it('renders empty when there is no entrypoint (memoryless sessions present no section)', async () => {
+  it('always renders with save guidance and a placeholder when memoryless', async () => {
     const { fs } = await mountedFs()
     fs.seed('/root/user_role.md', '---\nname: a\ndescription: b\n---\nbody\n')
     const state = await scanMemoryDirectory(fs, '/root')
-    expect(renderMemorySection('/root', state)).toBe('')
+    const rendered = renderMemorySection('/root', state)
+    expect(rendered).toContain('# Memory')
+    expect(rendered).toContain('memory_save')
+    expect(rendered).toContain('(no memories yet)')
   })
 
   it('renders an empty index when only the entrypoint exists', async () => {

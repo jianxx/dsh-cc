@@ -3,9 +3,9 @@
 中文 | [English](README.md)
 
 面向 DeepSeek Harness 的 Claude Code 风格文件记忆：可持久化的 memdir 格式、
-`memory` 系统提示词 section，以及通过 fork 的 side-query 进行动态召回。所有
-文件访问都走可选的 `ctx.fs` 缝，因此远程或沙箱后端可无改动使用（无 provider
-的宿主将记忆挂载为空操作）。
+`memory` 系统提示词 section、`memory_save` 写入通道，以及通过 fork 的
+side-query 进行动态召回。所有文件访问都走可选的 `ctx.fs` 缝，因此远程或沙箱
+后端可无改动使用（无 provider 的宿主将记忆挂载为只读）。
 
 ## 本包提供的能力
 
@@ -14,10 +14,19 @@
   200 行 / 25 KB，是 `.md` 主题文件的一行式索引）。每个主题文件带 `name`、
   `description` 与 `type`（`user` / `feedback` / `project` / `reference`）
   frontmatter 以及 Markdown 正文。解析器已独立导出。
-- **`memory` 系统提示词 section** —— 入口内容（截断）、按 frontmatter 的主题
-  索引清单、以及 grep 搜索指引。当 `MEMORY.md` 缺失时 section 渲染为空（不报
-  错）。section 文本同步组装，因此后台通过 `ctx.fs` 扫描缓存渲染文本，变更后
-  通过 `system-prompt/change` 触发重组装。
+- **`memory` 系统提示词 section** —— 保存通道指引、入口内容（截断）、按
+  frontmatter 的主题索引清单、以及 grep 搜索指引。section 始终渲染（无记忆时
+  显示占位符），保存指引永不缺席。section 文本同步组装，因此后台通过 `ctx.fs`
+  扫描缓存渲染文本，变更后通过 `system-prompt/change` 触发重组装；轮末监听器
+  会重新扫描，host 侧写入无需重启即可进入提示词。
+- **`memory_save` 工具** —— 唯一可用的保存通道。记忆目录在所有会话 workspace
+  之外，直接的 `write`/`edit` 调用会被 fs sandbox 拦截、必然失败，section 文案
+  对此有明确说明。工具接收结构化字段（`name`、`type`、`description`、`body`），
+  由 host 侧生成 frontmatter、upsert `MEMORY.md` 指针行，并经 `ctx.fs` 缝以
+  `{ mode: 'workspace-write', workspaceRoot: <记忆目录> }` 的 per-call 策略
+  落盘——围栏保留，可写根恰好是记忆目录。校验（kebab-case slug、四种类型、大小
+  上限）与 `dsh-memory-consolidation` 的 fork 写回共用同一 `writeback` 边界。
+  注册是机会式的：宿主无 tools 服务时跳过并保持只读。
 - **动态召回** —— `agent/pre-step` 监听器用小型模型 side-query（通过
   `ctx.subagents` fork）判断哪些主题文件与当前轮相关，再通过 `agent.inject()`
   注入其正文。召回去重：本会话已展示过的主题文件不会重复注入。会跟踪本会话
@@ -63,9 +72,14 @@ await ctx.plugin(memory, { memoryHome: '/tmp/mem' })
 
 - `parseMemoryFile(raw)` —— 将主题文件拆分为 frontmatter 与正文。
 - `scanMemoryDirectory(fs, dir, signal?)` —— 读取入口与主题索引。
-- `renderMemorySection(dir, state)` —— 由扫描状态生成私有 section 文本。
-- `renderTeamMemorySection(privateDir, teamDir, privateState, teamState)` —— 合并的私有 + 团队 section 文本。
+- `renderMemorySection(dir, state)` / `renderTeamMemorySection(...)` /
+  `saveGuidance(dir)` —— section 文本构建器。
 - `MemorySection` —— section 的后台刷新缓存持有者。
+- `registerMemorySaveTool(ctx, dir, section)` / `MEMORY_SAVE_TOOL` —— 面向模型的
+  保存通道。
+- `validateMemoryWrites(input)` / `writeMemoryFiles(fs, dir, writes)` /
+  `memoryWritePolicy(dir)` / `MEMORY_WRITES_SCHEMA` —— 与
+  `dsh-memory-consolidation` 共用的 host 侧写回。
 - `MemoryRecall` —— pre-step 召回协调器。
 - `truncateEntrypointContent(raw)` —— 施加行/字节上限。
 - `resolveMemoryHome`、`resolveProjectMemoryRoot` —— memdir 根解析辅助。
@@ -79,7 +93,8 @@ await ctx.plugin(memory, { memoryHome: '/tmp/mem' })
   因此推迟，直到 seam 携带 mtime（见 `docs/cc-parity-matrix.md`）。
 - 召回 side-query 依赖已注册的一次性子 agent provider；本包不内置 provider
   （请组合 `fork` 或 `spawn`）。
-- 写入侧强制（谁可写主题文件）在 `dsh-memory-consolidation` 中；本包只读。
+- `memory_save` 只写私有目录；团队 scope 的保存通道与删除通道已延期（CC 的直接
+  Write 语义同样推迟——fs sandbox 使会话工具无法直接写记忆目录）。
 - 团队记忆（`teamEnabled`）的可逆性与安全性：启用即改变持久化格式，且中间组件
   TOCTOU 窗口（仅末段做 `lstat` 校验；resolve/包含校验与读取并非原子）意味着
   不得在**多租户或不可信写者**场景启用。

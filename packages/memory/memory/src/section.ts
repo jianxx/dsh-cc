@@ -1,11 +1,12 @@
 /**
- * The `memory` system-prompt section: entrypoint content (truncated), an
- * index of topic files by frontmatter, and grep search guidance. When
- * `teamEnabled` is set, a combined section surfaces both the private and the
- * team directory. The section text is assembled synchronously, so a background
- * scan through `ctx.fs` caches the rendered text and emits
- * `system-prompt/change` to re-assemble once the entrypoint and index are
- * read. When MEMORY.md is absent the section renders empty (no error).
+ * The `memory` system-prompt section: save-channel guidance, entrypoint
+ * content (truncated), an index of topic files by frontmatter, and grep
+ * search guidance. When `teamEnabled` is set, a combined section surfaces
+ * both the private and the team directory. The section text is assembled
+ * synchronously, so a background scan through `ctx.fs` caches the rendered
+ * text and emits `system-prompt/change` to re-assemble once the entrypoint
+ * and index are read. The section always renders (a memoryless session shows
+ * a placeholder) so the save guidance never disappears.
  * @module @jianxx/dsh-cc-memory/section
  */
 
@@ -104,17 +105,33 @@ export class MemorySection {
 }
 
 /**
- * Render the memory section text from an observed directory state. Returns
- * empty when there is no entrypoint content, so a memoryless session presents
- * no memory section.
+ * The save-channel guidance every memory section carries. It names the ONLY
+ * working save path: direct write/edit calls under the memory directory are
+ * fenced by the fs sandbox (the directory lives outside every session
+ * workspace), so the model must call `memory_save` instead. Without this
+ * line a memoryless session presents no guidance at all and the model falls
+ * back to its Claude Code prior (`~/.claude/projects/<slug>/memory/`), whose
+ * writes fail the same fence.
+ * @param dir - the private memory directory surfaced for saves.
+ * @returns the guidance lines.
+ */
+export function saveGuidance(dir: string): string[] {
+  return [
+    `To save a durable fact, call the \`memory_save\` tool — it writes the topic file and updates ${ENTRYPOINT_NAME} for you. Never write or edit files under \`${dir}\` directly: the sandbox fences writes outside the session workspace, so direct writes always fail.`,
+  ]
+}
+
+/**
+ * Render the memory section text from an observed directory state. The
+ * section is ALWAYS present (even with no memories) so the save guidance is
+ * stable model-visible context; an empty directory renders a placeholder
+ * entrypoint body.
  * @param dir - the memory directory, surfaced to the model for writes.
  * @param state - the scanned entrypoint and topic index.
- * @returns the rendered section, or `''` when the entrypoint is empty.
+ * @returns the rendered section.
  */
 export function renderMemorySection(dir: string, state: MemoryDirectoryState): string {
   const entrypoint = state.entrypoint?.trim()
-  if (entrypoint === undefined || entrypoint.length === 0) return ''
-  const t = truncateEntrypointContent(entrypoint)
   const index = renderIndex(state.topics)
   const search = state.topics.length > 0
     ? [
@@ -131,9 +148,11 @@ export function renderMemorySection(dir: string, state: MemoryDirectoryState): s
     '',
     `You have a persistent, file-based memory system at \`${dir}\`. Use it to recall context across conversations and to save durable facts.`,
     '',
+    ...saveGuidance(dir),
+    '',
     `## ${ENTRYPOINT_NAME}`,
     '',
-    t.content,
+    entrypoint !== undefined && entrypoint.length > 0 ? truncateEntrypointContent(entrypoint).content : '(no memories yet)',
     ...index,
     ...search,
   ].join('\n')
@@ -150,14 +169,15 @@ function renderIndex(topics: readonly MemoryIndexEntry[]): string[] {
 
 /**
  * Render the combined team-memory section text from both observed directory
- * states. Surfaces the dual-directory (private + team) scope guidance, both
- * entrypoints, a scope-tagged topic index, and grep search guidance. Returns
- * empty when neither directory has entrypoint content.
+ * states. Surfaces the dual-directory (private + team) scope guidance, the
+ * save-channel guidance, both entrypoints, a scope-tagged topic index, and
+ * grep search guidance. Always renders (placeholders when empty) so the save
+ * guidance never disappears.
  * @param privateDir - the private memory directory, surfaced for writes.
- * @param teamDir - the shared team memory directory, surfaced for writes.
+ * @param teamDir - the shared team memory directory.
  * @param privateState - the scanned private entrypoint and topic index.
  * @param teamState - the scanned team entrypoint and topic index.
- * @returns the combined section, or `''` when both entrypoints are empty.
+ * @returns the combined section.
  */
 export function renderTeamMemorySection(
   privateDir: string,
@@ -167,10 +187,6 @@ export function renderTeamMemorySection(
 ): string {
   const privateEntry = privateState.entrypoint?.trim()
   const teamEntry = teamState.entrypoint?.trim()
-  if ((privateEntry === undefined || privateEntry.length === 0)
-    && (teamEntry === undefined || teamEntry.length === 0)) {
-    return ''
-  }
   const lines = [
     '# Memory',
     '',
@@ -181,6 +197,8 @@ export function renderTeamMemorySection(
     `- team: memories shared with and contributed by all users of this project, stored at \`${teamDir}\`.`,
     '',
     'Each directory keeps its own index and topic files. Save each memory to the directory matching its scope; never write memory content directly into a MEMORY.md.',
+    '',
+    ...saveGuidance(privateDir),
     '',
     `## ${ENTRYPOINT_NAME} (private)`,
     '',

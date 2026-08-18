@@ -32,13 +32,15 @@ import {
   memoryWritePolicy,
   validateMemoryWrites,
   writeMemoryFiles,
-} from './writeback.ts'
+} from '@jianxx/dsh-cc-memory'
 
 export { LOCK_FILE, LOCK_STALE_MS, readLastConsolidatedAt, rollbackLock, tryAcquireLock } from './lock.ts'
 export { gatesPass, timeGatePasses, sessionGatePasses } from './gates.ts'
 export type { ConsolidationGateInput } from './gates.ts'
 export { MEMORY_AGENT_TOOLS, MEMORY_TOOL_FILTER } from './tools.ts'
 export { buildConsolidationPrompt, buildExtractionPrompt } from './prompts.ts'
+// The write-back lives in @jianxx/dsh-cc-memory (the memory directory owner);
+// re-exported here for consumers of the pre-move surface.
 export {
   MEMORY_WRITES_SCHEMA,
   WRITEBACK_MAX_FILE_BYTES,
@@ -47,8 +49,8 @@ export {
   memoryWritePolicy,
   validateMemoryWrites,
   writeMemoryFiles,
-} from './writeback.ts'
-export type { MemoryWrite, MemoryWritePolicy } from './writeback.ts'
+} from '@jianxx/dsh-cc-memory'
+export type { MemoryWrite, MemoryWritePolicy } from '@jianxx/dsh-cc-memory'
 
 export const name = 'memory-consolidation'
 /** Services required for background jobs and the subagent provider. */
