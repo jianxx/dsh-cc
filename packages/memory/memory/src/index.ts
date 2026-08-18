@@ -12,7 +12,6 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
 import { resolveMemoryHome } from './paths.ts'
 import { MemorySection } from './section.ts'
 import { MemoryRecall } from './recall.ts'
@@ -93,7 +92,10 @@ export const Config: z<Config> = z.object({
  * @param config - memory behavior knobs.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const dir = resolveMemoryHome(config.memoryHome ?? defaultDshHome())
+  // Pass the raw configured root through: resolveMemoryHome appends `memory/`
+  // ONLY for undefined/empty — handing it defaultDshHome() here would resolve
+  // to the harness home itself and write memory files into its root.
+  const dir = resolveMemoryHome(config.memoryHome)
   if (config.sectionEnabled ?? true) {
     const section = new MemorySection(ctx, dir, {
       ...(config.teamEnabled === true ? { teamDir: resolveTeamMemoryRoot(dir) } : {}),
