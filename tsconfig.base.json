@@ -65,6 +65,9 @@
       "@jianxx/dsh-cc-plugin-loader": [
         "./packages/compat/cc-plugin-loader/src/index.ts"
       ],
+      "@jianxx/dsh-cc-model-aliases": [
+        "./packages/compat/cc-model-aliases/src/index.ts"
+      ],
       "@jianxx/dsh-cc-memory": [
         "./packages/memory/memory/src/index.ts"
       ],

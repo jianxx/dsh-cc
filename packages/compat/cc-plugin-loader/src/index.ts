@@ -24,7 +24,7 @@ import type { CommandsSeam } from './commands.ts'
 import type { SettingsSeam } from './settings.ts'
 import type { ComponentResult, PluginLoadReport } from './types.ts'
 import { mountSkills, type SkillsSeam } from './skills.ts'
-import { mountAgents, type SubagentsSeam } from './agents.ts'
+import { mountAgents, type ResolveModel, type SubagentsSeam } from './agents.ts'
 import { mountCommands } from './commands.ts'
 import { mountHooks } from './hooks.ts'
 import { mountMcpServers } from './mcp.ts'
@@ -33,6 +33,7 @@ import { mountSettings } from './settings.ts'
 export type { CcPluginManifest, CcCommand, CcSkillRef, CcAgentRef, CcMcpServer, ComponentKind, ComponentResult, PluginLoadReport } from './types.ts'
 export { parsePluginManifest } from './manifest.ts'
 export { AgentProvider, STANDARD_AGENTS_DIR } from './agents.ts'
+export type { ResolveModel } from './agents.ts'
 export type { McpSeam, HooksSeam } from './seams.ts'
 export {
   skillToolRestriction,
@@ -72,6 +73,8 @@ export interface MountCcPluginOptions {
   readonly root: string
   /** Optional seam overrides; when omitted the loader probes `ctx.get(...)`. */
   readonly seams?: MountedSeams
+  /** Optional spawn-time model resolver threaded into every mounted agent. */
+  readonly resolveModel?: ResolveModel
 }
 
 /** The structural report plus a disposer that recalls every mounted component. */
@@ -107,7 +110,12 @@ export async function mountCcPlugin(ctx: Context, options: MountCcPluginOptions)
     skills: probed.skills,
     subagentsPresent: probed.subagents !== undefined,
   }))
-  fold(components, disposers, await mountAgents({ pluginRoot: root, manifest, subagents: probed.subagents }))
+  fold(components, disposers, await mountAgents({
+    pluginRoot: root,
+    manifest,
+    subagents: probed.subagents,
+    ...options.resolveModel !== undefined ? { resolveModel: options.resolveModel } : {},
+  }))
   fold(components, disposers, mountCommands({ pluginRoot: root, manifest, commands: probed.commands }))
   fold(components, disposers, mountHooks({ pluginRoot: root, manifest, hooks: probed.hooks }))
   fold(components, disposers, mountMcpServers({ pluginRoot: root, manifest, mcp: probed.mcp }))

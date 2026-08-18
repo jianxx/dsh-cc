@@ -1,0 +1,41 @@
+{
+  "name": "@jianxx/dsh-cc-model-aliases",
+  "description": "Claude Code-compatible model alias resolution for the DeepSeek Harness",
+  "version": "0.1.0-rc.5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/compat/cc-model-aliases"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./types": {
+      "types": "./lib/types.d.ts",
+      "default": "./lib/types.js"
+    },
+    "./schema": {
+      "types": "./lib/schema.d.ts",
+      "default": "./lib/schema.js"
+    },
+    "./resolver": {
+      "types": "./lib/resolver.d.ts",
+      "default": "./lib/resolver.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  }
+}
