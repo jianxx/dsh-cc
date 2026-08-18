@@ -15,7 +15,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { mountCcPlugin, type PluginLoadReport } from '@jianxx/dsh-cc-plugin-loader'
+import { mountCcPlugin, type PluginLoadReport, type ResolveModel } from '@jianxx/dsh-cc-plugin-loader'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -61,7 +61,11 @@ export class CcPluginsService extends Service {
   /** Live mounts keyed by plugin root directory. */
   private readonly mounts = new Map<string, TrackedMount>()
 
-  constructor(ctx: Context, private readonly pluginDirs: readonly string[]) {
+  constructor(
+    ctx: Context,
+    private readonly pluginDirs: readonly string[],
+    private readonly resolveModel?: ResolveModel,
+  ) {
     super(ctx, 'ccPlugins')
   }
 
@@ -90,7 +94,10 @@ export class CcPluginsService extends Service {
   /** Mount one plugin root and track it; never throws (failures are logged). */
   private async mountOne(dir: string): Promise<MountResult> {
     try {
-      const mounted = await mountCcPlugin(this.ctx, { root: dir })
+      const mounted = await mountCcPlugin(this.ctx, {
+        root: dir,
+        ...this.resolveModel !== undefined ? { resolveModel: this.resolveModel } : {},
+      })
       this.mounts.set(dir, {
         root: dir,
         name: mounted.report.name,

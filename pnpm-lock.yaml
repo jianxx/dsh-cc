@@ -61,6 +61,9 @@ importers:
 
   packages/bundle/cc-shell:
     dependencies:
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../../deepseek-harness/packages/settings/settings
+        version: link:../../../../deepseek-harness/packages/settings/settings
       '@jianxx/dsh-cc-claude-code-agents':
         specifier: workspace:^
         version: link:../../preset/claude-code-agents
@@ -70,6 +73,9 @@ importers:
       '@jianxx/dsh-cc-mcp-config':
         specifier: workspace:^
         version: link:../../mcp/mcp-config
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
       '@jianxx/dsh-cc-plugin-loader':
         specifier: workspace:^
         version: link:../../compat/cc-plugin-loader
@@ -189,6 +195,12 @@ importers:
       '@deepseek-ai/dsh-token-meter':
         specifier: link:../../../../deepseek-harness/packages/llm/token-meter
         version: link:../../../../deepseek-harness/packages/llm/token-meter
+
+  packages/compat/cc-model-aliases:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/compat/cc-output-styles:
     dependencies:

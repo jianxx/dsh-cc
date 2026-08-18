@@ -18,6 +18,16 @@ import type { AgentDefinition } from '@jianxx/dsh-cc-claude-code-agents'
 import type { CcPluginManifest } from './types.ts'
 import { ComponentTally } from './seams.ts'
 
+/**
+ * Resolve a frontmatter `model` into a dsh `{provider, model}` route at spawn
+ * time. Returns `undefined` meaning "no override" (the child inherits the
+ * parent's route). When the function is absent, providers keep the historical
+ * byte-identical behavior of overlaying the literal model id. The optional
+ * fields admit explicit `undefined` (per-field inheritance), matching the
+ * `ResolvedRoute` shape from `@jianxx/dsh-cc-model-aliases`.
+ */
+export type ResolveModel = (model: string | undefined) => { readonly provider?: string | undefined; readonly model?: string | undefined } | undefined
+
 /** The subagent seam: a named-provider registry with a backend resolver. */
 export interface SubagentsSeam {
   /**
@@ -43,6 +53,7 @@ export class AgentProvider implements SubagentBackend {
   constructor(
     private readonly definition: AgentDefinition,
     private readonly resolve: (name: string) => SubagentBackend | undefined,
+    private readonly resolveModel?: ResolveModel,
   ) {}
 
   /** Register-time provider name; `start` forwards to the backend. */
@@ -78,14 +89,42 @@ export class AgentProvider implements SubagentBackend {
       throw new Error(`cc-plugin-loader: no "${this.backendName}" subagent backend is registered to run agent "${this.definition.agentType}"`)
     }
     const delegation = request as Record<string, unknown>
+    const modelOverride = this.resolveModelOverride()
     return backend.start({
       ...delegation,
       prompt: this.definition.systemPrompt,
-      ...this.definition.model !== undefined
-        ? { agentOptions: { ...delegation['agentOptions'] as object, model: this.definition.model } }
+      ...modelOverride !== undefined
+        ? { agentOptions: { ...delegation['agentOptions'] as object, ...modelOverride } }
         : {},
       ...this.definition.toolRestriction !== undefined ? { toolFilter: this.definition.toolRestriction } : {},
     })
+  }
+
+  /**
+   * Compute the `agentOptions` model override for one spawn.
+   *
+   * With no resolver injected this is byte-identical to the historical
+   * behaviour: overlay the literal frontmatter `model` id. With a resolver
+   * injected, the resolver's return is honored directly — a route overlays its
+   * defined fields (per-field inheritance preserved by dropping `undefined`),
+   * and `undefined` means "no override", so `inherit`/unconfigured-builtin
+   * resolve to inheriting the parent route rather than re-overlaying the
+   * literal model.
+   * @returns the model/provider override, or `undefined` for no override.
+   */
+  private resolveModelOverride(): Record<string, string> | undefined {
+    const model = this.definition.model
+    const resolver = this.resolveModel
+    if (resolver === undefined) {
+      return model !== undefined ? { model } : undefined
+    }
+    if (model === undefined) return undefined
+    const route = resolver(model)
+    if (route === undefined) return undefined
+    const out: Record<string, string> = {}
+    if (route.provider !== undefined) out.provider = route.provider
+    if (route.model !== undefined) out.model = route.model
+    return out
   }
 }
 
@@ -102,6 +141,8 @@ export interface MountAgentsOptions {
   readonly subagents: SubagentsSeam | undefined
   /** Optional plugin manifest-name prefix applied to each agent type. */
   readonly namespacePrefix?: string
+  /** Optional spawn-time model resolver threaded into every provider. */
+  readonly resolveModel?: ResolveModel
 }
 
 /**
@@ -123,7 +164,7 @@ export async function mountAgents(options: MountAgentsOptions): Promise<{ dispos
   }
   const subagents = options.subagents
   for (const definition of definitions) {
-    const provider = new AgentProvider(definition, name => subagents.getProvider(name) as SubagentBackend | undefined)
+    const provider = new AgentProvider(definition, name => subagents.getProvider(name) as SubagentBackend | undefined, options.resolveModel)
     disposers.push(subagents.registerProvider(provider))
     tally.addLoaded()
   }

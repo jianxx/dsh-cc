@@ -38,6 +38,9 @@
       "path": "./packages/compat/cc-plugin-loader"
     },
     {
+      "path": "./packages/compat/cc-model-aliases"
+    },
+    {
       "path": "./packages/memory/memory"
     },
     {
