@@ -150,4 +150,30 @@ describe('cc-shell model alias provisioning', () => {
     expect(backend.last).toMatchObject({ agentOptions: { provider: 'parent' } })
     void ctx
   })
+
+  it('mounts without property-accessing ctx.settings (cordis inject enforcement)', async () => {
+    // Regression for the production mount failure "cannot get property
+    // \"settings\" without inject": the loader-scoped context proxy in a real
+    // boot throws on property access for any service the entry does not inject
+    // (the glue injects nothing), while direct `apply()` over a root Context
+    // never enforces it — letting `ctx.settings?.…` ship. Guard the contract:
+    // a property read of `settings` fails here; only `ctx.get('settings')` is
+    // allowed.
+    const settingsDir = tempDir('settings')
+    const userPath = join(settingsDir, 'user.json')
+    const { seam, providers } = makeSubagentsSeam()
+    const real = new Context()
+    real.provide('subagents', seam)
+    await real.plugin(SettingsCascadeProvider, { userSettingsPath: userPath })
+    const guarded = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'settings') {
+          throw new Error('cannot get property "settings" without inject')
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    await apply(guarded, { pluginDirs: [tempDir('empty-discovery')], registerBaseAgents: false })
+    expect(providers).toHaveLength(0)
+  })
 })

@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { AgentProvider } from '@jianxx/dsh-cc-plugin-loader'
 import { createModelResolver, mergeAliasMaps, ConfigAliasesSchema, SettingsAliasesSchema } from '@jianxx/dsh-cc-model-aliases'
 import type { AliasTarget, ResolvedRoute } from '@jianxx/dsh-cc-model-aliases'
@@ -158,7 +159,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
  */
 function buildModelResolver(ctx: Context, config: Config): (model: string | undefined) => ResolvedRoute | undefined {
   const configAliases = config.modelAliases
-  const scope = ctx.settings?.register?.(MODEL_ALIASES_NAMESPACE, SettingsAliasesSchema, {
+  // Read the optional settings provider through `ctx.get`, never `ctx.settings`:
+  // cordis's context proxy throws "cannot get property without inject" on
+  // property access for a service the entry does not inject (this entry injects
+  // nothing), which failed the cc preset mount in production even though direct
+  // `apply()` tests pass. `ctx.get` is inject-exempt and yields undefined when
+  // no settings provider is mounted.
+  const settings = ctx.get('settings') as SettingsProvider | undefined
+  const scope = settings?.register(MODEL_ALIASES_NAMESPACE, SettingsAliasesSchema, {
     // schemastery dicts are lenient about stored values, so reject a half-written
     // route (a non-empty check the schema cannot express) at write time.
     validate: (value: Record<string, AliasTarget | null>) => {
