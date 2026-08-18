@@ -9,15 +9,12 @@ features. Status legend:
 - ❌ missing (no design asset yet)
 - 🚫 won't port (vendor-bound or out of scope, with reason)
 
-The Claude Code reference inventory is the feature dump under
-`~/workspace/github.com/claude-code` (external build surface). Event and
-command counts below follow that build.
-
 ## Mode placement (host plane vs preset plane)
 
 How the stack is split across dsh's planes when CC Mode is the active preset.
 
 **Host plane — globally retained, no visible change for the four built-in modes:**
+
 - `@jianxx/dsh-cc-tools` (tools-registry fork + deferred capability)
 - `@jianxx/dsh-cc-settings-cascade` and `@jianxx/dsh-cc-permission-rules`
   (the `cc-permissions` bundle)
@@ -39,23 +36,23 @@ dsh-web-app surgery criteria).
 
 ## Engine subsystems
 
-| CC subsystem | Status | Where / notes |
-|---|---|---|
-| Agent loop + tool pipeline | ✅ | `@deepseek-ai/dsh-agent-loop`, `dsh-tools` (this repo's `core/tools` swap adds `reserve()`/`isAdmitted()` for deferred tools). CC↔harness tool-name translation lives in `core/tools/src/cc-names.ts` (`translateToolNames` strict/lenient for `restrict()`-bound lists, `ccToolAliases` for rule/matcher matching, `ccCanonicalToolName` for CC-facing payloads) — agent/skill frontmatter, permission rules, and hook matchers all consume it |
-| File tools (Read/Edit/Write), Glob/Grep | ✅ | `dsh-tool-fs`, `dsh-tool-fs-search`, `dsh-tool-str-replace-editor` |
-| Bash / PowerShell + background jobs | ✅ | `dsh-tool-bash`/`dsh-tool-pwsh` + `dsh-jobs` + `dsh-tool-jobs`; CC's `TaskCreate/Output/Stop` naming not aliased |
-| WebSearch | ✅ | `dsh-tool-web` + `dsh-web-search-deepseek` |
-| WebFetch | 🔶 | mounted (`web-fetch-http`) but the provider has **no host allowlist** — model-directed requests reach any URL the process can reach; enable only on egress-restricted deployments. Upstream SSRF allowlist is a planned follow-up |
-| Subagents / Agent tool / teams | ✅ | `dsh-subagent*` providers + `tool-subagent-control` (`send_message`/`interrupt`/`list_agents`); CC `.claude/agents` loaded via `preset/claude-code-agents` |
-| Coordinator mode | ✅ | `subagent/coordinator` (`DSH_COORDINATOR_MODE=1`) |
-| Workflow / Ralph loop | ✅ | `dsh-tool-workflow`, `dsh-tool-ralph` (base) |
-| Plan mode | ✅ | `dsh-plan-mode` (base), incl. `/plan` |
-| Todo list | 🔶 | `dsh-tool-todo` (base) is model-facing; human-facing `/tasks` lists jobs only — todo seam pending |
-| Auto-compaction | ✅ | `dsh-compaction-basic` + `command-compact` (`/compact`) + tool-result pruner; this repo adds model-free `compaction-micro` |
-| Session persistence / resume / fork | ✅ engine | jsonl/sqlite + projection + checkpoint policy; see command-surface row for `/resume` `/branch` limits |
-| Skills system | ✅ | `skill-claude-code` loader + base `tool-skill`; CC `paths` conditional activation ✅; bundled skills subset (debug/simplify/batch) ✅ — CC's `verify`/`stuck` not ported (ant-only, `verify` companion files absent) |
-| Plugin system | ✅ | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `plugin.json`) + cc-shell-glue auto-discovery |
-| Model aliases | ✅ | `compat/cc-model-aliases` (`@jianxx/dsh-cc-model-aliases`) — `model:` frontmatter aliases (`sonnet`/`opus`/`haiku`/`fable` + open set) resolve to `{provider, model}` routes; `inherit` and unconfigured-builtin aliases inherit the parent route (fixes the old `inherit` pass-through bug); settings `model-aliases` overlay + config `modelAliases` defaults, null-delete, builtin fallback. Follow-ups: `/model` command, `ANTHROPIC_*` env vars (no Anthropic semantics), and aliasing the main-session default model |
+| CC subsystem                            | Status    | Where / notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent loop + tool pipeline              | ✅        | `@deepseek-ai/dsh-agent-loop`, `dsh-tools` (this repo's `core/tools` swap adds `reserve()`/`isAdmitted()` for deferred tools). CC↔harness tool-name translation lives in `core/tools/src/cc-names.ts` (`translateToolNames` strict/lenient for `restrict()`-bound lists, `ccToolAliases` for rule/matcher matching, `ccCanonicalToolName` for CC-facing payloads) — agent/skill frontmatter, permission rules, and hook matchers all consume it                                                                            |
+| File tools (Read/Edit/Write), Glob/Grep | ✅        | `dsh-tool-fs`, `dsh-tool-fs-search`, `dsh-tool-str-replace-editor`                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Bash / PowerShell + background jobs     | ✅        | `dsh-tool-bash`/`dsh-tool-pwsh` + `dsh-jobs` + `dsh-tool-jobs`; CC's `TaskCreate/Output/Stop` naming not aliased                                                                                                                                                                                                                                                                                                                                                                                                           |
+| WebSearch                               | ✅        | `dsh-tool-web` + `dsh-web-search-deepseek`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| WebFetch                                | 🔶        | mounted (`web-fetch-http`) but the provider has **no host allowlist** — model-directed requests reach any URL the process can reach; enable only on egress-restricted deployments. Upstream SSRF allowlist is a planned follow-up                                                                                                                                                                                                                                                                                          |
+| Subagents / Agent tool / teams          | ✅        | `dsh-subagent*` providers + `tool-subagent-control` (`send_message`/`interrupt`/`list_agents`); CC `.claude/agents` loaded via `preset/claude-code-agents`                                                                                                                                                                                                                                                                                                                                                                 |
+| Coordinator mode                        | ✅        | `subagent/coordinator` (`DSH_COORDINATOR_MODE=1`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Workflow / Ralph loop                   | ✅        | `dsh-tool-workflow`, `dsh-tool-ralph` (base)                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Plan mode                               | ✅        | `dsh-plan-mode` (base), incl. `/plan`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Todo list                               | 🔶        | `dsh-tool-todo` (base) is model-facing; human-facing `/tasks` lists jobs only — todo seam pending                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Auto-compaction                         | ✅        | `dsh-compaction-basic` + `command-compact` (`/compact`) + tool-result pruner; this repo adds model-free `compaction-micro`                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Session persistence / resume / fork     | ✅ engine | jsonl/sqlite + projection + checkpoint policy; see command-surface row for `/resume` `/branch` limits                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Skills system                           | ✅        | `skill-claude-code` loader + base `tool-skill`; CC `paths` conditional activation ✅; bundled skills subset (debug/simplify/batch) ✅ — CC's `verify`/`stuck` not ported (ant-only, `verify` companion files absent)                                                                                                                                                                                                                                                                                                       |
+| Plugin system                           | ✅        | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `plugin.json`) + cc-shell-glue auto-discovery                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Model aliases                           | ✅        | `compat/cc-model-aliases` (`@jianxx/dsh-cc-model-aliases`) — `model:` frontmatter aliases (`sonnet`/`opus`/`haiku`/`fable` + open set) resolve to `{provider, model}` routes; `inherit` and unconfigured-builtin aliases inherit the parent route (fixes the old `inherit` pass-through bug); settings `model-aliases` overlay + config `modelAliases` defaults, null-delete, builtin fallback. Follow-ups: `/model` command, `ANTHROPIC_*` env vars (no Anthropic semantics), and aliasing the main-session default model |
 
 | Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
 | Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
@@ -92,6 +89,7 @@ subtype only), `PostCompact`, `SessionEnd`, `StopFailure`, `TaskCreated`,
 source only).
 
 Not bridged (with reason):
+
 - `PreCompact` — needs an upstream compaction waterfall seam (planned).
 - `Notification` subtypes `idle_prompt` / `auth_success` / `elicitation*` — no
   equivalent seam in a headless harness (cannot map).
@@ -114,6 +112,7 @@ Mounted CC-parity commands (20): `/cost`, `/doctor`, `/export`, `/stats`,
 `/reload-plugins`, `/mcp`, `/tasks`, plus base `plan-mode`'s `/plan`.
 
 Degraded by design (documented):
+
 - `/resume` — lists sessions; switching is host-owned (`dsh --resume <id>`).
 - `/branch` — forks and reports the child id; switching requires restart.
 - `/config` — text-only render/patch with an allowlisted key set.

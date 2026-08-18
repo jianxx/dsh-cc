@@ -2,11 +2,9 @@
 
 Claude Code feature-parity plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh), shipped as an out-of-repo plugin set that any dsh installation loads through its profile system.
 
-This repository holds the CC-parity work that used to live inside a `jianxx/deepseek-harness` fork: the harness is back on upstream, and every addition lives here as independently installable packages.
-
 ## Layout
 
-```
+```text
 packages/
   settings/settings-cascade        5-level settings file precedence (~ enterprise/user/project/local/flags)
   settings/settings-migrations     version-gated settings.json migrations on mount (mechanism ready; registry empty until the first format change)
@@ -38,7 +36,9 @@ packages/
   core/tool-notebook-edit          NotebookEdit tool (fs-seam .ipynb edits + read-before-write gate)
   skill/skill-claude-code          SKILL.md provider reading CC dirs; CC paths conditional activation + bundled subset (debug/simplify/batch)
   preset/claude-code-agents        `.claude/agents` → subagent providers (library)
+  preset/cc                        CC Mode agent preset (composition-only: agent.cordis.yml + preset.yml)
   compat/cc-plugin-loader          mount a CC plugin directory (plugin.json) onto dsh seams (library)
+  compat/cc-model-aliases          CC frontmatter model aliases → {provider, model} routes (library; wired by cc-shell)
   compat/cc-output-styles          CLAUDE.md output styles → system prompt
   memory/memory                    CLAUDE.md memories + recall (recentTools suppression) + opt-in team memory
   memory/memory-consolidation      background memory consolidation
@@ -79,7 +79,15 @@ Recommended order in `~/.dsh/profiles/cc/package.json`:
     "@jianxx/dsh-cc-bundle-permissions": "...",
     "@jianxx/dsh-cc-bundle-shell": "..."
   },
-  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@jianxx/dsh-cc-bundle-permissions", "@jianxx/dsh-cc-bundle-shell"] } }
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@jianxx/dsh-cc-bundle-permissions",
+        "@jianxx/dsh-cc-bundle-shell"
+      ]
+    }
+  }
 }
 ```
 
@@ -124,6 +132,17 @@ Select the preset either through the web UI's preset selector, or by setting
 `agent-presets.default="cc"` in settings. To uninstall, delete the
 `~/.dsh/.agent-presets/cc` directory.
 
+### Model aliases
+
+CC agent frontmatter names models by alias (`model: opus`, `model: sonnet`,
+`model: inherit`). The cc-shell glue resolves those aliases per spawn against
+deployment defaults (`modelAliases` on the glue row) overlaid by the live
+`model-aliases` settings namespace (user/project/local layering, `null`
+deletes a configured entry). Unconfigured builtin aliases and `inherit` fall
+back to the parent route; anything else passes through as a literal model id.
+See `packages/compat/cc-model-aliases/README.md` for the full merge and
+resolution semantics.
+
 The four built-in modes are behaviorally unchanged: the host plane keeps only
 the tools-registry fork, the five-level settings cascade + permission rules, and
 settings migrations — none of which produces a visible change on the stock
@@ -140,12 +159,12 @@ modes.
 
 Four packages vendor upstream dsh packages plus our changes, because the deltas are invasive (not wrappable):
 
-| package | delta | why vendored |
-|---|---|---|
-| `core/tools` | +reserve/isAdmitted + reserved-name table | extension-point methods on the Service Provider; free functions cannot see the private layer tables |
-| `mcp/mcp-client` | +OAuth 2.1 flows, +resources/prompts surfaces | same-module internal plumbing throughout the client |
-| `hooks/hook-protocol` | +http executor + dispatch options | wire-protocol module shape |
-| `hooks/hooks-claude-code` | full CC event/executor bridge | only exists at all through the fork's expansion |
+| package                   | delta                                         | why vendored                                                                                        |
+| ------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `core/tools`              | +reserve/isAdmitted + reserved-name table     | extension-point methods on the Service Provider; free functions cannot see the private layer tables |
+| `mcp/mcp-client`          | +OAuth 2.1 flows, +resources/prompts surfaces | same-module internal plumbing throughout the client                                                 |
+| `hooks/hook-protocol`     | +http executor + dispatch options             | wire-protocol module shape                                                                          |
+| `hooks/hooks-claude-code` | full CC event/executor bridge                 | only exists at all through the fork's expansion                                                     |
 
 At runtime each sits beside its upstream peer under a different npm name. Where service identity matters, the bundle patch disables the in-box row by id and remounts ours under a **unique** id:
 
@@ -154,10 +173,10 @@ At runtime each sits beside its upstream peer under a different npm name. Where 
   disabled: true
 - insert:
     - id: tools-cc
-      name: '@jianxx/dsh-cc-tools'
+      name: "@jianxx/dsh-cc-tools"
 ```
 
-The disable marker targets the base row by its id, and the remount registers under a distinct id, because `cordis-plugin-loader` dup-checks *every* incoming entry (a `{id, disabled: true}` marker included) — reusing the same id for the insert would throw `duplicate loader entry id` at mount. Service injection is name-keyed, not row-id-keyed, so the remount resolves the same underlying service. NOTE (upstream TODO): the id-keyed dump/compose path renders this disable+rename pattern fine, so the loader's stricter dup check diverges from it; worth splitting out an issue upstream.
+The disable marker targets the base row by its id, and the remount registers under a distinct id, because `cordis-plugin-loader` dup-checks _every_ incoming entry (a `{id, disabled: true}` marker included) — reusing the same id for the insert would throw `duplicate loader entry id` at mount. Service injection is name-keyed, not row-id-keyed, so the remount resolves the same underlying service. NOTE (upstream TODO): the id-keyed dump/compose path renders this disable+rename pattern fine, so the loader's stricter dup check diverges from it; worth splitting out an issue upstream.
 
 Subscribers type against upstream service types — the vendored runtime is a structural superset; the two nominal `ToolExecutionToken` brands are bridged by explicit casts at the 6 mixed call sites (see coordinator / hooks-claude-code sources; documented in code) — never routed at runtime because only one `tools` registration exists per scope.
 
