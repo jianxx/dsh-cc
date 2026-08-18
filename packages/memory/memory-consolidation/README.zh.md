@@ -31,7 +31,10 @@
 任何 sandboxed 会话里,模型侧的记忆写入注定失败。
 
 因此 fork 不再持有任何写工具:它们通过 `outputSchema`(driver 注入的
-`structured_output` 工具)上报文件集,由插件——可信的 host 代码——亲自落盘:
+`structured_output` 工具)上报文件集,由插件——可信的 host 代码——亲自落盘。
+写入目标是**触发 agent 自己所在工作区的目录**——`<memoryHome>/projects/<slug>/`,
+由 `resolveWorkspaceMemoryDir` 按 agent 的会话 cwd 解析——而不是共享的 home 根
+（home 根是显式全局层,由 `dsh-memory` 的 `memory_save` 以 `scope: "global"` 写入）:
 
 1. `validateMemoryWrites` 校验这份不可信负载:仅允许扁平 `.md` 文件名(不允许
    分隔符、`..`、绝对路径、点文件),不允许重名,并施加硬上限(32 个文件 /
@@ -50,7 +53,7 @@ job 状态反映真实结局:非 completed 的 `stopReason`、缺失/非法的�
 
 | Key | 默认值 | 含义 |
 |---|---|---|
-| `memoryHome` | harness home `memory/` | 记忆目录根 |
+| `memoryHome` | harness home `memory/` | 记忆 home 根;抽取/dream 写入触发 agent 其下的 `projects/<slug>/` |
 | `extractEnabled` | `true` | 运行轮末抽取 |
 | `dreamEnabled` | `true` | 运行三重门 dream |
 | `minHours` | `24` | 两次整合间的最小间隔小时数 |

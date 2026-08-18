@@ -30,6 +30,7 @@ import { readLastConsolidatedAt, rollbackLock, tryAcquireLock, LOCK_STALE_MS } f
 import {
   MEMORY_WRITES_SCHEMA,
   memoryWritePolicy,
+  resolveWorkspaceMemoryDir,
   validateMemoryWrites,
   writeMemoryFiles,
 } from '@jianxx/dsh-cc-memory'
@@ -209,7 +210,10 @@ async function startMemoryJob(
  * @param config - consolidation behavior knobs.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const dir = config.memoryHome ?? join(defaultDshHome(), 'memory')
+  // The memory home is the ROOT: extraction/dream write into the turning
+  // agent's own workspace directory (`<home>/projects/<slug>`), never the
+  // shared root, so memories stay isolated per workspace.
+  const home = config.memoryHome ?? join(defaultDshHome(), 'memory')
   const provider = config.subagentProviderName ?? 'fork'
   const minHours = config.minHours ?? 24
   const minSessions = config.minSessions ?? 5
@@ -240,7 +244,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // events have arrived since the last spawn.
       if (!entry?.extracting && agent.session.events.length !== entry?.lastEvents) {
         flight.set(sessionId, { extracting: true, lastEvents: agent.session.events.length })
-        void runExtraction(ctx, agent, dir, provider).finally(() => {
+        void runExtraction(ctx, agent, home, provider).finally(() => {
           const cur = flight.get(sessionId)
           if (cur) cur.extracting = false
         })
@@ -249,7 +253,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (config.dreamEnabled ?? true) {
       if (!dreamInFlight) {
         dreamInFlight = true
-        void runDream(ctx, agent, dir, provider, minHours, minSessions)
+        void runDream(ctx, agent, home, provider, minHours, minSessions)
           .catch(() => {})
           .finally(() => { dreamInFlight = false })
       }
@@ -278,7 +282,10 @@ const INDEX_CAP_LINES = 200
 const INDEX_CAP_BYTES = 8 * 1024
 const INDEX_TRUNCATED_MARKER = '(index truncated; rely on MEMORY.md in-dir for the rest)'
 
-async function runExtraction(ctx: Context, agent: Agent, dir: string, provider: string): Promise<void> {
+async function runExtraction(ctx: Context, agent: Agent, home: string, provider: string): Promise<void> {
+  // The extraction writes into the turning agent's own workspace directory —
+  // the shared home root holds only explicitly-global memories.
+  const dir = resolveWorkspaceMemoryDir(home, sessionTranscriptDir(agent))
   // Only model-visible surface events count toward the batch size.
   const surfaceCount = agent.session.events.filter((e) => SURFACE_EVENT_TYPES.has(e.type)).length
   // The index read happens AFTER the in-flight/content gates (runExtraction is
@@ -344,13 +351,14 @@ async function readExistingIndex(ctx: Context, dir: string): Promise<string> {
 async function runDream(
   ctx: Context,
   agent: Agent,
-  dir: string,
+  home: string,
   provider: string,
   minHours: number,
   minSessions: number,
 ): Promise<void> {
   const fs = ctx.get('fs')
   if (fs === undefined) return
+  const dir = resolveWorkspaceMemoryDir(home, sessionTranscriptDir(agent))
   const now = Date.now()
   const lastAt = await readLastConsolidatedAt(fs, dir)
   const sessionIds = listNewSessions(ctx, lastAt)

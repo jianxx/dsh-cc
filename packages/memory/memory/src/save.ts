@@ -13,11 +13,13 @@
 
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import { defineTool } from '@jianxx/dsh-cc-tools'
 import { MEMORY_TYPES } from './types.ts'
 import { ENTRYPOINT_NAME } from './truncate.ts'
 import { validateMemoryWrites, writeMemoryFiles } from './writeback.ts'
+import { cwdOf, resolveWorkspaceMemoryDir } from './paths.ts'
 import type { MemorySection } from './section.ts'
 
 /** The registered tool name. */
@@ -27,6 +29,9 @@ export const MEMORY_SAVE_TOOL = 'memory_save'
 const NAME_RULE = /^[a-z0-9][a-z0-9-]*$/
 /** One-line relevance description cap. */
 const MAX_DESCRIPTION_CHARS = 200
+
+/** Where a saved memory lands. */
+export const MEMORY_SAVE_SCOPES = ['workspace', 'global'] as const
 
 /** A model-visible save failure (maps to an isError tool result). */
 export class MemorySaveError extends Error {}
@@ -40,6 +45,8 @@ export interface MemorySaveArgs {
   description: string
   /** Markdown body (frontmatter is generated host-side). */
   body: string
+  /** `workspace` (default) saves to this workspace's directory; `global` saves to the cross-workspace directory. */
+  scope?: string
 }
 
 /** Assemble the topic file body with rationalized frontmatter. */
@@ -99,19 +106,23 @@ function validateArgs(args: MemorySaveArgs): void {
   if (args.body.trim().length === 0) {
     throw new MemorySaveError('body must not be empty')
   }
+  if (args.scope !== undefined && !(MEMORY_SAVE_SCOPES as readonly string[]).includes(args.scope)) {
+    throw new MemorySaveError(`invalid memory scope "${args.scope}": use one of ${MEMORY_SAVE_SCOPES.join(', ')}`)
+  }
 }
 
 /**
  * Register the `memory_save` tool. No-op when the host has no tools service
  * or no fs seam (a providerless host keeps memory read-only).
  * @param ctx - the host context.
- * @param dir - the private memory directory this tool writes.
+ * @param home - the memory home: the global directory and the root under
+ *   which each workspace's private directory lives (`projects/<slug>`).
  * @param section - the memory section to refresh after a successful save.
  * @returns the registration disposer, or `undefined` when not registered.
  */
 export function registerMemorySaveTool(
   ctx: Context,
-  dir: string,
+  home: string,
   section: MemorySection,
 ): (() => void) | undefined {
   const tools = ctx.get('tools') as { register(def: unknown): () => void } | undefined
@@ -120,9 +131,10 @@ export function registerMemorySaveTool(
     name: MEMORY_SAVE_TOOL,
     description:
       'Save a durable memory (a fact or preference useful in FUTURE conversations) to the persistent memory '
-      + `directory at \`${dir}\`. Writes the topic file and updates the MEMORY.md index for you. This is the ONLY `
-      + 'way to save memories: direct write/edit calls to the memory directory are fenced by the sandbox and '
-      + 'always fail. Do not use it for ephemeral task detail.',
+      + 'system. By default the memory is private to the current workspace; pass `scope: "global"` for facts '
+      + 'useful across all workspaces. Writes the topic file and updates the MEMORY.md index for you. This is '
+      + 'the ONLY way to save memories: direct write/edit calls to a memory directory are fenced by the '
+      + 'sandbox and always fail. Do not use it for ephemeral task detail.',
     parameters: {
       name: {
         type: 'string',
@@ -145,6 +157,11 @@ export function registerMemorySaveTool(
         required: true,
         description: 'Markdown body of the memory (without frontmatter — it is generated for you).',
       },
+      scope: {
+        type: 'string',
+        enum: MEMORY_SAVE_SCOPES,
+        description: 'workspace (default): visible only to sessions in the current workspace. global: visible to every workspace.',
+      },
     },
     output: {
       schema: {
@@ -159,10 +176,13 @@ export function registerMemorySaveTool(
         [{ type: 'text', text: value.message }],
     },
     isConcurrencySafe: () => false,
-    async execute(args: MemorySaveArgs) {
+    async execute(args: MemorySaveArgs, exec: { agent?: Agent }) {
       const fs = ctx.get('fs') as FileSystem | undefined
       if (fs === undefined) throw new MemorySaveError('memory save unavailable: no fs seam')
       validateArgs(args)
+      const dir = args.scope === 'global'
+        ? home
+        : resolveWorkspaceMemoryDir(home, exec.agent !== undefined ? cwdOf(exec.agent) : process.cwd())
       const filename = `${args.name}.md`
       const writes = [
         { path: filename, content: renderTopicFile(args) },
@@ -180,7 +200,7 @@ export function registerMemorySaveTool(
       }
       validated.push({ path: ENTRYPOINT_NAME, content: upsertPointer(entrypoint, args) })
       await writeMemoryFiles(fs, dir, validated)
-      await section.refresh()
+      await section.refresh(exec.agent)
       return {
         path: join(dir, filename),
         message: `Saved memory "${args.name}" (${args.type}) to ${filename} and updated ${ENTRYPOINT_NAME}.`,

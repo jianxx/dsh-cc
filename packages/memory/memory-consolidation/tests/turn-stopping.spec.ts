@@ -218,7 +218,9 @@ describe('agent/turn-stopping recursion & single-flight gates', () => {
     await vi.waitFor(() => expect(b.jobs.start).toHaveBeenCalledTimes(1))
     const [completedDone] = controlsOf(b.jobs, 'extract-memories')
     await expect(completedDone.done).resolves.toEqual({ status: 'completed' })
-    expect((b.fs as ReturnType<typeof makeFsMock>).backing.get('/tmp/mem/user-profile.md')).toBe('body')
+    // The write-back lands in the turning agent's workspace directory:
+    // <home>/projects/<slug of the agent's cwd>.
+    expect((b.fs as ReturnType<typeof makeFsMock>).backing.get('/tmp/mem/projects/tmp/user-profile.md')).toBe('body')
 
     // killed: aborted before the result rejects.
     const c = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
@@ -268,14 +270,36 @@ describe('agent/turn-stopping recursion & single-flight gates', () => {
     expect(subagents.start.mock.calls[0][1]).toMatchObject({ maxDepth: 1 })
     expect(subagents.start.mock.calls[0][1].outputSchema).toBe(MEMORY_WRITES_SCHEMA)
   })
+
+  it('writes back into each turning agent\'s own workspace directory', async () => {
+    const { ctx, jobs, subagents, fs } = mount({ memoryHome: '/tmp/mem', dreamEnabled: false })
+    subagents.start.mockImplementation(async () => ({
+      result: Promise.resolve({
+        structured: { writes: [{ path: 'fact.md', content: 'body' }] },
+        stopReason: 'completed',
+      }),
+    }))
+
+    await stopTurn(ctx, fakeAgent('/work/repo-a'))
+    await stopTurn(ctx, fakeAgent('/work/repo-b'))
+    await vi.waitFor(() => expect(jobs.start).toHaveBeenCalledTimes(2))
+    const backing = (fs as ReturnType<typeof makeFsMock>).backing
+    await vi.waitFor(() => {
+      expect(backing.get('/tmp/mem/projects/work-repo-a/fact.md')).toBe('body')
+      expect(backing.get('/tmp/mem/projects/work-repo-b/fact.md')).toBe('body')
+    })
+    // The shared home root never receives a workspace's extraction writes.
+    expect(backing.get('/tmp/mem/fact.md')).toBeUndefined()
+  })
 })
 
 describe('dream listNewSessions filtering', () => {
   const NOW = 2_000_000_000_000
 
   function dreamSessions() {
-    // lastAt = 1000 => only the "old" session predates it.
-    const seed = { '/mem/.consolidation-lock': '1\n1000\n' }
+    // lastAt = 1000 => only the "old" session predates it. The dream agent's
+    // cwd is '/mem', so its workspace memory dir is '/mem/projects/mem'.
+    const seed = { '/mem/projects/mem/.consolidation-lock': '1\n1000\n' }
     const fs = makeFsMock(seed)
     const sessions = {
       list: vi.fn(() => [
@@ -358,6 +382,8 @@ describe('dream listNewSessions filtering', () => {
 
 describe('extract-memories index injection', () => {
   const MEM = '/mem'
+  // The extraction agent's cwd is MEM, so its workspace memory dir is here.
+  const WS = '/mem/projects/mem'
 
   function extractionPromptOf(subagents: { start: ReturnType<typeof vi.fn> }): string {
     const call = subagents.start.mock.calls.find((c) => c[1]?.label === 'extract-memories')
@@ -375,7 +401,7 @@ describe('extract-memories index injection', () => {
   }
 
   it('injects the MEMORY.md index into the prompt under "Existing topics:"', async () => {
-    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md\n  - summary of a' })
+    const fs = makeFsMock({ [`${WS}/MEMORY.md`]: 'topic-a.md\n  - summary of a' })
     const { ctx, subagents } = mountExtract(fs)
     subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ structured: { writes: [] }, stopReason: 'completed' }) }))
 
@@ -388,7 +414,7 @@ describe('extract-memories index injection', () => {
   })
 
   it('performs the MEMORY.md read before the subagent start', async () => {
-    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md' })
+    const fs = makeFsMock({ [`${WS}/MEMORY.md`]: 'topic-a.md' })
     const { ctx, subagents } = mountExtract(fs)
     subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ structured: { writes: [] }, stopReason: 'completed' }) }))
 
@@ -400,7 +426,7 @@ describe('extract-memories index injection', () => {
   })
 
   it('falls back to listing topic .md files when MEMORY.md is absent', async () => {
-    const fs = makeFsMock({ [`${MEM}/topic-b.md`]: 'b', [`${MEM}/topic-a.md`]: 'a' })
+    const fs = makeFsMock({ [`${WS}/topic-b.md`]: 'b', [`${WS}/topic-a.md`]: 'a' })
     const { ctx, subagents } = mountExtract(fs)
     subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ structured: { writes: [] }, stopReason: 'completed' }) }))
 
@@ -422,7 +448,7 @@ describe('extract-memories index injection', () => {
 
   it('caps a large index at 200 lines plus a truncation marker', async () => {
     const big = Array.from({ length: 500 }, (_, i) => `line-${i}`).join('\n')
-    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: big })
+    const fs = makeFsMock({ [`${WS}/MEMORY.md`]: big })
     const { ctx, subagents } = mountExtract(fs)
     subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ structured: { writes: [] }, stopReason: 'completed' }) }))
 
@@ -437,7 +463,7 @@ describe('extract-memories index injection', () => {
   })
 
   it('contains the index read and still spawns when the fs read throws', async () => {
-    const fs = makeFsMock({ [`${MEM}/MEMORY.md`]: 'topic-a.md' })
+    const fs = makeFsMock({ [`${WS}/MEMORY.md`]: 'topic-a.md' })
     fs.readText.mockRejectedValueOnce(new Error('io gone'))
     const { ctx, jobs, subagents } = mountExtract(fs)
     subagents.start.mockImplementation(async () => ({ result: Promise.resolve({ structured: { writes: [] }, stopReason: 'completed' }) }))

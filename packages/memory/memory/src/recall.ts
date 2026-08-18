@@ -12,6 +12,7 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scanMemoryDirectory } from './scan.ts'
+import { cwdOf, resolveWorkspaceMemoryDir } from './paths.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -151,14 +152,15 @@ export class MemoryRecall {
   /**
    * Register the `agent/pre-step` and `tools/post-execute` listeners.
    * @param ctx - host context with `fs`, `subagents`, and the agent channel.
-   * @param dir - the memory directory to scan.
+   * @param home - the memory home: the global directory and the root under
+   *   which each agent's workspace directory (`projects/<slug>`) is resolved.
    * @param options - provider name, whether recall is enabled, and an optional
    *   selector factory (defaults to {@link SubagentMemorySelector}; inject a
    *   fake for deterministic tests).
    */
   constructor(
     private readonly ctx: Context,
-    private readonly dir: string,
+    private readonly home: string,
     options: {
       providerName?: string
       enabled?: boolean
@@ -223,14 +225,22 @@ export class MemoryRecall {
       .join('\n')
       .trim()
     if (query.length === 0) return
-    const scan = await scanMemoryDirectory(fileSystem, this.dir, signal)
-    if (scan.topics.length === 0) return
+    // Recall spans both layers: the agent's workspace directory and the
+    // global directory. Shown-tracking keys on full paths, so identical
+    // filenames across layers never collide.
+    const workspaceDir = resolveWorkspaceMemoryDir(this.home, cwdOf(agent))
+    const [workspaceScan, globalScan] = await Promise.all([
+      scanMemoryDirectory(fileSystem, workspaceDir, signal),
+      scanMemoryDirectory(fileSystem, this.home, signal),
+    ])
+    const topics = [...workspaceScan.topics, ...globalScan.topics]
+    if (topics.length === 0) return
     let shown = this.state.get(agent)
     if (shown === undefined) {
       shown = { shown: new Set() }
       this.state.set(agent, shown)
     }
-    const fresh = scan.topics.filter(topic => !shown.shown.has(topic.path))
+    const fresh = topics.filter(topic => !shown.shown.has(topic.path))
     if (fresh.length === 0) return
     const selected = await selector.select(
       query,
@@ -239,7 +249,7 @@ export class MemoryRecall {
       Array.from(this.recentTools),
     )
     if (signal.aborted || selected.length === 0) return
-    const byFilename = new Map(scan.topics.map(topic => [topic.filename, topic]))
+    const byFilename = new Map(topics.map(topic => [topic.filename, topic]))
     const bodies: string[] = []
     for (const filename of selected) {
       const topic = byFilename.get(filename)

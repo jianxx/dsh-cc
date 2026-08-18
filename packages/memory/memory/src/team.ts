@@ -102,13 +102,15 @@ export function sanitizePathKey(key: string): string {
 }
 
 /**
- * Resolve the team memory directory under a memory home. Team memory lives at
- * `memoryHome/team`, a sibling of (not inside) the private memdir's own files.
- * @param memoryHome - the resolved private memory directory root.
- * @returns the team directory path (`memoryHome/team`).
+ * Resolve the team memory directory for one workspace. Team memory is shared
+ * by all users of THE PROJECT, so it lives inside the workspace's private
+ * memory directory: `<workspaceDir>/team`. (Before per-workspace isolation it
+ * sat at the global `<memoryHome>/team`; that directory is now inert.)
+ * @param workspaceDir - the workspace's private memory directory.
+ * @returns the team directory path (`<workspaceDir>/team`).
  */
-export function resolveTeamMemoryRoot(memoryHome: string): string {
-  return join(memoryHome, TEAM_MEMORY_DIR)
+export function resolveTeamMemoryRoot(workspaceDir: string): string {
+  return join(workspaceDir, TEAM_MEMORY_DIR)
 }
 
 /**

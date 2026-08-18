@@ -69,8 +69,10 @@ async function mount() {
   const ctx = new Context()
   await ctx.plugin(FakeMemoryFs)
   const fs = ctx.fs as FakeMemoryFs
-  fs.seed('/root/MEMORY.md', '# memory')
-  fs.seed('/root/bash.md', topicBody('Bash reference documentation', 'reference'))
+  // The home root is the global layer; the agent's workspace layer resolves
+  // to `<home>/projects/<slug>` from its session cwd.
+  fs.seed('/root/projects/work-repo/MEMORY.md', '# memory')
+  fs.seed('/root/projects/work-repo/bash.md', topicBody('Bash reference documentation', 'reference'))
   const recorder = new RecordingSelector()
   const recall = new MemoryRecall(ctx, '/root', { enabled: true, createSelector: () => recorder })
   return { ctx, recall, recorder, dispose: async () => { recall.dispose(); await ctx.fiber.dispose() } }
@@ -78,7 +80,7 @@ async function mount() {
 
 /** Drive one pre-step so recall runs (fire-and-forget). */
 function drivePreStep(ctx: Context): void {
-  const agent = {} as Agent
+  const agent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
   const signal = new AbortController().signal
   void ctx.emit('agent/pre-step', {
     agent,

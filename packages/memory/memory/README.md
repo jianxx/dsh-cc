@@ -10,26 +10,39 @@ providerless host mounts memory read-only).
 
 ## What this package provides
 
-- **Memdir format** — a memory directory (default the harness home's `memory/`,
-  plus an optional per-project `.claude/memory` overlay) with an always-loaded
-  `MEMORY.md` entrypoint (capped at 200 lines / 25 KB) that is a one-line index
-  of `.md` topic files. Each topic file carries `name`, `description`, and
-  `type` (`user` / `feedback` / `project` / `reference`) frontmatter plus a
-  Markdown body. The parser is independently exported.
-- **`memory` system-prompt section** — save-channel guidance, the entrypoint
-  content (truncated), an index of topic files by frontmatter, and grep search
-  guidance. The section ALWAYS renders (a memoryless session shows a
-  placeholder) so the save guidance never disappears. The section text is
-  assembled synchronously, so a background scan through `ctx.fs` caches the
-  rendered text and emits `system-prompt/change` to re-assemble after a
-  change; a turn-end listener re-scans so host-side writes surface without a
-  restart.
-- **`memory_save` tool** — the ONLY working save channel. The memory directory
-  lives outside every session workspace, so direct `write`/`edit` calls
-  against it are fenced by the fs sandbox and always fail; the section says so
-  explicitly. The tool takes structured fields (`name`, `type`, `description`,
-  `body`), generates the frontmatter host-side, upserts the `MEMORY.md`
-  pointer, and writes via the `ctx.fs` seam under a per-call policy of
+- **Memdir format** — a memory home (default the harness home's `memory/`)
+  holding an always-loaded `MEMORY.md` entrypoint (capped at 200 lines / 25 KB)
+  per layer, each a one-line index of `.md` topic files. Each topic file
+  carries `name`, `description`, and `type` (`user` / `feedback` / `project` /
+  `reference`) frontmatter plus a Markdown body. The parser is independently
+  exported.
+- **Per-workspace isolation with a global layer** — memories are scoped to the
+  session's workspace: each session cwd maps to a private directory
+  `<memoryHome>/projects/<slug>/` (the slug is the upstream
+  session-transcript `projectKey` encoding of the cwd, so a workspace's memory
+  directory matches its `sessions/--<slug>--/` grouping), while the home root
+  itself is the global layer shared by every workspace — mirroring Claude
+  Code's per-project `~/.claude/projects/<slug>/memory/` convention. Sessions
+  of different workspaces never see each other's private memories; facts
+  useful everywhere are saved with `scope: "global"`.
+- **`memory` system-prompt section** — save-channel guidance, each layer's
+  entrypoint content (truncated), a scope-tagged combined index of topic
+  files, and grep search guidance. The section ALWAYS renders (a memoryless
+  layer shows a placeholder) so the save guidance never disappears. One global
+  registration serves every agent: the text callback renders the assembling
+  agent's own workspace layer (the agent arrives via the assemble scope).
+  Directory scans run in the background through `ctx.fs`; rendered per-layer
+  fragments are cached and `system-prompt/change` fires only when a fragment
+  actually changed; a turn-end listener re-scans so host-side writes surface
+  without a restart.
+- **`memory_save` tool** — the ONLY working save channel. Memory directories
+  live outside every session workspace, so direct `write`/`edit` calls
+  against them are fenced by the fs sandbox and always fail; the section says
+  so explicitly. The tool takes structured fields (`name`, `type`,
+  `description`, `body`, optional `scope`: `workspace` (default) or `global`),
+  resolves the target directory from the calling agent's session cwd,
+  generates the frontmatter host-side, upserts the `MEMORY.md` pointer, and
+  writes via the `ctx.fs` seam under a per-call policy of
   `{ mode: 'workspace-write', workspaceRoot: <memory dir> }` — confinement is
   kept, the writable root IS the memory directory. Validation (kebab-case
   slugs, the four types, size caps) shares the `writeback` boundary with
@@ -38,17 +51,19 @@ providerless host mounts memory read-only).
 - **Dynamic recall** — an `agent/pre-step` listener asks a small-model side
   query (a forked subagent via `ctx.subagents`) which topic files are relevant
   to the turn, then injects their bodies through `agent.inject()`. Recall
+  scans both layers (the agent's workspace directory plus the global one) and
   deduplicates: topic files already shown this session are never re-injected.
   Tools used earlier in the session are tracked (`tools/post-execute`) and
   passed to the selector so reference-doc memories for an actively-used tool
   are suppressed (warnings/gotchas about it are still surfaced). Absence of the
   subagent service or provider skips recall without error.
 - **Team memory (opt-in)** — when `teamEnabled` is `true`, a shared
-  per-project team directory (`memoryHome/team`) is layered on the private
-  memdir and the `memory` section renders a combined private + team prompt.
-  Every team-memory access runs a seam-native validation chain (pure-string key
-  sanitization first, then `lstat` final-segment symlink rejection, then
-  `resolve` + `contains` prefix containment).
+  per-workspace team directory (`<workspaceDir>/team`) is layered on the
+  workspace's private memdir and the `memory` section renders a combined
+  workspace + team + global prompt. Every team-memory access runs a
+  seam-native validation chain (pure-string key sanitization first, then
+  `lstat` final-segment symlink rejection, then `resolve` + `contains` prefix
+  containment).
 
 ## Usage
 
@@ -56,20 +71,27 @@ Load the plugin with `@jianxx/dsh-cc-memory`. Configuration knobs:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `memoryHome` | harness home `memory/` | memory directory root |
+| `memoryHome` | harness home `memory/` | memory home root: the global layer, and the parent of each workspace's `projects/<slug>/` directory |
 | `sectionEnabled` | `true` | register the `memory` system-prompt section |
 | `recallEnabled` | `true` | run dynamic recall on pre-step |
 | `recallProviderName` | `fork` | one-shot subagent provider for the recall query |
-| `teamEnabled` | `false` | enable the shared team memory directory + combined section |
+| `teamEnabled` | `false` | enable the per-workspace team memory directory + combined section |
 
 > **`teamEnabled` is off by default.** Enabling it changes the persisted
-> memory layout (creates and reads `memoryHome/team/`), changes what the model
-> writes (`private` vs `team` scope), and points team-memory reads at a shared
-> directory. It is intended for single-tenant, trusted-writer projects: the
-> per-access validation closes traversal, but the *intermediate*-component
+> memory layout (creates and reads `<workspaceDir>/team/`), changes what the
+> model writes (workspace vs `team` scope), and points team-memory reads at a
+> shared directory. It is intended for single-tenant, trusted-writer projects:
+> the per-access validation closes traversal, but the *intermediate*-component
 > TOCTOU window is not fully closed (only the final segment is `lstat`-checked,
 > and the resolve/containment check and the read are not atomic). Do not enable
 > `teamEnabled` in multi-tenant or untrusted-writer deployments.
+
+> **Layout change.** Before per-workspace isolation, all memories lived flat
+> in `memoryHome/`. Those top-level files are not migrated: they now serve as
+> the global layer (visible to every workspace). A pre-isolation team
+> directory at `<memoryHome>/team/` is inert — team memory now lives at
+> `<workspaceDir>/team/`; move its files manually if you had `teamEnabled`
+> on.
 
 ```ts
 import memory from '@jianxx/dsh-cc-memory'
@@ -88,19 +110,23 @@ entrypoint truncation caps and the five-file recall ceiling.
 
 - `parseMemoryFile(raw)` — split a topic file into frontmatter + body.
 - `scanMemoryDirectory(fs, dir, signal?)` — read the entrypoint and topic index.
-- `renderMemorySection(dir, state)` / `renderTeamMemorySection(...)` /
-  `saveGuidance(dir)` — the section text builders.
-- `MemorySection` — background-refresh cache holder for the section.
-- `registerMemorySaveTool(ctx, dir, section)` / `MEMORY_SAVE_TOOL` — the
-  model-facing save channel.
+- `renderMemorySection(globalDir, workspaceDir, ...)` /
+  `renderTeamMemorySection(...)` / `renderLayers(layers)` /
+  `saveGuidance(workspaceDir, globalDir)` — the section text builders.
+- `MemorySection` — background-refresh cache holder for the section (one
+  registration, per-agent workspace layers).
+- `registerMemorySaveTool(ctx, home, section)` / `MEMORY_SAVE_TOOL` /
+  `MEMORY_SAVE_SCOPES` — the model-facing save channel.
 - `validateMemoryWrites(input)` / `writeMemoryFiles(fs, dir, writes)` /
   `memoryWritePolicy(dir)` / `MEMORY_WRITES_SCHEMA` — the host-side write-back
   shared with `dsh-memory-consolidation`.
 - `MemoryRecall` — the pre-step recall coordinator.
 - `truncateEntrypointContent(raw)` — apply the line/byte caps.
-- `resolveMemoryHome`, `resolveProjectMemoryRoot` — memdir root helpers.
+- `resolveMemoryHome`, `resolveWorkspaceMemoryDir`, `projectSlug`, `cwdOf`,
+  `resolveProjectMemoryRoot` — memdir root and workspace helpers.
 - `sanitizePathKey(key)`, `validateTeamMemKey(fs, teamDir, relativeKey)`,
-  `resolveTeamMemoryRoot(home)` — the team-memory security chain and path helpers.
+  `resolveTeamMemoryRoot(workspaceDir)` — the team-memory security chain and
+  path helpers.
 
 ## Known Limitations and Deferred Work
 
@@ -111,9 +137,9 @@ entrypoint truncation caps and the five-file recall ceiling.
   `docs/cc-parity-matrix.md`).
 - The recall side-query relies on a registered one-shot subagent provider; no
   provider ships with this package (compose `fork` or `spawn`).
-- `memory_save` writes the private directory only; a team-scope save channel
-  and a delete channel are deferred (as is CC's direct-Write parity, which the
-  fs sandbox makes impossible for session tools).
+- `memory_save` writes the workspace and global layers only; a team-scope save
+  channel and a delete channel are deferred (as is CC's direct-Write parity,
+  which the fs sandbox makes impossible for session tools).
 - Team memory (`teamEnabled`) reversibility and safety: enabling it is a
   persisted-format change, and the intermediate-component TOCTOU window (only
   the final segment is `lstat`-checked; resolve/containment and the read are

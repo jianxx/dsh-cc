@@ -15,7 +15,6 @@ import z from '@deepseek-ai/schemastery'
 import { resolveMemoryHome } from './paths.ts'
 import { MemorySection } from './section.ts'
 import { MemoryRecall } from './recall.ts'
-import { resolveTeamMemoryRoot } from './team.ts'
 import { registerMemorySaveTool } from './save.ts'
 
 export { parseMemoryFile } from './parser.ts'
@@ -26,13 +25,15 @@ export { MEMORY_TYPES, parseMemoryType } from './types.ts'
 export type { MemoryType, MemoryFrontmatter, MemoryIndexEntry } from './types.ts'
 export { scanMemoryDirectory } from './scan.ts'
 export type { MemoryDirectoryState } from './scan.ts'
-export { resolveMemoryHome, resolveProjectMemoryRoot, PROJECT_MEMORY_DIR } from './paths.ts'
-export { MemorySection, renderMemorySection, renderTeamMemorySection, saveGuidance, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './section.ts'
+export { resolveMemoryHome, resolveProjectMemoryRoot, resolveWorkspaceMemoryDir, projectSlug, cwdOf, PROJECT_MEMORY_DIR, PROJECTS_DIR } from './paths.ts'
+export { MemorySection, renderMemorySection, renderTeamMemorySection, renderLayers, saveGuidance, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './section.ts'
+export type { MemoryLayer } from './section.ts'
 export { MemoryRecall, SubagentMemorySelector, extractSelectedNames, MAX_RECALL_MEMORIES } from './recall.ts'
 export type { MemorySelector, RecallCandidate } from './recall.ts'
 export { TeamMemoryError, sanitizePathKey, resolveTeamMemoryRoot, validateTeamMemKey, readTeamMemFile, TEAM_MEMORY_DIR, TEAM_ENTRYPOINT_NAME } from './team.ts'
 export {
   MEMORY_SAVE_TOOL,
+  MEMORY_SAVE_SCOPES,
   MemorySaveError,
   pointerLine,
   registerMemorySaveTool,
@@ -57,7 +58,11 @@ export const inject = ['systemPrompt']
 
 /** Memory plugin configuration. */
 export interface Config {
-  /** Memory directory root. Defaults to the harness home `memory/`. */
+  /**
+   * Memory home root. Defaults to the harness home `memory/`. The home IS the
+   * global layer; each workspace's private layer lives at
+   * `<home>/projects/<slug>` (slug encodes the session cwd).
+   */
   memoryHome?: string
   /** Whether the `memory` system-prompt section is registered (default true). */
   sectionEnabled?: boolean
@@ -69,10 +74,11 @@ export interface Config {
   recallAgentOptions?: unknown
   /**
    * Whether team memory is enabled (default false). Enables a shared
-   * per-project team directory (`memoryHome/team`), renders the dual-directory
-   * section, and validates all team-memory access. Off by default: onboarding
-   * a team directory changes the persisted format and is not safe in
-   * multi-tenant or untrusted-writer deployments (see README residual).
+   * per-workspace team directory (`<workspaceDir>/team`), renders the
+   * triple-layer section, and validates all team-memory access. Off by
+   * default: onboarding a team directory changes the persisted format and is
+   * not safe in multi-tenant or untrusted-writer deployments (see README
+   * residual).
    */
   teamEnabled?: boolean
 }
@@ -95,25 +101,25 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Pass the raw configured root through: resolveMemoryHome appends `memory/`
   // ONLY for undefined/empty — handing it defaultDshHome() here would resolve
   // to the harness home itself and write memory files into its root.
-  const dir = resolveMemoryHome(config.memoryHome)
+  const home = resolveMemoryHome(config.memoryHome)
   if (config.sectionEnabled ?? true) {
-    const section = new MemorySection(ctx, dir, {
-      ...(config.teamEnabled === true ? { teamDir: resolveTeamMemoryRoot(dir) } : {}),
+    const section = new MemorySection(ctx, home, {
+      teamEnabled: config.teamEnabled === true,
     })
     section.start()
-    // The save channel: the memory directory sits outside every session's
+    // The save channel: memory directories sit outside every session's
     // sandbox writable roots, so direct write/edit always fails; the tool
     // writes host-side instead. No-op on hosts without a tools service.
-    registerMemorySaveTool(ctx, dir, section)
+    registerMemorySaveTool(ctx, home, section)
     // Re-scan at each turn boundary so host-side writes (memory_save,
     // memory-consolidation's write-back, external edits) surface in the
     // section without a restart; refresh() self-dedupes unchanged content.
-    ctx.on('agent/turn-stopping', () => {
-      void section.refresh()
+    ctx.on('agent/turn-stopping', ({ agent }) => {
+      void section.refresh(agent)
     })
   }
   if (config.recallEnabled ?? true) {
-    new MemoryRecall(ctx, dir, {
+    new MemoryRecall(ctx, home, {
       providerName: config.recallProviderName ?? 'fork',
       enabled: true,
     })
