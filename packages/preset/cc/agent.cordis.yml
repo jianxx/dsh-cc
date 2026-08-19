@@ -185,6 +185,12 @@
 # that singleton rather than a tool this agent calls, and the setup list is
 # not scope-aware — one copy per mounted preset means every child gets
 # `report` registered once per live session, which throws on the second.
+#
+# `tool-subagent` and `tool-subagent-fork` (the harness spawn/fork Task tools)
+# are DISABLED here — the CC Task tool is provided by the `tool-task` row in
+# the cc-services group instead. That replacement Task is a foreground one-shot
+# (no backgroundMode: continuable); the durable background/continuable workflow
+# (report/send_message) is a follow-up.
 - id: delegation
   name: cordis:group
   group: true
@@ -199,6 +205,7 @@
 
     - id: tool-subagent
       name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
       config:
         provider: spawn
         toolName: subagent
@@ -206,6 +213,7 @@
 
     - id: tool-subagent-fork
       name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
       config:
         provider: fork
         toolName: subagent_fork
@@ -313,6 +321,15 @@
 
     - id: command-mcp
       name: '@jianxx/dsh-cc-command-mcp'
+
+    # cc-model-routes owns the model-aliases settings namespace and resolver;
+    # tool-task provides the CC Task tool (subagent_type dispatch over
+    # per-workspace .claude/agents) and reserves the names 'subagent'/'workflow'.
+    - id: cc-model-routes
+      name: '@jianxx/dsh-cc-model-aliases'
+
+    - id: tool-task
+      name: '@jianxx/dsh-cc-subagent-task'
 
 # ── parallel rows ──────────────────────────────────────────────────────────
 

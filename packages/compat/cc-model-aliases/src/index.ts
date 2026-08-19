@@ -1,12 +1,14 @@
 /**
  * Claude Code-compatible model alias resolution for the DeepSeek Harness.
  *
- * Pure library — no cordis plugin form, nothing to mount. It maps Claude Code
- * frontmatter model aliases (`model: opus`, `model: sonnet`) to dsh
- * `{provider, model}` routes. The cc-shell bundle composes this package's
- * helpers into a `resolveModel` closure and injects it into every AgentProvider
- * construction, with a `model-aliases` settings namespace supplying the live
- * overlay. See the README for configuration, merge, and fallback semantics.
+ * Two consumption shapes:
+ * - **Service** (`ccModelRoutes`): the plugin entry (`apply`) owns the
+ *   `model-aliases` settings namespace registration and provides a spawn-time
+ *   resolver over it; consumers `ctx.get('ccModelRoutes')` lazily.
+ * - **Pure helpers**: `mergeAliasMaps` / `createModelResolver` for embedding
+ *   the resolution semantics without mounting the service.
+ *
+ * See the README for configuration, merge, and fallback semantics.
  *
  * @module @jianxx/dsh-cc-model-aliases
  */
@@ -21,3 +23,5 @@ export {
   type SettingsAliasEntry,
 } from './schema.ts'
 export type { AliasTarget, ResolvedRoute } from './types.ts'
+export { apply as applyRoutes, name as routesPluginName, type ModelRoutes } from './service.ts'
+export { apply, name } from './service.ts'

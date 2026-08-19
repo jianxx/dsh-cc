@@ -8,7 +8,14 @@ CC 壳层的 **host-plane infra** 组合包。本包承载真正属于宿主层�
 
 - **tools 注册表替换。** 禁用 in-box 的 `tools` 行,重挂 `@jianxx/dsh-cc-tools`。`reserve()`/`isAdmitted()` 加入可限制名 universe,权限门可在 deferred 工具加载前按名门控;其余行为与上游一致。基础行的 `DSH_TOOLS_MODE` 开关被延续($DSH_HOME / process.cwd() 语义不变)。
 - **settings 迁移。** 挂载 `@jianxx/dsh-cc-settings-migrations`,在启动时应用版本门控的 `settings.json` 迁移(等价于 CC 的 `runMigrations`)。当前为空注册表——仅机制。
-- **glue 插件代码(由 CC preset 挂载)。** `cc-shell-glue` 挂载 cordis patch 行无法静态表达的部件:磁盘上的 Claude Code 插件目录(每个含 `plugin.json`,提供 agents/skills/commands/hooks/mcp servers)、`.mcp.json` server 接线,以及基础 CC agent preset 目录(`~/.claude/agents` + `<cwd>/.claude/agents`)。发现为尽力而为——每个缺失路径都只是不挂载任何东西。它还暴露 `ccPlugins` 服务,用于对已挂载插件做实时枚举/重扫。
+- **glue 插件代码(由 CC preset 挂载)。** `cc-shell-glue` 挂载 cordis patch 行无法静态表达的部件:磁盘上的 Claude Code 插件目录(每个含 `plugin.json`,提供 agents/skills/commands/hooks/mcp servers)与 `.mcp.json` server 接线。发现为尽力而为——每个缺失路径都只是不挂载任何东西。它还暴露 `ccPlugins` 服务,用于对已挂载插件做实时枚举/重扫。glue 以 **惰性 trampoline** 基于 `ccModelRoutes` 服务把派发时的 `resolveModel` 接入 `AgentProvider`:`(model) => ctx.get('ccModelRoutes')?.resolve(model)`——每次派发查询,服务未挂载时降级为继承父路由。
+
+### 从 glue 迁出的部分
+
+两个原本住在 `cc-shell-glue` 里的部件迁到了各自的属主包:
+
+- **`model-aliases` settings 命名空间注册** → `@jianxx/dsh-cc-model-aliases` 的 `ccModelRoutes` 服务(`packages/compat/cc-model-aliases`)。glue 不再注册该命名空间(重复注册会 throw),只惰性消费服务。glue config 的 `Config.modelAliases` 已删除。
+- **基础 CC-agent 发现**(`~/.claude/agents` + `<cwd>/.claude/agents` → subagent providers)→ `@jianxx/dsh-cc-subagent-task` 的 Task 工具,它按**会话** cwd(而非宿主进程 cwd)发现。`Config.registerBaseAgents` 已删除。
 
 ## 已知限制 / 说明
 

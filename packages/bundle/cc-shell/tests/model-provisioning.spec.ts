@@ -1,9 +1,12 @@
 /**
  * Integration tests for cc-shell model-alias provisioning: the CC plugin
  * (mountCcPlugin) source path threads the spawn-time resolver into plugin-
- * shipped agents, config `modelAliases` resolve as routes, a live settings
- * overlay overrides config, and a settings `null` deleting a config alias falls
- * back to the builtin behavior (inherit). Covers the review finding M1 path.
+ * shipped agents. The resolver comes from the `ccModelRoutes` routes service
+ * (`@jianxx/dsh-cc-model-aliases`), whose config `modelAliases` resolve as
+ * routes, a live settings overlay overrides config, and a settings `null`
+ * deleting a config alias falls back to the builtin behavior (inherit). With
+ * no routes service mounted the resolver's trampoline degrades to `undefined`
+ * (inherit). Covers the review finding M1 path.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs'
@@ -11,6 +14,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SettingsCascadeProvider } from '@jianxx/dsh-cc-settings-cascade'
+import { apply as applyModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import type { AliasTarget } from '@jianxx/dsh-cc-model-aliases'
 import { apply, type Config } from '../src/index.ts'
 
 interface FakeBackend {
@@ -38,6 +43,36 @@ function makeSubagentsSeam(): { seam: { registerProvider: (p: unknown) => () => 
       getProvider: () => backend,
     },
   }
+}
+
+/**
+ * Boot the routes service (model-aliases), an optional settings provider
+ * backing the `model-aliases` overlay, and cc-shell glue over this context.
+ * When `mountRoutes` is false the routes service is left out, exercising the
+ * glue resolver's unmounted trampoline path.
+ */
+async function bootWith({
+  userDoc,
+  config,
+  routes,
+  mountRoutes = true,
+  subagents,
+}: {
+  userDoc: Record<string, unknown> | undefined
+  config: Config
+  routes?: { modelAliases?: Record<string, AliasTarget> }
+  mountRoutes?: boolean
+  subagents: { registerProvider: (p: unknown) => () => void; getProvider: () => unknown }
+}): Promise<Context> {
+  const settingsDir = tempDir('settings')
+  const userPath = join(settingsDir, 'user.json')
+  if (userDoc !== undefined) writeFileSync(userPath, JSON.stringify(userDoc))
+  const ctx = new Context()
+  ctx.provide('subagents', subagents)
+  await ctx.plugin(SettingsCascadeProvider, { userSettingsPath: userPath })
+  if (mountRoutes) applyModelRoutes(ctx, routes ?? {})
+  await apply(ctx, config)
+  return ctx
 }
 
 let tmp: string
@@ -68,26 +103,6 @@ function writeAgentPlugin(root: string, model: string): void {
     `---\ndescription: doc agent\nmodel: ${JSON.stringify(model)}\n---\nDoc contents.`, 'utf8')
 }
 
-/** Boot settings-cascade over an optional user doc, then run cc-shell apply. */
-async function bootWith({
-  userDoc,
-  config,
-  subagents,
-}: {
-  userDoc: Record<string, unknown> | undefined
-  config: Config
-  subagents: { registerProvider: (p: unknown) => () => void; getProvider: () => unknown }
-}): Promise<Context> {
-  const settingsDir = tempDir('settings')
-  const userPath = join(settingsDir, 'user.json')
-  if (userDoc !== undefined) writeFileSync(userPath, JSON.stringify(userDoc))
-  const ctx = new Context()
-  ctx.provide('subagents', subagents)
-  await ctx.plugin(SettingsCascadeProvider, { userSettingsPath: userPath })
-  await apply(ctx, config)
-  return ctx
-}
-
 describe('cc-shell model alias provisioning', () => {
   it('mounts a plugin-shipped agent and resolves its model via config aliases (M1 path)', async () => {
     const discovery = tempDir('discovery')
@@ -96,11 +111,8 @@ describe('cc-shell model alias provisioning', () => {
     const ctx = await bootWith({
       userDoc: undefined,
       subagents: seam,
-      config: {
-        pluginDirs: [discovery],
-        registerBaseAgents: false,
-        modelAliases: { opus: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } },
-      },
+      routes: { modelAliases: { opus: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } } },
+      config: { pluginDirs: [discovery] },
     })
 
     expect(providers).toHaveLength(1)
@@ -117,11 +129,8 @@ describe('cc-shell model alias provisioning', () => {
     const ctx = await bootWith({
       userDoc: { 'model-aliases': { sonnet: { provider: 'anthropic', model: 'claude-sonnet' } } },
       subagents: seam,
-      config: {
-        pluginDirs: [discovery],
-        registerBaseAgents: false,
-        modelAliases: { sonnet: 'cfg-value' },
-      },
+      routes: { modelAliases: { sonnet: 'cfg-value' } },
+      config: { pluginDirs: [discovery] },
     })
 
     expect(providers).toHaveLength(1)
@@ -137,16 +146,34 @@ describe('cc-shell model alias provisioning', () => {
     const ctx = await bootWith({
       userDoc: { 'model-aliases': { opus: null } },
       subagents: seam,
-      config: {
-        pluginDirs: [discovery],
-        registerBaseAgents: false,
-        modelAliases: { opus: { provider: 'cfg', model: 'cfg-model' } },
-      },
+      routes: { modelAliases: { opus: { provider: 'cfg', model: 'cfg-model' } } },
+      config: { pluginDirs: [discovery] },
     })
 
     expect(providers).toHaveLength(1)
     await providers[0]!.start({ agentOptions: { provider: 'parent' } })
     // Deleted from config, unconfigured builtin → inherit parent route exactly.
+    expect(backend.last).toMatchObject({ agentOptions: { provider: 'parent' } })
+    void ctx
+  })
+
+  it('with no routes service mounted, a plugin agent model resolves to inherit (no override)', async () => {
+    const discovery = tempDir('discovery')
+    writeAgentPlugin(join(discovery, 'typed'), 'opus')
+    const { seam, providers, backend } = makeSubagentsSeam()
+    const ctx = await bootWith({
+      userDoc: undefined,
+      subagents: seam,
+      mountRoutes: false,
+      config: { pluginDirs: [discovery] },
+    })
+
+    // The routes service was never mounted, so `ccModelRoutes` is absent and
+    // the glue's resolver trampoline returns undefined → no model/provider
+    // override; the agent inherits the parent route unchanged.
+    expect(ctx.get('ccModelRoutes')).toBeUndefined()
+    expect(providers).toHaveLength(1)
+    await providers[0]!.start({ agentOptions: { provider: 'parent' } })
     expect(backend.last).toMatchObject({ agentOptions: { provider: 'parent' } })
     void ctx
   })
@@ -173,7 +200,7 @@ describe('cc-shell model alias provisioning', () => {
         return Reflect.get(target, prop, receiver)
       },
     })
-    await apply(guarded, { pluginDirs: [tempDir('empty-discovery')], registerBaseAgents: false })
+    await apply(guarded, { pluginDirs: [tempDir('empty-discovery')] })
     expect(providers).toHaveLength(0)
   })
 })

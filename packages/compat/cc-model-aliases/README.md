@@ -1,11 +1,15 @@
 # @jianxx/dsh-cc-model-aliases
 
-Claude Code-compatible model alias resolution for the DeepSeek Harness. This is a
-**pure library** — no cordis plugin, nothing to mount. It maps Claude Code
-frontmatter model aliases (`model: opus`, `model: sonnet`) onto dsh
-`{provider, model}` routes. The cc-shell bundle composes it into a
-`resolveModel` closure and injects it into every `AgentProvider` construction,
-with a `model-aliases` settings namespace supplying the live overlay.
+English | [中文](README.zh.md)
+
+Claude Code-compatible model alias resolution for the DeepSeek Harness. It maps Claude Code
+frontmatter model aliases (`model: opus`, `model: sonnet`) onto dsh `{provider, model}`
+routes. The package now ships in two shapes:
+
+- a **`ccModelRoutes` host service** (the cordis plugin entry) that owns the `model-aliases`
+  settings namespace registration and exposes a spawn-time resolver, and
+- the **pure helpers** (`mergeAliasMaps` / `createModelResolver`) for embedding the same
+  resolution semantics without mounting the service.
 
 ## Why
 
@@ -19,24 +23,45 @@ This package adds that layer: an alias resolves to a `{provider, model}` route,
 the unresolvable cases fall back to *inheriting the parent route* (no override),
 and literal ids like `deepseek-chat` keep passing through untouched.
 
+## The `ccModelRoutes` service
+
+The plugin entry (`name: 'cc-model-routes'`, `apply`) is what the CC preset mounts via the
+`cc-model-routes` row. It:
+
+- registers the `model-aliases` **settings namespace** — but **only when** a settings
+  provider (`ctx.get('settings')`) is mounted, so a settings-less host degrades to the config
+  defaults plus the builtin fallback (this namespace registration is the single owner of that
+  name; the harness throws on a duplicate registration, see `dsh-settings`);
+- registers the namespace with a **write-time `validate`** that rejects a half-written
+  `{provider, model}` route (a non-empty cross-field check the dict schema itself cannot
+  express);
+- and provides the spawn-time resolver as the **`ccModelRoutes`** value (`ctx.provide`) whose
+  `resolve(model)` reads the **live** settings scope on every invocation — a settings write
+  applies to the next spawn with no re-registration.
+
+Consumers `ctx.get('ccModelRoutes')` **lazily** on every spawn. Lazily means mount order does
+not matter: before the provider's fiber is active, `ctx.get` returns `undefined`, which
+resolves to "inherit the parent route" (the same no-override behavior as before).
+
 ## How the cc-shell bundle wires it
 
 - `Config.modelAliases` provides **deployment defaults** (alias name → model id
   or `{provider, model}`).
-- A `model-aliases` **settings namespace** provides the live overlay, layered
-  exactly like every other settings section (user/project/local/flags).
-- cc-shell builds one resolver (via `createModelResolver`) that, **on every
-  spawn**, reads `scope.get()` fresh and entry-shallow-merges it against the
-  config defaults — no snapshot captured at apply time. So an in-process
-  settings edit applies to the next spawn with no re-registration.
-- The resolver is threaded into **both** AgentProvider construction sites: the
-  base `~/.claude/agents` providers and every plugin-shipped agent (via
-  `mountCcPlugin` → `mountAgents`).
+- The `model-aliases` **settings namespace** registration now lives in the `ccModelRoutes`
+  service, layered exactly like every other settings section (user/project/local/flags).
+- cc-shell's `AgentProvider` gains its `resolveModel` as a **trampoline** over the service:
+  `(model) => ctx.get('ccModelRoutes')?.resolve(model)` — queried **lazily on every spawn**,
+  read fresh (no snapshot captured at apply time), and degrading to inherit when the service
+  is not mounted (`undefined` resolution = inherit the parent route, byte-compatible with the
+  old no-resolver fallback). cc-shell no longer registers the namespace itself.
+- The Task tool (`@jianxx/dsh-cc-subagent-task`) is the other consumer: it resolves a
+  subagent definition's frontmatter `model` through the same `ccModelRoutes` resolver at
+  spawn time.
 
 ## Configuration
 
 ```yaml
-# cc-shell deployment config
+# ccModelRoutes service config (the preset's cc-model-routes row)
 modelAliases:
   sonnet: deepseek-v4-flash                      # string form: model only, provider inherits
   opus:   { provider: deepseek-official, model: deepseek-v4-pro }  # explicit route
@@ -98,16 +123,22 @@ through verbatim (with the warning above).
 ## `inherit` fix note
 
 Prior to this package, `model: inherit` was forwarded as the literal model id
-all the way to `prepareCall`, where it failed. When cc-shell injects the
-resolver, `inherit` resolves to "no override" and the child inherits the parent
-route, matching CC semantics. When the resolver is **not** injected (non-cc
-consumers of `@jianxx/dsh-cc-plugin-loader` that do not set `resolveModel`),
-behavior stays byte-identical to before — including the old `inherit`
-pass-through — because the no-resolver fallback is preserved exactly. The CC
-preset unconditionally mounts cc-shell, so in CC mode the fix is always active.
+all the way to `prepareCall`, where it failed. In CC mode the spawn-time resolver
+(from the `ccModelRoutes` service, consumed via the cc-shell trampoline and the
+Task tool) maps `inherit` to "no override", so the child inherits the parent
+route, matching CC semantics. When no resolver is mounted (non-cc consumers of
+`@jianxx/dsh-cc-plugin-loader` that do not set `resolveModel`), behavior stays
+byte-identical to before — including the old `inherit` pass-through — because the
+no-resolver fallback is preserved exactly. The CC preset unconditionally mounts
+cc-shell (and the routes service), so in CC mode the fix is always active.
 
 ## API
 
+- `apply(ctx, config?)` / `name` — **cordis plugin entry** (plugin id `cc-model-routes`,
+  also re-exported as `applyRoutes` / `routesPluginName`). Mounts the service; config shape is
+  `{ modelAliases?: Record<string, AliasTarget> }` (deployment defaults).
+- `ModelRoutes` — the value type of `ctx.get('ccModelRoutes')` (`resolve(model):
+  { provider?, model? } | undefined`).
 - `mergeAliasMaps(config, settings)` — entry-shallow merge with `null` deletion
   and case-insensitive key folding; returns an effective `ReadonlyMap` of only
   the configured aliases.

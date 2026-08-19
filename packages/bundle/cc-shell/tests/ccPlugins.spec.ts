@@ -42,7 +42,7 @@ let tmpRoot: string
 let commands: ReturnType<typeof createCommandsSeam>
 
 function configFor(dirs: string[]): Config {
-  return { pluginDirs: dirs, registerBaseAgents: false }
+  return { pluginDirs: dirs }
 }
 
 beforeEach(() => {

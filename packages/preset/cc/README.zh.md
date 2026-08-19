@@ -9,6 +9,7 @@ DeepSeek Harness(dsh)的 **CC 模式** agent preset:除内置 `standard`、`mini
 - **完整标准基底**。`agent.cordis.yml` 以标准 `standard` preset 的逐字拷贝开头(16 个基座行),CC 模式会话因此具备标准编码 agent 的全部能力。
 - **作用域化的 CC 表面**。`cc rows` 段挂载 Claude Code 对齐插件——hook 桥(30 个 hook 事件中的 18 个)、CC 插件目录 glue、`ToolSearch`、memory 与 consolidation、输出样式、coordinator、19 个斜杠命令,以及 worktree/sleep/notebook/structured-output 与 git 工具。WebFetch(`tool-web`)设为 `fetch: true`,超时沿用历史全局 swap 的 60s。
 - **隔离的服务 realm**。承载服务的行(工具搜索、microcompactor、插件注册表、MCP 连接)放进 `cc-services` 组并带四个必需的 `isolate` 键,发布到 entry-local realm 而非进程全局 root realm(否则会触发 preset 挂载门禁)。
+- **CC Task 委派(`tool-task` + `cc-model-routes`)**。`cc-services` 组还挂载 `@jianxx/dsh-cc-subagent-task`(CC Task 工具,对按工作区的 `.claude/agents` 定义做 `subagent_type` 派发)与 `@jianxx/dsh-cc-model-aliases`(`cc-model-routes`,拥有 `model-aliases` settings 命名空间与派发时别名解析器)。本 preset 里 harness 的 `tool-subagent` 与 `tool-subagent-fork` 两行被**禁用**,改用这个替代 Task,它是**前台一次性**——不再提供 `tool-subagent-fork` 之前暴露的 durable 后台/`continuable` 流程(`report`/`send_message`)。已知限制见 task 包 README 与 parity matrix。
 
 这些行此前位于全局 `cc-shell` patch(`packages/bundle/cc-shell/cordis.patch.yml`),会泄漏进每个 agent preset;把它们 scope 到本 preset 正是隔离各行为面的手段。
 

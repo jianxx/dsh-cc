@@ -201,6 +201,13 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../../deepseek-harness/packages/settings/settings
+        version: link:../../../../deepseek-harness/packages/settings/settings
 
   packages/compat/cc-output-styles:
     dependencies:
@@ -1154,12 +1161,18 @@ importers:
       '@jianxx/dsh-cc-memory-consolidation':
         specifier: workspace:^
         version: link:../../memory/memory-consolidation
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
       '@jianxx/dsh-cc-output-styles':
         specifier: workspace:^
         version: link:../../compat/cc-output-styles
       '@jianxx/dsh-cc-skill-loader':
         specifier: workspace:^
         version: link:../../skill/skill-claude-code
+      '@jianxx/dsh-cc-subagent-task':
+        specifier: workspace:^
+        version: link:../../subagent/task
       '@jianxx/dsh-cc-tool-git-worktree':
         specifier: workspace:^
         version: link:../../workspace/tool-git-worktree
@@ -1394,6 +1407,40 @@ importers:
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
+
+  packages/subagent/task:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-claude-code-agents':
+        specifier: workspace:^
+        version: link:../../preset/claude-code-agents
+      '@jianxx/dsh-cc-memory':
+        specifier: workspace:^
+        version: link:../../memory/memory
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
+      '@jianxx/dsh-cc-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-subagent':
+        specifier: link:../../../../deepseek-harness/packages/subagent/subagent
+        version: link:../../../../deepseek-harness/packages/subagent/subagent
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../../deepseek-harness/packages/core/system-prompt
+        version: link:../../../../deepseek-harness/packages/core/system-prompt
 
   packages/test-support/agent-loop-mock:
     devDependencies:
