@@ -82,12 +82,13 @@ describe('agent.cordis.yml composition', () => {
     }
   })
 
-  it('isolates exactly the four cc-services services, hosting the two commands', () => {
+  it('isolates exactly the five cc-services services, hosting the two commands', () => {
     const group = doc.find((r) => r.id === 'cc-services')!
     expect(group.name).toBe('cordis:group')
     expect(group.isolate).toEqual({
       toolSearch: true,
       microcompactor: true,
+      ccModelRoutes: true,
       ccPlugins: true,
       mcpConnections: true,
     })
@@ -184,12 +185,17 @@ describe('agent.cordis.yml composition', () => {
         const mine = op.a === -1 ? '' : a[op.a]
         const vend = op.b === -1 ? '' : b[op.b]
         // Whitelist: the tool-web config change (fetch/searchTimeoutMs lines,
-        // any shape) and comment-only lines added to document that change.
+        // any shape), comment-only lines added to document that change, and
+        // the `disabled: true` additions on the harness subagent tool rows
+        // (tool-subagent / tool-subagent-fork), whose Task is replaced by the
+        // cc-services `tool-task` row. Only my-side additions are whitelisted —
+        // an upstream `disabled: true` we drop would still be flagged.
         const isConfigChange =
           (op.a !== -1 && a[op.a].includes('fetch:')) ||
           (op.a !== -1 && a[op.a].includes('searchTimeoutMs:')) ||
           (op.b !== -1 && b[op.b].includes('fetch:')) ||
-          (op.b !== -1 && b[op.b].includes('searchTimeoutMs:'))
+          (op.b !== -1 && b[op.b].includes('searchTimeoutMs:')) ||
+          (op.a !== -1 && a[op.a].trim() === 'disabled: true')
         const isComment = mine.trimStart().startsWith('#') || vend.trimStart().startsWith('#')
         if (isConfigChange || isComment) continue
         diffs.push(

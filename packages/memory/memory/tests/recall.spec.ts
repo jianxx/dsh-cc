@@ -125,18 +125,60 @@ async function mount() {
   return { ctx, recall, recorder, dispose: async () => { recall.dispose(); await ctx.fiber.dispose() } }
 }
 
-/** Drive one pre-step so recall runs (fire-and-forget). */
-function drivePreStep(ctx: Context): void {
-  const agent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
+/** Drive one pre-step (for `agent`, defaulting to a top-level stand-in) so recall runs (fire-and-forget). */
+function drivePreStep(ctx: Context, agent?: Agent): void {
+  const target = agent ?? ({ session: { header: { cwd: '/work/repo' } } } as unknown as Agent)
   const signal = new AbortController().signal
   void ctx.emit('agent/pre-step', {
-    agent,
+    agent: target,
     messages: [{ content: [{ type: 'text', text: 'how do I use bash?' }] }],
     turn: 1,
     step: 1,
     signal,
   } as never, async () => ({ kind: 'enter', messages: [] }) as never)
 }
+
+describe('MemoryRecall subagent gating', () => {
+  it('never recalls inside a subagent session (origin: subagent)', async () => {
+    const { ctx, recorder, dispose } = await mount()
+    const child = { session: { header: { cwd: '/work/repo', origin: 'subagent' } } } as unknown as Agent
+    drivePreStep(ctx, child)
+    // Give any (should-be-absent) recall a chance to run, then assert none.
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(recorder.recentToolsSeen).toHaveLength(0)
+    await dispose()
+  })
+
+  it('never recalls inside a delegated child (delegationDepth > 0)', async () => {
+    const { ctx, recorder, dispose } = await mount()
+    const child = { session: { header: { cwd: '/work/repo', delegationDepth: 1 } } } as unknown as Agent
+    drivePreStep(ctx, child)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(recorder.recentToolsSeen).toHaveLength(0)
+    await dispose()
+  })
+
+  it('still recalls for a top-level agent (no origin stamp)', async () => {
+    const { ctx, recorder, dispose } = await mount()
+    drivePreStep(ctx)
+    await until(() => recorder.recentToolsSeen.length > 0, 'selector invocation')
+    recorder.resolveLatest([])
+    await dispose()
+  })
+
+  it('runs at most one in-flight recall per agent across overlapping pre-steps', async () => {
+    const { ctx, recorder, dispose } = await mount()
+    const agent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
+    drivePreStep(ctx, agent)
+    await until(() => recorder.recentToolsSeen.length > 0, 'first selector')
+    // The first selection is still pending; a second pre-step must not pile up.
+    drivePreStep(ctx, agent)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(recorder.recentToolsSeen).toHaveLength(1)
+    recorder.resolveLatest([])
+    await dispose()
+  })
+})
 
 describe('MemoryRecall recentTools suppression', () => {
   it('records tools from tools/post-execute and passes them to the selector', async () => {

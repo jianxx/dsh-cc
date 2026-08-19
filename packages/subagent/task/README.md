@@ -1,0 +1,136 @@
+# @jianxx/dsh-cc-subagent-task
+
+English | [中文](README.zh.md)
+
+The Claude Code-compatible **Task tool** and **per-workspace subagent catalog** for the
+DeepSeek Harness. It mounts:
+
+- the `subagent_fork` tool (CC display name `Task`) with `subagent_type` dispatch over the
+  session workspace's `.claude/agents` definitions;
+- the `Available subagents` system-prompt section, rendered per workspace;
+- the reserved tool names (`subagent`, `workflow`) that keep disabled harness rows
+  restrictable.
+
+The `ccModelRoutes` service (from `@jianxx/dsh-cc-model-aliases`) supplies the spawn-time
+alias resolver; when it is absent, every child inherits its parent's route (the builtin
+fallback).
+
+## What it is
+
+Claude Code's `Task` tool lets the main agent delegate to a named subagent
+(`subagent_type`, e.g. `deep-reasoner`) defined in `.claude/agents`, and the runner loads
+that agent's own system prompt, model, and tool restriction. Historically the DeepSeek
+Harness only had a generic fork (`description`/`prompt`), so `subagent_type` dispatch was a
+dead letter: the child only ever got the *hand-written role copy* the main model put in the
+prompt, and the agent's `model: opus` alias never reached the backend route.
+
+This package restores the real link. It discovers the CC `.claude/agents` definitions that
+are visible from the **session's** working directory (not the host process cwd — a web host
+serves many workspaces, so `~/.dsh/…` startup must still see `my-repo/.claude/agents`), and
+turns the internal `subagent_fork` tool into a genuine subagent-type dispatcher.
+
+## How dispatch works
+
+Given a `Task(subagent_type, description, prompt)` call from a CC preset session:
+
+1. **`subagent_type` omitted, blank, or `general-purpose`** → a **plain fork** of the caller
+   (the pre-existing semantics): the prompt text becomes the child's first user message, no
+   definition participates.
+2. **A type that matches a definition** under the session cwd (`cwdOf` the assembling agent)
+   → a `fork` with:
+   - `persona` = the definition's `systemPrompt` (delivered as the child's system segment);
+   - the task text as the child's **first user message**;
+   - `agentOptions` = the alias-resolved `{ provider?, model? }` from
+     `ctx.get('ccModelRoutes').resolve(def.model)` (only provider/model fields that resolve
+     to a value are forwarded, so per-field inheritance never breaks);
+   - `toolFilter` = the definition's `toolRestriction` (allow/deny), **sanitized** of tool
+     names this composition no longer registers;
+   - `maxDepth` = 3 (matches the harness default; configurable).
+3. **Any other type** (not found in the workspace) → an **error result** listing the
+   available types in this workspace (or noting the workspace defines none).
+
+The run is **foreground one-shot**: the tool awaits the child to completion and returns its
+final text. A non-`completed` stop reason is surfaced as an error, and only `text` blocks of
+the child output are concatenated.
+
+### Tool-restriction sanitization and reserved names
+
+When a definition's frontmatter narrows tools (e.g. `tools: Read, Task`), the allow/deny
+lists are forced through the CC→harness translation. Names that are neither registered nor
+reserved are dropped with a warning — otherwise the child's scoped `restrict()` would see a
+name that was already invalid at load time. The internal tool name `subagent_fork` is
+registered by this package, and `ctx.tools.reserve('subagent')` / `reserve('workflow')` keep
+those names in the restrictable universe without exposing visible definitions (the CC
+frontmatter `Task` translation is `['subagent', 'subagent_fork']`, so `subagent` must remain
+legal even though the harness spawn row is disabled; `workflow` is reserved for the deferred
+workflow row). This is why a `Task` frontmatter restriction works: both names survive
+sanitization.
+
+## Available subagents system-prompt section
+
+A single global section (`cc:subagent-catalog`, order 110) serves every agent. Its text
+callback receives the assembling agent through the assemble scope, derives that agent's cwd,
+and renders:
+
+```
+## Available subagents
+
+- deep-reasoner — reason through hard architecture and design problems
+- fast-worker — execute a pre-approved mechanical plan
+
+To delegate to one, pass its name as the `subagent_type` argument of the Task tool.
+```
+
+Because the section text is composed synchronously but discovery is async, the first
+assembly for an unknown workspace shows nothing, then `system-prompt/change` fires once
+discovery lands and reassembly reveals the catalog. When a workspace defines no agents (or
+there is no agent to scope to) the section renders an empty string and drops out of the
+prompt. The catalog lists only file definitions — it deliberately does **not** enumerate seam
+backend provider names (`fork`/`spawn`/`codex`/`claude-code`) as if they were addressable
+agent types.
+
+## Mounting
+
+Mounted by the `cc` preset's `tool-task` row (`@jianxx/dsh-cc-subagent-task`) inside the
+`cc-services` group, alongside `cc-model-routes` (`@jianxx/dsh-cc-model-aliases`) which
+supplies the alias resolver. The cc preset **disables** the harness `tool-subagent` and
+`tool-subagent-fork` rows in favour of this tool so there is no double registration of the
+`subagent_fork` name.
+
+## Known limits
+
+- **Foreground only.** The harness `tool-subagent-fork` row this tool replaces was
+  `backgroundMode: continuable` (durable id + `report`/`send_message` on a host-plane
+  singleton). v1 makes the CC Task a foreground one-shot; the durable background/continuable
+  workflow is a **follow-up** — this is a visible regression from the previous preset
+  behaviour and is tracked honestly in the parity matrix.
+- **Process-level discovery cache.** The registry caches per workspace root for the process
+  lifetime and does not watch the filesystem. Editing a `.claude/agents` definition takes
+  effect on the next session for a workspace whose cache entry has not yet been created, and
+  on process restart otherwise. mtime-based invalidation is a follow-up.
+- **No plugin-agent dispatch (v1).** Only file definitions under `.claude/agents` are
+  dispatched. Seam plugin agents (`AgentProvider`) are not addressed by `subagent_type` in v1
+  (their start contract does not carry the task text and their capability flags would reject
+  `maxDepth`) — see the parity matrix.
+- **Fork inherits the parent prefix.** This tool uses the harness `fork`, which inherits the
+  parent agent's message prefix; Claude Code's `Task` does not have that inheritance. This is
+  a known parity difference, not fixed in v1.
+
+## API
+
+- `apply(ctx)` — cordis plugin entry (plugin id `cc-subagent-task`); safe when either the
+  tools or the system-prompt seam is absent.
+- `AgentRegistry` (`./registry`) — per-workspace definition cache (`ensure` / `list` /
+  `resolve`), lazily loading `loadClaudeCodeAgents(root)` (user layer + project layer,
+  project shadows user).
+- `registerTaskTool` / `TASK_TOOL` (`./tool`) — register the `subagent_fork` Task tool.
+- `mountAgentCatalog` / `CATALOG_SECTION_NAME` / `CATALOG_SECTION_ORDER` (`./catalog`) —
+  mount the `Available subagents` section.
+
+## Non-goals
+
+- `run_in_background` / continuable Task (follow-up).
+- Seam plugin-agent dispatch.
+- CC frontmatter `permissionMode` / `isolation` / `memory` / `effort` projection onto the
+  child (the loader parses them, v1 does not consume them).
+- `registerBaseAgents` in cc-shell (base-agent discovery moved here; see the cc-shell README).

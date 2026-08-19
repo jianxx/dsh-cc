@@ -8,7 +8,22 @@ The CC shell **host-plane infra** bundle. This package carries the pieces that a
 
 - **Tools registry swap.** Disables the in-box `tools` row and remounts `@jianxx/dsh-cc-tools`. `reserve()`/`isAdmitted()` join the restrictable-name universe, so permission gates can name deferred tools before they load; the shipped behavior otherwise matches upstream. The base row's `DSH_TOOLS_MODE` toggle is carried forward ($DSH_HOME / process.cwd() semantics unchanged).
 - **Settings migrations.** Mounts `@jianxx/dsh-cc-settings-migrations` to apply version-gated `settings.json` migrations at startup (equivalent to CC's `runMigrations`). Empty registry — mechanism only — for now.
-- **Glue plugin code (mounted by the CC preset).** `cc-shell-glue` mounts what a cordis patch row cannot express statically: on-disk Claude Code plugin directories (each holding `plugin.json`, providing agents/skills/commands/hooks/mcp servers), `.mcp.json` server wiring, and the base CC agent preset dirs (`~/.claude/agents` + `<cwd>/.claude/agents`). Discovery is best-effort — every absent path mounts nothing. It also exposes the `ccPlugins` service for live enumeration/rescan of mounted plugins.
+- **Glue plugin code (mounted by the CC preset).** `cc-shell-glue` mounts what a cordis patch row cannot express statically: on-disk Claude Code plugin directories (each holding `plugin.json`, providing agents/skills/commands/hooks/mcp servers) and `.mcp.json` server wiring. Discovery is best-effort — every absent path mounts nothing. It also exposes the `ccPlugins` service for live enumeration/rescan of mounted plugins. The glue threads the spawn-time `resolveModel` into `AgentProvider` as a
+  **lazy trampoline** over the `ccModelRoutes` service:
+  `(model) => ctx.get('ccModelRoutes')?.resolve(model)` — queried on every spawn, degrading to
+  inherit the parent route when the service is unmounted.
+
+### What moved out of the glue
+
+Two pieces that used to live in `cc-shell-glue` moved to their owning packages:
+
+- **`model-aliases` settings-namespace registration** → the `@jianxx/dsh-cc-model-aliases`
+  `ccModelRoutes` service (`packages/compat/cc-model-aliases`). The glue no longer registers
+  the namespace (a duplicate registration would throw); it only consumes the service lazily.
+  `Config.modelAliases` was removed from the glue config.
+- **Base CC-agent discovery** (`~/.claude/agents` + `<cwd>/.claude/agents` → subagent
+  providers) → the `@jianxx/dsh-cc-subagent-task` Task tool, which discovers per the **session**
+  cwd (not the host process cwd). `Config.registerBaseAgents` was removed.
 
 ## Known limits / notes
 
