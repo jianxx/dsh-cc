@@ -69,3 +69,8 @@ done
 
 echo "synced ${#synced[@]} packages into $dest"
 [ "$missing_lib" -eq 0 ] || exit 1
+
+# The runtime reads the cc preset composition from the per-user
+# .agent-presets copy, NOT from the synced package — keep the two in lockstep
+# so a package-only sync can never boot a stale composition.
+bash "$repo_root/scripts/sync-cc-preset.sh"
