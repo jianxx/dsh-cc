@@ -287,7 +287,7 @@
 
 # Service rows MUST sit in a group with an `isolate` realm: mounting this preset
 # rejects any row that publishes a cordis Service into the root realm
-# (PresetMountError / leakedServices). The four isolate keys below are all
+# (PresetMountError / leakedServices). The five isolate keys below are all
 # required — the glue dynamically attaches mcp-client as a sub-fiber, and
 # `Context.extend` inherits the group's isolate map down the prototype chain, so
 # without `mcpConnections` isolated here it would publish into the root realm
@@ -300,6 +300,7 @@
   isolate:
     toolSearch: true
     microcompactor: true
+    ccModelRoutes: true
     ccPlugins: true
     mcpConnections: true
   config:

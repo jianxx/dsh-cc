@@ -62,9 +62,18 @@ export class AgentCatalogSection {
   ) {}
 
   /** Register the catalog section.
+   *
+   * The seam is fetched with `ctx.get` rather than the `ctx.systemPrompt`
+   * property: cordis strict mode rejects property access for services the
+   * plugin never declared via `inject`, and a throw here fails the whole
+   * preset mount (every session in the preset dies at creation).
    * @returns the exact Cordis effect disposer for the section. */
   start(): () => void {
-    return this.ctx.systemPrompt.section({
+    const seam = this.ctx.get('systemPrompt') as {
+      section(def: { name: string; order: number; text: (context: { scope?: unknown }) => string }): () => void
+    } | undefined
+    if (seam === undefined) return () => {}
+    return seam.section({
       name: CATALOG_SECTION_NAME,
       order: CATALOG_SECTION_ORDER,
       text: (context: { scope?: unknown }): string => this.render(context.scope),
