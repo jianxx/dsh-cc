@@ -2,7 +2,9 @@
  * Dynamic recall: an `agent/pre-step` listener that asks a small-model side
  * query (a forked subagent) which topic files are relevant to the turn, then
  * injects their bodies through `agent.inject()`. Topic files already shown
- * this session are never re-injected. Best-effort: absence of the subagent
+ * this session are never re-injected. Recall runs for top-level agents only —
+ * a forked child (including the selector itself) never recalls, so no chain of
+ * memory-recall subagents can form. Best-effort: absence of the subagent
  * service or provider skips recall without error.
  * @module @jianxx/dsh-cc-memory/recall
  */
@@ -156,7 +158,7 @@ export function extractSelectedNames(text: string): string[] {
 
 /** The per-agent recall coordinator. Holds the shown-path set per agent. */
 export class MemoryRecall {
-  private readonly state = new WeakMap<Agent, { shown: Set<string> }>()
+  private readonly state = new WeakMap<Agent, { shown: Set<string>; inFlight: boolean }>()
   private readonly providerName: string
   private readonly createSelector: (ctx: Context, agent: Agent) => MemorySelector
   private readonly recentTools = new Set<string>()
@@ -221,6 +223,12 @@ export class MemoryRecall {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     signal.throwIfAborted()
+    // Recall enriches top-level agents only. Every agent runs this same
+    // waterfall — including the forked memory-recall selector itself — so
+    // recalling inside a subagent would spawn another selector whose own
+    // pre-step recalls again: an unbounded chain of memory-recall subagents.
+    const header = agent.session.header
+    if (header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) return decision
     // Fire-and-forget: recall is model-visible enrichment, never worth an
     // unhandled rejection in the host — any fault inside skips quietly.
     void this.maybeRecall(agent, messages, signal, this.createSelector(this.ctx, agent))
@@ -251,37 +259,45 @@ export class MemoryRecall {
     ])
     const topics = [...workspaceScan.topics, ...globalScan.topics]
     if (topics.length === 0) return
-    let shown = this.state.get(agent)
-    if (shown === undefined) {
-      shown = { shown: new Set() }
-      this.state.set(agent, shown)
+    let entry = this.state.get(agent)
+    if (entry === undefined) {
+      entry = { shown: new Set(), inFlight: false }
+      this.state.set(agent, entry)
     }
-    const fresh = topics.filter(topic => !shown.shown.has(topic.path))
+    const fresh = topics.filter(topic => !entry.shown.has(topic.path))
     if (fresh.length === 0) return
-    const selected = await selector.select(
-      query,
-      fresh.map(topic => ({ path: topic.path, filename: topic.filename, description: topic.frontmatter.description })),
-      signal,
-      Array.from(this.recentTools),
-    )
-    if (signal.aborted || selected.length === 0) return
-    const byFilename = new Map(topics.map(topic => [topic.filename, topic]))
-    const bodies: string[] = []
-    for (const filename of selected) {
-      const topic = byFilename.get(filename)
-      if (topic === undefined) continue
-      shown.shown.add(topic.path)
-      const raw = await readOptionalText(fileSystem, topic.path, signal)
-      if (raw !== undefined && raw.trim().length > 0) {
-        bodies.push(`## Memory: ${topic.frontmatter.name}\n\n${raw.trim()}`)
+    // Pre-step fires once per step while a turn runs; a pending selection must
+    // not pile up overlapping selectors for the same agent.
+    if (entry.inFlight) return
+    entry.inFlight = true
+    try {
+      const selected = await selector.select(
+        query,
+        fresh.map(topic => ({ path: topic.path, filename: topic.filename, description: topic.frontmatter.description })),
+        signal,
+        Array.from(this.recentTools),
+      )
+      if (signal.aborted || selected.length === 0) return
+      const byFilename = new Map(topics.map(topic => [topic.filename, topic]))
+      const bodies: string[] = []
+      for (const filename of selected) {
+        const topic = byFilename.get(filename)
+        if (topic === undefined) continue
+        entry.shown.add(topic.path)
+        const raw = await readOptionalText(fileSystem, topic.path, signal)
+        if (raw !== undefined && raw.trim().length > 0) {
+          bodies.push(`## Memory: ${topic.frontmatter.name}\n\n${raw.trim()}`)
+        }
       }
+      signal.throwIfAborted()
+      if (bodies.length === 0) return
+      agent.inject(createUserMessage({
+        content: [{ type: 'text', text: bodies.join('\n\n') }],
+        source: { kind: 'memory' },
+      }))
+    } finally {
+      entry.inFlight = false
     }
-    signal.throwIfAborted()
-    if (bodies.length === 0) return
-    agent.inject(createUserMessage({
-      content: [{ type: 'text', text: bodies.join('\n\n') }],
-      source: { kind: 'memory' },
-    }))
   }
 }
 
