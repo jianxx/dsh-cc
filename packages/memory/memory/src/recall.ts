@@ -12,6 +12,7 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scanMemoryDirectory } from './scan.ts'
+import { cwdOf, resolveWorkspaceMemoryDir } from './paths.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -19,14 +20,9 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-// Memory observes tool usage for recall suppression without depending on the
-// tools package, so it declares a minimal structural listen-only contract for
-// the `tools/post-execute` waterfall event here.
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    'tools/post-execute'(exec: ToolExecuted, _result: unknown, _next: () => Promise<unknown>): Promise<unknown>
-  }
-}
+// The canonical `tools/post-execute` waterfall signature comes from
+// @jianxx/dsh-cc-tools (a real dependency since save.ts); memory only observes
+// tool usage for recall suppression and delegates to `next()` unchanged.
 
 /** How many topic files the selector may surface per query. */
 export const MAX_RECALL_MEMORIES = 5
@@ -108,9 +104,22 @@ export class SubagentMemorySelector implements MemorySelector {
       // Provider absent or services unavailable: best-effort recall skips.
       return []
     }
-    const result = await run.result
+    // run.result rejects only on infrastructure faults; child-level failures
+    // arrive RESOLVED with a non-completed stopReason. Both must skip recall
+    // quietly — this path is fire-and-forget, so a throw becomes an unhandled
+    // rejection in the host.
+    let result
+    try {
+      result = await run.result
+    } catch {
+      return []
+    }
     if (result.stopReason === 'error') return []
-    const text = result.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+    // SubagentResult carries the transcript blocks as `output` (not `content`).
+    const text = (result.output ?? [])
+      .filter(block => block.type === 'text')
+      .map(block => block.text ?? '')
+      .join('')
     const names = extractSelectedNames(text)
     const valid = new Set(candidates.map(candidate => candidate.filename))
     return names.filter(name => valid.has(name)).slice(0, MAX_RECALL_MEMORIES)
@@ -126,13 +135,8 @@ interface SubagentLike {
     signal: AbortSignal
     agentOptions?: unknown
   }): Promise<{
-    result: Promise<{ stopReason: string; content: readonly { type: string; text?: string }[] }>
+    result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }>
   }>
-}
-
-/** Structural subset of a `tools/post-execute` payload used to track tools. */
-interface ToolExecuted {
-  name: string
 }
 
 /** Loose JSON extraction tolerant of code fences and prose around the array. */
@@ -161,14 +165,15 @@ export class MemoryRecall {
   /**
    * Register the `agent/pre-step` and `tools/post-execute` listeners.
    * @param ctx - host context with `fs`, `subagents`, and the agent channel.
-   * @param dir - the memory directory to scan.
+   * @param home - the memory home: the global directory and the root under
+   *   which each agent's workspace directory (`projects/<slug>`) is resolved.
    * @param options - provider name, whether recall is enabled, and an optional
    *   selector factory (defaults to {@link SubagentMemorySelector}; inject a
    *   fake for deterministic tests).
    */
   constructor(
     private readonly ctx: Context,
-    private readonly dir: string,
+    private readonly home: string,
     options: {
       providerName?: string
       enabled?: boolean
@@ -188,7 +193,7 @@ export class MemoryRecall {
     // waterfall observer: it must delegate to `next()` so the tools pipeline
     // continues unchanged.
     this.disposers.push(
-      this.ctx.on('tools/post-execute', (exec: ToolExecuted, _result, next) => {
+      this.ctx.on('tools/post-execute', (exec, _result, next) => {
         if (exec.name.length > 0) this.recentTools.add(exec.name)
         return next()
       }),
@@ -216,7 +221,10 @@ export class MemoryRecall {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     signal.throwIfAborted()
+    // Fire-and-forget: recall is model-visible enrichment, never worth an
+    // unhandled rejection in the host — any fault inside skips quietly.
     void this.maybeRecall(agent, messages, signal, this.createSelector(this.ctx, agent))
+      .catch(() => {})
     return decision
   }
 
@@ -233,14 +241,22 @@ export class MemoryRecall {
       .join('\n')
       .trim()
     if (query.length === 0) return
-    const scan = await scanMemoryDirectory(fileSystem, this.dir, signal)
-    if (scan.topics.length === 0) return
+    // Recall spans both layers: the agent's workspace directory and the
+    // global directory. Shown-tracking keys on full paths, so identical
+    // filenames across layers never collide.
+    const workspaceDir = resolveWorkspaceMemoryDir(this.home, cwdOf(agent))
+    const [workspaceScan, globalScan] = await Promise.all([
+      scanMemoryDirectory(fileSystem, workspaceDir, signal),
+      scanMemoryDirectory(fileSystem, this.home, signal),
+    ])
+    const topics = [...workspaceScan.topics, ...globalScan.topics]
+    if (topics.length === 0) return
     let shown = this.state.get(agent)
     if (shown === undefined) {
       shown = { shown: new Set() }
       this.state.set(agent, shown)
     }
-    const fresh = scan.topics.filter(topic => !shown.shown.has(topic.path))
+    const fresh = topics.filter(topic => !shown.shown.has(topic.path))
     if (fresh.length === 0) return
     const selected = await selector.select(
       query,
@@ -249,7 +265,7 @@ export class MemoryRecall {
       Array.from(this.recentTools),
     )
     if (signal.aborted || selected.length === 0) return
-    const byFilename = new Map(scan.topics.map(topic => [topic.filename, topic]))
+    const byFilename = new Map(topics.map(topic => [topic.filename, topic]))
     const bodies: string[] = []
     for (const filename of selected) {
       const topic = byFilename.get(filename)

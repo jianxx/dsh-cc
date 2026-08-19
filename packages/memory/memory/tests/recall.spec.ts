@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { extractSelectedNames, MemoryRecall, type MemorySelector } from '../src/recall.ts'
+import { extractSelectedNames, MemoryRecall, SubagentMemorySelector, type MemorySelector } from '../src/recall.ts'
 import { FakeMemoryFs } from './helpers.ts'
 
 describe('extractSelectedNames', () => {
@@ -26,6 +26,53 @@ describe('extractSelectedNames', () => {
     expect(extractSelectedNames('{"other": []}')).toEqual([])
     expect(extractSelectedNames('no json here')).toEqual([])
     expect(extractSelectedNames('{"selected_memories": not-json}')).toEqual([])
+  })
+})
+
+describe('SubagentMemorySelector result handling', () => {
+  const parent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
+  const CANDIDATES = [
+    { path: '/root/a.md', filename: 'a.md', description: 'A' },
+    { path: '/root/b.md', filename: 'b.md', description: 'B' },
+  ]
+
+  /** Mount a selector against a fake subagents service returning the given run. */
+  function selectorWith(run: unknown) {
+    const ctx = new Context()
+    ctx.provide('subagents' as never, { start: async () => run } as never)
+    return new SubagentMemorySelector(ctx, parent)
+  }
+
+  it('parses the selection from SubagentResult.output (the upstream shape)', async () => {
+    // Regression: the selector once read result.content, but SubagentResult
+    // carries transcript blocks as `output` — the mismatch threw
+    // "Cannot read properties of undefined (reading 'filter')" and, being
+    // fire-and-forget, surfaced as a fatal host load failure.
+    const selector = selectorWith({
+      result: Promise.resolve({
+        stopReason: 'completed',
+        output: [{ type: 'text', text: '{"selected_memories": ["a.md"]}' }],
+      }),
+    })
+    await expect(selector.select('q', CANDIDATES, new AbortController().signal, []))
+      .resolves.toEqual(['a.md'])
+  })
+
+  it('returns empty when output is absent or the result rejects', async () => {
+    const noOutput = selectorWith({ result: Promise.resolve({ stopReason: 'completed' }) })
+    await expect(noOutput.select('q', CANDIDATES, new AbortController().signal, []))
+      .resolves.toEqual([])
+    const rejecting = selectorWith({ result: Promise.reject(new Error('infra gone')) })
+    await expect(rejecting.select('q', CANDIDATES, new AbortController().signal, []))
+      .resolves.toEqual([])
+  })
+
+  it('returns empty on an error stopReason', async () => {
+    const errored = selectorWith({
+      result: Promise.resolve({ stopReason: 'error', output: [{ type: 'text', text: '{"selected_memories": ["a.md"]}' }] }),
+    })
+    await expect(errored.select('q', CANDIDATES, new AbortController().signal, []))
+      .resolves.toEqual([])
   })
 })
 
@@ -69,8 +116,10 @@ async function mount() {
   const ctx = new Context()
   await ctx.plugin(FakeMemoryFs)
   const fs = ctx.fs as FakeMemoryFs
-  fs.seed('/root/MEMORY.md', '# memory')
-  fs.seed('/root/bash.md', topicBody('Bash reference documentation', 'reference'))
+  // The home root is the global layer; the agent's workspace layer resolves
+  // to `<home>/projects/<slug>` from its session cwd.
+  fs.seed('/root/projects/work-repo/MEMORY.md', '# memory')
+  fs.seed('/root/projects/work-repo/bash.md', topicBody('Bash reference documentation', 'reference'))
   const recorder = new RecordingSelector()
   const recall = new MemoryRecall(ctx, '/root', { enabled: true, createSelector: () => recorder })
   return { ctx, recall, recorder, dispose: async () => { recall.dispose(); await ctx.fiber.dispose() } }
@@ -78,7 +127,7 @@ async function mount() {
 
 /** Drive one pre-step so recall runs (fire-and-forget). */
 function drivePreStep(ctx: Context): void {
-  const agent = {} as Agent
+  const agent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
   const signal = new AbortController().signal
   void ctx.emit('agent/pre-step', {
     agent,

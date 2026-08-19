@@ -40,8 +40,8 @@ packages/
   compat/cc-plugin-loader          mount a CC plugin directory (plugin.json) onto dsh seams (library)
   compat/cc-model-aliases          CC frontmatter model aliases → {provider, model} routes (library; wired by cc-shell)
   compat/cc-output-styles          CLAUDE.md output styles → system prompt
-  memory/memory                    CLAUDE.md memories + recall (recentTools suppression) + opt-in team memory
-  memory/memory-consolidation      background memory consolidation
+  memory/memory                    CLAUDE.md memories + memory_save write channel + recall (recentTools suppression) + opt-in team memory
+  memory/memory-consolidation      background memory consolidation (structured fork output, host-side write-back)
   workspace/tool-git-worktree      EnterWorktree / ExitWorktree tools
   subagent/coordinator             coordinator mode (delegation-only agent surface)
   compaction/compaction-micro      model-free stale-result microcompaction
