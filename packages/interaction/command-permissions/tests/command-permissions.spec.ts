@@ -148,3 +148,23 @@ describe('/permissions human command', () => {
     expect((execution?.result as { text: string }).text).toContain('default')
   })
 })
+
+describe('CC catalog hides /permission', () => {
+  it('drops /permission from list when /permissions is registered, but execute still reaches the host handler', async () => {
+    const { ctx, agent, plugin } = await harness(true)
+    const host = vi.fn(() => ({ kind: 'success' as const, text: 'preset workspace-write' }))
+    ctx.commands.register({
+      name: 'permission',
+      description: 'Switch the permission preset (sandbox mode + approval policy)',
+      input: { hint: '<preset>' },
+      handler: host,
+    })
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permissions'])
+    expect(ctx.commands.find(agent, 'permission')).toBeDefined()
+    const execution = await ctx.commands.execute(agent, '/permission workspace-write', new AbortController().signal)
+    expect(host).toHaveBeenCalled()
+    expect((execution?.result as { text: string }).text).toBe('preset workspace-write')
+    await plugin.dispose()
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permission'])
+  })
+})

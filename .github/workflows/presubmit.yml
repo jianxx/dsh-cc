@@ -114,6 +114,14 @@ jobs:
         working-directory: dsh-cc-plugins
         run: pnpm typecheck
 
+      # lib/ is gitignored; the browser client bundle (module-table-handoff
+      # factory) only exists after tsdown runs. check:exports needs it on disk,
+      # and a follow-up profile sync rsyncs whatever is on disk — regenerate it
+      # right after tsc so both stay green.
+      - name: Bundle client (tsdown → lib/client.js)
+        working-directory: dsh-cc-plugins
+        run: pnpm run bundle:client
+
       - name: Unit tests (vitest)
         working-directory: dsh-cc-plugins
         run: pnpm test

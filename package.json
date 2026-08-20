@@ -8,8 +8,9 @@
     "node": "^22.19 || >=24"
   },
   "scripts": {
-    "build": "tsc -b tsconfig.packages.json",
+    "build": "tsc -b tsconfig.packages.json && pnpm run bundle:client",
     "prepare": "husky",
+    "bundle:client": "pnpm --filter @jianxx/dsh-cc-command-permissions run bundle",
     "typecheck": "tsc -b tsconfig.packages.json",
     "test": "vitest run",
     "check:exports": "node scripts/check-export-targets.mjs",

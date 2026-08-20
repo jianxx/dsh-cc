@@ -3,6 +3,18 @@
  * state (allow/deny/ask counts per source), or switch the session's permission
  * mode with `/permissions <mode>`. Switching is durable — it routes through the
  * permission-rules engine's `setMode` (and plan-mode's `set` for `plan`).
+ *
+ * The host command remains the write path. A client decoration (see
+ * `./client`) hangs the same popupSelect on the BARE invocation, mirroring the
+ * `/permission` preset pattern — a pick submits `/permissions <mode>` through
+ * here, so both surfaces write through one path.
+ *
+ * `/permission` (host, sandbox+approval presets) and `/permissions` (this
+ * package, CC rule-engine modes) drive different knobs. A CC session's slash
+ * menu should show only `/permissions`: `commands.list` drops the host
+ * `/permission` row when `/permissions` is in the same view, while
+ * `find`/`execute` stay on the global handler so the composer chip can still
+ * switch sandbox presets.
  * @module @jianxx/dsh-cc-command-permissions
  */
 
@@ -11,6 +23,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@jianxx/dsh-cc-permission-rules'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
+import { PERMISSION_COMMAND_MODES } from './modes.ts'
 import { renderPermissions } from './permissions.ts'
 
 export const name = 'command-permissions'
@@ -28,8 +41,8 @@ type PermissionRulesLike = {
   setMode(agent: Agent, mode: string): void
 }
 
-/** The available modes, for the switch list and the unknown-mode error. */
-const MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'] as const
+/** The shared modes list — the switch list and the client popup both read it. */
+const MODES = PERMISSION_COMMAND_MODES
 
 /** Render the current rule state from a mounted engine. */
 function renderState(service: PermissionRulesLike): CommandResult {
@@ -81,7 +94,10 @@ function executePermissions(ctx: Context, invocation: CommandInvocation): Comman
 }
 
 /**
- * Register the `/permissions` command for every composed command adapter.
+ * Register the `/permissions` command, and hide the host `/permission` row
+ * from `commands.list` for agents that can see `/permissions`. `find` and
+ * `execute` are not wrapped, so `/permission workspace-write` and the
+ * composer chip keep driving the sandbox-preset switcher.
  * @param ctx - context carrying the command registry and permission engine.
  */
 export function apply(ctx: Context): void {
@@ -91,4 +107,16 @@ export function apply(ctx: Context): void {
     input: { hint: '[mode]' },
     handler: (invocation: CommandInvocation) => executePermissions(ctx, invocation),
   })
+  const commands = ctx.commands
+  const originalList = commands.list
+  const wrappedList = function list(this: typeof commands, agent: Agent): ReturnType<typeof commands.list> {
+    const listed = originalList.call(this, agent)
+    if (this.find(agent, 'permissions') === undefined) return listed
+    const filtered = listed.filter(entry => entry.name !== 'permission')
+    return filtered.length === listed.length ? listed : Object.freeze(filtered)
+  }
+  commands.list = wrappedList as typeof commands.list
+  ctx.effect(() => () => {
+    if (commands.list === wrappedList) commands.list = originalList
+  }, 'command-permissions: hide /permission from the CC catalog')
 }
