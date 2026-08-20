@@ -150,8 +150,9 @@ describe('/permissions human command', () => {
 })
 
 describe('CC catalog hides /permission', () => {
-  it('drops /permission from list when /permissions is registered, but execute still reaches the host handler', async () => {
+  it('drops /permission from a CC session list, but execute still reaches the host handler', async () => {
     const { ctx, agent, plugin } = await harness(true)
+    agent.session.append('agent-preset/selected' as never, { agentPreset: 'cc' } as never)
     const host = vi.fn(() => ({ kind: 'success' as const, text: 'preset workspace-write' }))
     ctx.commands.register({
       name: 'permission',
@@ -166,5 +167,16 @@ describe('CC catalog hides /permission', () => {
     expect((execution?.result as { text: string }).text).toBe('preset workspace-write')
     await plugin.dispose()
     expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permission'])
+  })
+
+  it('hides /permissions from a non-CC session list', async () => {
+    const { ctx, agent } = await harness(true)
+    ctx.commands.register({
+      name: 'permission',
+      description: 'Switch the permission preset',
+      handler: () => ({ kind: 'success', text: 'ok' }),
+    })
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permission'])
+    expect(ctx.commands.find(agent, 'permissions')).toBeDefined()
   })
 })

@@ -12,9 +12,14 @@
  * `/permission` (host, sandbox+approval presets) and `/permissions` (this
  * package, CC rule-engine modes) drive different knobs. A CC session's slash
  * menu should show only `/permissions`: `commands.list` drops the host
- * `/permission` row when `/permissions` is in the same view, while
+ * `/permission` row when the session's selected agent preset is `cc`, while
  * `find`/`execute` stay on the global handler so the composer chip can still
  * switch sandbox presets.
+ *
+ * This package is mounted twice: the host-plane row (cc-permissions bundle)
+ * exists so `dsh-client-modules` can discover the `dsh.client` browser half
+ * (preset rows never appear in `ctx.loader.entries()`); that host apply is a
+ * no-op besides the catalog wrap. The CC preset row registers the command.
  * @module @jianxx/dsh-cc-command-permissions
  */
 
@@ -93,11 +98,48 @@ function executePermissions(ctx: Context, invocation: CommandInvocation): Comman
   }
 }
 
+/** Whether this session selected the CC agent preset (last `agent-preset/selected` wins, else the creation header). */
+function isCcSession(agent: Agent): boolean {
+  const events = agent.session.events
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]! as { type: string; data?: { agentPreset?: string } }
+    if (event.type === 'agent-preset/selected') {
+      return event.data?.agentPreset === 'cc'
+    }
+  }
+  const header = agent.session.header as { agentPreset?: string }
+  return header.agentPreset === 'cc'
+}
+
 /**
- * Register the `/permissions` command, and hide the host `/permission` row
- * from `commands.list` for agents that can see `/permissions`. `find` and
- * `execute` are not wrapped, so `/permission workspace-write` and the
+ * Hide the host `/permission` row from `commands.list` for CC sessions.
+ * Installed once on the host-plane mount (`ctx.agent` unset). Preset mounts
+ * skip this so a session-scoped apply cannot stack wraps on the same service.
+ * `find`/`execute` are not wrapped, so `/permission workspace-write` and the
  * composer chip keep driving the sandbox-preset switcher.
+ */
+function installCatalogWrap(ctx: Context): void {
+  const commands = ctx.commands
+  const originalList = commands.list
+  const wrappedList = function list(this: typeof commands, agent: Agent): ReturnType<typeof commands.list> {
+    const listed = originalList.call(this, agent)
+    const hidden = isCcSession(agent) ? 'permission' : 'permissions'
+    const filtered = listed.filter(entry => entry.name !== hidden)
+    return filtered.length === listed.length ? listed : Object.freeze(filtered)
+  }
+  commands.list = wrappedList as typeof commands.list
+  ctx.effect(() => () => {
+    commands.list = originalList
+  }, 'command-permissions: hide /permission from the CC catalog')
+}
+
+/**
+ * Register `/permissions`. The host-plane mount (`ctx.agent` unset, the
+ * cc-permissions bundle row) also wraps `commands.list` so a CC session
+ * hides `/permission` and a non-CC session hides `/permissions`. That host
+ * fiber is what `dsh-client-modules` scans for `dsh.client`. A preset-scoped
+ * mount only registers the command (so a composition without the host row
+ * still works; the wrap is already on the service from the host row).
  * @param ctx - context carrying the command registry and permission engine.
  */
 export function apply(ctx: Context): void {
@@ -107,16 +149,5 @@ export function apply(ctx: Context): void {
     input: { hint: '[mode]' },
     handler: (invocation: CommandInvocation) => executePermissions(ctx, invocation),
   })
-  const commands = ctx.commands
-  const originalList = commands.list
-  const wrappedList = function list(this: typeof commands, agent: Agent): ReturnType<typeof commands.list> {
-    const listed = originalList.call(this, agent)
-    if (this.find(agent, 'permissions') === undefined) return listed
-    const filtered = listed.filter(entry => entry.name !== 'permission')
-    return filtered.length === listed.length ? listed : Object.freeze(filtered)
-  }
-  commands.list = wrappedList as typeof commands.list
-  ctx.effect(() => () => {
-    if (commands.list === wrappedList) commands.list = originalList
-  }, 'command-permissions: hide /permission from the CC catalog')
+  if (ctx.agent === undefined) installCatalogWrap(ctx)
 }

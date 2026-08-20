@@ -57,6 +57,9 @@ export function apply(ctx: ClientContext): void {
   const command = ctx.get('commandUi') as CommandUiContract
   ctx.effect(() => command.decorate({
     name: 'permissions',
+    // The host catalog already hides `/permissions` from non-CC sessions
+    // (`commands.list` wrap). A missing host row means this decoration is a
+    // no-op — it never manufactures a command.
     available: () => true,
     ui: {
       kind: 'popupSelect',

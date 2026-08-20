@@ -113,7 +113,10 @@ rule-engine modes — default/acceptEdits/plan/auto/bypassPermissions, with
 bypassPermissions carrying the same risk gate as host `/permission` Full
 access; a CC session's slash catalog hides host `/permission` so only
 `/permissions` appears — the composer chip still drives sandbox presets
-through `/permission <preset>`), `/version`,
+through `/permission <preset>`. The popupSelect browser half is a
+host-plane `dsh.client` row on the cc-permissions bundle, because
+preset rows never appear in `ctx.loader.entries()` and would not be
+discovered otherwise), `/version`,
 `/release-notes`, `/diff`, `/init`,
 `/plugin`, `/reload-plugins`, `/mcp`, `/tasks`, plus base `plan-mode`'s `/plan`.
 
