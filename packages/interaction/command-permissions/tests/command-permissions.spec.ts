@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -28,13 +28,18 @@ async function harness(withService: boolean): Promise<{
   ctx: Context
   agent: Agent
   plugin: Awaited<ReturnType<Context['plugin']>>
+  setMode: ReturnType<typeof vi.fn>
+  planSet: ReturnType<typeof vi.fn>
 }> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(AgentRegistry)
+  const setMode = vi.fn()
+  const planSet = vi.fn()
   if (withService) {
-    ctx.reflect.provide('permissionRules', { ruleSet: RULESET() })
+    ctx.reflect.provide('permissionRules', { ruleSet: RULESET(), setMode })
+    ctx.reflect.provide('planMode', { set: planSet })
   }
   const plugin = await ctx.plugin(commandPermissions)
   const session = ctx.sessions.create(SessionId(`command-permissions-${Math.random()}`))
@@ -54,7 +59,7 @@ async function harness(withService: boolean): Promise<{
     whenIdle: () => Promise.resolve(),
   }
   ctx.agents.register(agent)
-  return { ctx, agent, plugin }
+  return { ctx, agent, plugin, setMode, planSet }
 }
 
 describe('@jianxx/dsh-cc-command-permissions registration', () => {
@@ -97,5 +102,81 @@ describe('/permissions human command', () => {
     const execution = await ctx.commands.execute(agent, '/permissions', new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('not mounted')
+  })
+
+  it('/permissions <mode> switches the permission mode through setMode', async () => {
+    const { ctx, agent, setMode } = await harness(true)
+    const execution = await ctx.commands.execute(agent, '/permissions acceptEdits', new AbortController().signal)
+    expect(setMode).toHaveBeenCalledWith(agent, 'acceptEdits')
+    const text = (execution?.result as { text: string }).text
+    expect(text).toContain('acceptEdits')
+  })
+
+  it('/permissions plan routes to planMode.set and does not call setMode', async () => {
+    const { ctx, agent, setMode, planSet } = await harness(true)
+    const execution = await ctx.commands.execute(agent, '/permissions plan', new AbortController().signal)
+    expect(planSet).toHaveBeenCalledWith(agent, true)
+    expect(setMode).not.toHaveBeenCalled()
+    expect((execution?.result as { text: string }).text).toContain('plan')
+  })
+
+  it('/permissions bogus errors and lists the available modes', async () => {
+    const { ctx, agent, setMode } = await harness(true)
+    const execution = await ctx.commands.execute(agent, '/permissions bogus', new AbortController().signal)
+    expect(setMode).not.toHaveBeenCalled()
+    const text = (execution?.result as { text: string }).text
+    expect(text).toContain('default')
+    expect(text).toContain('acceptEdits')
+    expect(text).toContain('plan')
+    expect(text).toContain('auto')
+    expect(text).toContain('bypassPermissions')
+  })
+
+  it('errors when the engine is not mounted', async () => {
+    const { ctx, agent } = await harness(false)
+    const execution = await ctx.commands.execute(agent, '/permissions auto', new AbortController().signal)
+    const text = (execution?.result as { text: string }).text
+    expect(text).toContain('not mounted')
+  })
+
+  it('/permissions default leaves an active plan before switching', async () => {
+    const { ctx, agent, setMode, planSet } = await harness(true)
+    agent.session.append('plan/mode', { active: true })
+    const execution = await ctx.commands.execute(agent, '/permissions default', new AbortController().signal)
+    expect(planSet).toHaveBeenCalledWith(agent, false)
+    expect(setMode).toHaveBeenCalledWith(agent, 'default')
+    expect((execution?.result as { text: string }).text).toContain('default')
+  })
+})
+
+describe('CC catalog hides /permission', () => {
+  it('drops /permission from a CC session list, but execute still reaches the host handler', async () => {
+    const { ctx, agent, plugin } = await harness(true)
+    agent.session.append('agent-preset/selected' as never, { agentPreset: 'cc' } as never)
+    const host = vi.fn(() => ({ kind: 'success' as const, text: 'preset workspace-write' }))
+    ctx.commands.register({
+      name: 'permission',
+      description: 'Switch the permission preset (sandbox mode + approval policy)',
+      input: { hint: '<preset>' },
+      handler: host,
+    })
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permissions'])
+    expect(ctx.commands.find(agent, 'permission')).toBeDefined()
+    const execution = await ctx.commands.execute(agent, '/permission workspace-write', new AbortController().signal)
+    expect(host).toHaveBeenCalled()
+    expect((execution?.result as { text: string }).text).toBe('preset workspace-write')
+    await plugin.dispose()
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permission'])
+  })
+
+  it('hides /permissions from a non-CC session list', async () => {
+    const { ctx, agent } = await harness(true)
+    ctx.commands.register({
+      name: 'permission',
+      description: 'Switch the permission preset',
+      handler: () => ({ kind: 'success', text: 'ok' }),
+    })
+    expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permission'])
+    expect(ctx.commands.find(agent, 'permissions')).toBeDefined()
   })
 })

@@ -21,6 +21,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@jianxx/dsh-cc-settings-cascade": "workspace:^",
-    "@jianxx/dsh-cc-permission-rules": "workspace:^"
+    "@jianxx/dsh-cc-permission-rules": "workspace:^",
+    "@jianxx/dsh-cc-command-permissions": "workspace:^"
   }
 }

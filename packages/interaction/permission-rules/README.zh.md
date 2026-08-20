@@ -27,9 +27,10 @@ Claude Code 兼容的权限规则引擎。解析 `ToolName` 与 `ToolName(conten
 3. **整工具 deny** → deny。
 4. **整工具 ask** → ask（当设置了 `exemptSandboxedBashFromToolAsk` 时，被沙箱限制的 `Bash` 豁免并直接 allow）。
 5. **内容级 allow/deny/ask** 规则按来源优先级评估（最高优先级先；首个命中规则决定）。
-6. **模式**短路：`bypassPermissions` 放行一切（除非 `disableBypassPermissionsMode`）；`acceptEdits` 自动放行文件编辑工具；`plan` 自动放行只读工具。
+6. **模式**短路：`bypassPermissions` 放行一切（除非 `disableBypassPermissionsMode`）；`acceptEdits` 自动放行文件编辑工具；`plan` 自动放行只读工具。`auto` 不是 evaluate 短路——它与 `default` 评估一致，审批由插件层的风险分类器代理。
 7. **整工具 allow** 是该工具的粗略默认——没有更具体的规则命中时放行。
 8. **无命中** → passthrough 给下游监听器（最终到审批缝），后者仍可能 `ask`。
+9. **plan 收口**：非只读调用上残留的 `ask`/`passthrough` 变成 deny，理由是 `plan mode is read-only; submit via exit_plan_mode`。命中的 allow/deny 规则仍然生效。
 
 ## 配置
 
@@ -58,14 +59,20 @@ await ctx.plugin(PermissionRules, {
 
 ## 来源与模式
 
-每条规则携带 `PermissionRuleSource`（`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`），用于内容规则的优先级。引擎在调用时解析生效模式：plan 激活（来自 `@deepseek-ai/dsh-plan-mode`）覆盖会话记录的 `permission/mode` 覆盖，否则回退到 `defaultMode`。
+每条规则携带 `PermissionRuleSource`（`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`），用于内容规则的优先级。引擎在调用时解析生效模式：plan 激活（来自 `@deepseek-ai/dsh-plan-mode`）最先覆盖，然后是会话记录的 `permission/mode` 覆盖（`foldPermissionMode`），否则回退到 `defaultMode`。
+
+模式是**持久的**——`setMode(agent, mode)` 追加一条 last-wins 的 `permission/mode` 会话事件（插件加载时注册进 `KNOWN_SESSION_EVENT_TYPES`，持久化可恢复它）。`plan` 归 plan-mode 所有，在这里会抛错。进入 `bypassPermissions` 会把会话沙箱钉到 `danger-full-access` 并记录 `resumeSandbox`；离开时恢复记录（或回退 `workspace-write`）的约束。在 `auto` 下，风险分类器代理每次 `ask`：LOW 风险调用自动放行，MEDIUM 风险仍会询问。
+
+## 切换模式
+
+`permissionRules.setMode(agent, mode)` 持久切换（见上）；`/permissions <mode>` 命令（在 `@jianxx/dsh-cc-command-permissions`）为 `default | acceptEdits | plan | auto | bypassPermissions` 驱动它。每次切换都会向会话的模型转录注入一条面向人的提示。
 
 ## 供宿主 UI 使用的纯导出
 
 - `parseRuleString(rule)`、`parseRule(rule, behavior, source)`、`escapeRuleContent`/`unescapeRuleContent`——解析规则为 `PermissionRule`。
 - `evaluatePermission(input)`——为一次调用收敛 `PermissionDecision`（`allow` / `deny` / `ask` / `passthrough`），给定工具、subject、规则集、模式与豁免标志。无需挂载插件即可预览某规则会命中什么。
 - `mergeRuleSets(...sets)`——按来源优先级合并规则集。
-- `foldPermissionMode(events)`——折叠会话记录的模式。
+- `foldPermissionMode(events)`、`foldResumeSandbox(events)`、`setPermissionMode(session, mode, resumeSandbox?)`——读写持久的 `permission/mode` 覆盖。`setPermissionMode` 拒绝 `plan` 与未知模式；其他插件可用 `foldPermissionMode` 折叠某会话的记录模式。
 - `assessBashCommand(command, patterns?)`——对 shell 命令做风险分级（`LOW`/`HIGH`）。
 - `assessFilePath(filePath, opts)`——对文件写入做风险分级（`LOW`/`MEDIUM`/`HIGH`）。
 - `PERMISSION_MODES`、`SOURCE_PRIORITY`——封闭词汇表。
@@ -74,6 +81,6 @@ await ctx.plugin(PermissionRules, {
 
 ## Invariant 伴生插件
 
-`@jianxx/dsh-cc-permission-rules/invariant` 拒绝任何值不属于封闭 `PERMISSION_MODES` 词汇表的 `permission/mode` 会话事件。
+`@jianxx/dsh-cc-permission-rules/invariant` 在会话边界校验 `permission/mode` 会话事件：`mode` 必须是可切换的（绝不能是 `plan`），且 `resumeSandbox`——若存在——必须是已知沙箱模式（`read-only` | `workspace-write` | `danger-full-access`）。
 
 参见 [Agent Note](../../../.agents/notes/implemented/feature/2026-08-14-cc-permission-rules.md)。

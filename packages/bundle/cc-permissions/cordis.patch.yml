@@ -24,3 +24,11 @@
     # bypass-immune rules ride the monotonic guard layer.
     - id: permission-rules
       name: '@jianxx/dsh-cc-permission-rules'
+
+    # Host-plane mount of the /permissions command + catalog wrap. The empty
+    # host fiber is what dsh-client-modules scans for the popupSelect browser
+    # half (preset rows never appear in ctx.loader.entries()). The CC preset
+    # still has its own command-permissions row so a composition without this
+    # bundle still registers the command.
+    - id: command-permissions
+      name: '@jianxx/dsh-cc-command-permissions'

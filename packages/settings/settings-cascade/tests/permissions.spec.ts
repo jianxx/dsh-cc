@@ -60,6 +60,10 @@ describe('PermissionsSchema', () => {
     expect(() => parse({ defaultMode: 'bogus' })).toThrow()
   })
 
+  it('parses defaultMode auto', () => {
+    expect(parse({ defaultMode: 'auto' })).toMatchObject({ defaultMode: 'auto' })
+  })
+
   it('rejects a disableBypassPermissionsMode value other than disable', () => {
     expect(() => parse({ disableBypassPermissionsMode: 'on' })).toThrow()
   })

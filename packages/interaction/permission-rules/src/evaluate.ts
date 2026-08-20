@@ -5,13 +5,16 @@
  *
  * Order (spec): tool-wide deny → tool-wide ask (sandboxed-bash exempt) →
  * source-priority content rules → mode rules (acceptEdits/plan/bypass) →
- * passthrough. Bypass-immune rules are evaluated first and always deny; the
- * plugin additionally enforces them through the monotonic guard layer.
+ * whole-tool allow → passthrough. A final plan-mode wrap converts leftover
+ * `ask`/`passthrough` on a non-read-only call into a deny (allow and deny
+ * decisions stand). Bypass-immune rules are evaluated first and always deny;
+ * the plugin additionally enforces them through the monotonic guard layer.
  * @module @jianxx/dsh-cc-permission-rules/evaluate
  */
 
 import { ccToolAliases } from '@jianxx/dsh-cc-tools'
 import {
+  PLAN_READONLY_REASON,
   SOURCE_PRIORITY,
   type EvaluationInput,
   type PermissionDecision,
@@ -61,7 +64,25 @@ export function evaluatePermission(input: EvaluationInput): PermissionDecision {
   const { toolName, subject, rules, mode } = input
   const effectiveMode: EvaluationInput['mode'] =
     (input.bypassDisabled ?? false) && mode === 'bypassPermissions' ? 'default' : mode
+  const decision = foldDecision(input, effectiveMode, toolName, subject, rules)
+  // Plan is read-only: leftover ask/passthrough on a mutating call become a
+  // deny pointing at exit_plan_mode. Allow (including a matching allow rule)
+  // and deny (including deny rules) stand.
+  if (effectiveMode === 'plan' && input.isReadOnly !== true
+    && (decision.kind === 'ask' || decision.kind === 'passthrough')) {
+    return { kind: 'deny', reason: PLAN_READONLY_REASON }
+  }
+  return decision
+}
 
+/** The inner waterfall, before the plan-mode wrap. */
+function foldDecision(
+  input: EvaluationInput,
+  effectiveMode: EvaluationInput['mode'],
+  toolName: string,
+  subject: string | undefined,
+  rules: PermissionRuleSet,
+): PermissionDecision {
   // Bypass-immune content rules always deny, regardless of mode — including
   // bypassPermissions. The plugin also enforces these through the guard layer
   // so a later (non-waterfall) override cannot flip the denial.

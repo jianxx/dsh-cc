@@ -57,7 +57,7 @@ dsh-web-app surgery criteria).
 | Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
 | Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
 | Settings migrations | ✅ | `settings/settings-migrations` (`@jianxx/dsh-cc-settings-migrations`) — version-gated `runMigrations` over an atomically-written settings.json, auto-run on mount; mechanism only (no real migrations yet) |
-| Permission rules | ✅ + 🔶 | rule engine + dangerous-command/path risk classifier. Per-session mode overrides are **in-memory** (resume reverts to deployment default) — durable `permission/mode` appends are staged separately, gated on the harness pin carrying the event type. Missing vs CC: ML/bash risk classifier service, managed/enterprise remote settings |
+| Permission rules | ✅ | rule engine + dangerous-command/path risk classifier. Modes are **durable**: `permission/mode` session events (registered into `KNOWN_SESSION_EVENT_TYPES` at plugin load so persistence resumes them); `/permissions <mode>` switches `default\|acceptEdits\|plan\|auto\|bypassPermissions`; the bare `/permissions` opens a popupSelect of those five modes (`bypassPermissions` with the same risk gate as host `/permission` Full access); plan non-read-only calls deny with `exit_plan_mode` guidance; auto auto-allows classifier-LOW asks and still prompts on MEDIUM; entering bypassPermissions pins `danger-full-access` and records `resumeSandbox` for restore. Remaining vs CC: ML/bash risk classifier service, managed/enterprise remote settings, UI mode cycle |
 | Hooks | 🔶 | 18 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off) |
 | MCP client | ✅ | tools + resources + prompts + OAuth 2.1 |
 | Memory / CLAUDE.md | ✅ | `memory` + `memory-consolidation` (AutoDream analog); per-workspace isolation mirroring CC's `~/.claude/projects/<slug>/memory/` — each session cwd maps to `<memoryHome>/projects/<slug>/` (slug matches the `sessions/--<slug>--/` encoding) plus a shared global layer at the home root (`memory_save` `scope`); `memory_save` tool is the save channel (the memdirs sit outside the session sandbox, so direct Write is fenced; forks report structured output and the plugins write host-side under a memdir-confined per-call policy); recall suppresses reference-doc memories for recently used tools; opt-in `teamEnabled` shared team memory (`<workspaceDir>/team`) with a seam-native symlink/containment validation chain |
@@ -108,8 +108,17 @@ Executors: `command`, `http` (SSRF-allowlisted via `allowedHttpHookUrls`),
 
 Mounted CC-parity commands (20): `/cost`, `/doctor`, `/export`, `/stats`,
 `/status`, `/output-style`, `/memory`, `/skills`, `/help`, `/config`,
-`/permissions`, `/version`, `/release-notes`, `/diff`, `/init`, `/plugin`,
-`/reload-plugins`, `/mcp`, `/tasks`, plus base `plan-mode`'s `/plan`.
+`/permissions [mode]` (bare invocation opens a popupSelect of the five CC
+rule-engine modes — default/acceptEdits/plan/auto/bypassPermissions, with
+bypassPermissions carrying the same risk gate as host `/permission` Full
+access; a CC session's slash catalog hides host `/permission` so only
+`/permissions` appears — the composer chip still drives sandbox presets
+through `/permission <preset>`. The popupSelect browser half is a
+host-plane `dsh.client` row on the cc-permissions bundle, because
+preset rows never appear in `ctx.loader.entries()` and would not be
+discovered otherwise), `/version`,
+`/release-notes`, `/diff`, `/init`,
+`/plugin`, `/reload-plugins`, `/mcp`, `/tasks`, plus base `plan-mode`'s `/plan`.
 
 Degraded by design (documented):
 
@@ -124,10 +133,10 @@ commands (🚫 vendor-bound).
 
 ## Deferred upstream items
 
-1. Durable permission-mode overrides — needs `permission/mode` in the pinned
-   harness's session event vocabulary (the type already exists locally in
-   deepseek-harness master; bump the presubmit pin once that harness build
-   is the one CI builds).
+1. Upstream catalog pin of `permission/mode` — the plugin registers the type
+   into `KNOWN_SESSION_EVENT_TYPES` at load (a runtime `Set.add`), which already
+   unblocks resume in this process; bumping the harness's own compiled catalog is
+   an upstream polish, not a blocker.
 2. SSRF host allowlist for `web-fetch-http` (then un-caveat WebFetch).
 3. Cron-expression selector for `dsh-schedule` (then full `ScheduleCronTool`
    parity).
