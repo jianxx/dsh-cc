@@ -28,8 +28,9 @@ export const inject = ['invariants']
  * @param fail - reporter bound to this package, throwing on violation.
  */
 export function assertPermissionModeEvent(event: SessionEvent, fail: InvariantFailure): void {
-  if (event.type !== 'permission/mode') return
-  const data = event.data as unknown as PermissionModeEventData
+  const wire = event as unknown as { type: string; data: PermissionModeEventData }
+  if (wire.type !== 'permission/mode') return
+  const data = wire.data
   if (!(SWITCHABLE_PERMISSION_MODES as readonly string[]).includes(data.mode)) {
     fail(`permission/mode carries unknown mode ${JSON.stringify(data.mode)} (plan is owned by plan-mode)`)
   }

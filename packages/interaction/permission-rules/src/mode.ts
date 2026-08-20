@@ -9,10 +9,11 @@
  * upstream `KNOWN_SESSION_EVENT_TYPES` set at load so the persistence layer
  * will resume logs containing it on harness builds whose catalog lacks it
  * (persistence refuses unknown types unless the type is registered there). The
- * set is typed `ReadonlySet` but is a live `Set`. The linked harness may already
- * declare `permission/mode` (a narrower shape predating `auto`/`resumeSandbox`);
- * in that case the `add` is a no-op and {@link PermissionModeEventData} carries
- * the field extensions that postdate the upstream session vocabulary.
+ * set is typed `ReadonlySet` but is a live `Set`. Fold/append go through a
+ * local wire face rather than `SessionEventMap['permission/mode']` so both
+ * the CI pin (type absent) and a newer local harness (narrower `{mode}`
+ * shape) typecheck. PermissionModeEventData carries `auto` and
+ * `resumeSandbox`, which postdate both of those catalogs.
  *
  * @module @jianxx/dsh-cc-permission-rules/mode
  */
@@ -24,25 +25,32 @@ import { PLAN_READONLY_REASON, SWITCHABLE_PERMISSION_MODES, type SwitchablePermi
 
 ;(KNOWN_SESSION_EVENT_TYPES as Set<string>).add('permission/mode')
 
-export const PERMISSION_MODE_EVENT = 'permission/mode' as const
+export const PERMISSION_MODE_EVENT = 'permission/mode'
 
 export { PLAN_READONLY_REASON }
 
 /**
  * The `permission/mode` payload as written by this plugin. `auto` and
- * `resumeSandbox` postdate the upstream session event type (which declares a
- * narrower, `auto`-less shape with no resume field); events are persisted and
- * folded through this extended face. `resumeSandbox` is recorded only when
- * entering `bypassPermissions`.
+ * `resumeSandbox` postdate the upstream session event type (which on some
+ * harness pins is absent entirely, and on later pins is a narrower
+ * `auto`-less shape with no resume field). Events are persisted and folded
+ * through this extended face so both pins typecheck. `resumeSandbox` is
+ * recorded only when entering `bypassPermissions`.
  */
 export interface PermissionModeEventData {
   mode: SwitchablePermissionMode
   resumeSandbox?: SandboxMode
 }
 
-/** Read a `permission/mode` event's payload through the extended face. */
-function dataOf(event: SessionEvent): PermissionModeEventData {
-  return event.data as unknown as PermissionModeEventData
+/** Wire face of one log event that may or may not be a `permission/mode`. */
+interface PermissionModeWire {
+  readonly type: string
+  readonly data: PermissionModeEventData
+}
+
+/** Read a log event through the extended `permission/mode` face. */
+function asModeEvent(event: SessionEvent): PermissionModeWire {
+  return event as unknown as PermissionModeWire
 }
 
 /**
@@ -53,8 +61,8 @@ function dataOf(event: SessionEvent): PermissionModeEventData {
  */
 export function foldPermissionMode(events: readonly SessionEvent[]): SwitchablePermissionMode | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]!
-    if (event.type === 'permission/mode') return dataOf(event).mode
+    const event = asModeEvent(events[i]!)
+    if (event.type === PERMISSION_MODE_EVENT) return event.data.mode
   }
   return undefined
 }
@@ -68,9 +76,9 @@ export function foldPermissionMode(events: readonly SessionEvent[]): SwitchableP
  */
 export function foldResumeSandbox(events: readonly SessionEvent[]): SandboxMode | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]!
-    if (event.type === 'permission/mode' && dataOf(event).mode === 'bypassPermissions' && dataOf(event).resumeSandbox !== undefined) {
-      return dataOf(event).resumeSandbox
+    const event = asModeEvent(events[i]!)
+    if (event.type === PERMISSION_MODE_EVENT && event.data.mode === 'bypassPermissions' && event.data.resumeSandbox !== undefined) {
+      return event.data.resumeSandbox
     }
   }
   return undefined
@@ -93,5 +101,5 @@ export function setPermissionMode(session: Session, mode: SwitchablePermissionMo
     mode,
     ...resumeSandbox !== undefined ? { resumeSandbox } : {},
   }
-  session.append('permission/mode', data as never)
+  ;(session.append as (type: string, payload: PermissionModeEventData) => unknown)(PERMISSION_MODE_EVENT, data)
 }

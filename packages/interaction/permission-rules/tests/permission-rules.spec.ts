@@ -311,7 +311,7 @@ describe('session mode overrides (durable)', () => {
   it('leaving bypass with no recorded resume falls back to workspace-write', async () => {
     const ctx = await mount()
     const agent = openTurnAgent('bypass-norec')
-    agent.session.append('permission/mode', { mode: 'bypassPermissions' })
+    ;(agent.session.append as (type: string, payload: { mode: string }) => unknown)('permission/mode', { mode: 'bypassPermissions' })
     ctx.permissionRules.setMode(agent, 'default')
     expect(effectiveSandboxMode(agent.session.events)).toBe('workspace-write')
   })
