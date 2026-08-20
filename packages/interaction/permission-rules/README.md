@@ -27,9 +27,10 @@ The plugin registers a `tools/pre-execute` listener and folds one decision per c
 3. **whole-tool deny** → deny.
 4. **whole-tool ask** → ask (a sandboxed, confining `Bash` is exempt and allowed instead when `exemptSandboxedBashFromToolAsk` is set).
 5. **content-level allow/deny/ask** rules by source priority (highest source first; first rule to match decides).
-6. **mode** short-circuits: `bypassPermissions` allows everything (unless `disableBypassPermissionsMode`); `acceptEdits` auto-allows file-edit tools; `plan` auto-allows read-only tools.
+6. **mode** short-circuits: `bypassPermissions` allows everything (unless `disableBypassPermissionsMode`); `acceptEdits` auto-allows file-edit tools; `plan` auto-allows read-only tools. `auto` is not an evaluate short-circuit — it evaluates identically to `default`, with the risk classifier proxying asks at the plugin layer.
 7. **whole-tool allow** is the coarse default for that tool when nothing more specific matched.
 8. **no match** → passthrough to downstream listeners (ultimately the approval seam), which may still `ask`.
+9. **plan wrap**: leftover `ask`/`passthrough` on a non-read-only call becomes a deny with `plan mode is read-only; submit via exit_plan_mode`. Matching allow/deny rules still stand.
 
 ## Config
 
@@ -58,14 +59,20 @@ When `ctx.settings` is mounted, the plugin registers the `permissions` namespace
 
 ## Sources and modes
 
-Every rule carries a `PermissionRuleSource` (`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`) used for content-rule priority. The engine resolves the effective mode at call time: plan activation (from `@deepseek-ai/dsh-plan-mode`) overlays the session's recorded `permission/mode` override, falling back to `defaultMode`.
+Every rule carries a `PermissionRuleSource` (`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`) used for content-rule priority. The engine resolves the effective mode at call time: plan activation (from `@deepseek-ai/dsh-plan-mode`) overlays first, then the session's recorded `permission/mode` override (`foldPermissionMode`), falling back to `defaultMode`.
+
+Modes are **durable** — `setMode(agent, mode)` appends a last-wins `permission/mode` session event (registered into `KNOWN_SESSION_EVENT_TYPES` at plugin load so persistence resumes it). `plan` is owned by plan-mode and throws here. Entering `bypassPermissions` pins the session sandbox to `danger-full-access` and records `resumeSandbox`; leaving restores the recorded (or `workspace-write` fallback) confinement. Under `auto`, the risk classifier proxies every `ask`: classifier-LOW calls auto-allow, classifier-MEDIUM still asks.
+
+## Switching modes
+
+`permissionRules.setMode(agent, mode)` switches durably (see above); the `/permissions <mode>` command (in `@jianxx/dsh-cc-command-permissions`) drives it for `default | acceptEdits | plan | auto | bypassPermissions`. A human-facing notice is injected into the session's model transcript on each switch.
 
 ## Pure exports for host UI
 
 - `parseRuleString(rule)`, `parseRule(rule, behavior, source)`, `escapeRuleContent`/`unescapeRuleContent` — parse rules to `PermissionRule`.
 - `evaluatePermission(input)` — fold a `PermissionDecision` for a call (`allow` / `deny` / `ask` / `passthrough`) given tool, subject, rule set, mode, and exemption flags. Use it to preview what a rule hits without mounting the plugin.
 - `mergeRuleSets(...sets)` — merge rule sets by source priority.
-- `foldPermissionMode(events)` — fold a session's recorded mode.
+- `foldPermissionMode(events)`, `foldResumeSandbox(events)`, `setPermissionMode(session, mode, resumeSandbox?)` — read/write the durable `permission/mode` override. `setPermissionMode` rejects `plan` and unknown modes; other plugins can fold a session's recorded mode via `foldPermissionMode`.
 - `assessBashCommand(command, patterns?)` — risk-classify a shell command (`LOW`/`HIGH`).
 - `assessFilePath(filePath, opts)` — risk-classify a file write (`LOW`/`MEDIUM`/`HIGH`).
 - `PERMISSION_MODES`, `SOURCE_PRIORITY` — closed vocabularies.
@@ -74,6 +81,6 @@ Rule parsing and evaluation are browser-safe (pure string logic), so the type/pa
 
 ## Invariant companion
 
-`@jianxx/dsh-cc-permission-rules/invariant` rejects any `permission/mode` session event whose value is outside the closed `PERMISSION_MODES` vocabulary.
+`@jianxx/dsh-cc-permission-rules/invariant` validates `permission/mode` session events at the session boundary: `mode` must be switchable (never `plan`), and `resumeSandbox` — when present — must be a known sandbox mode (`read-only` | `workspace-write` | `danger-full-access`).
 
 See the [Agent Note](../../../.agents/notes/implemented/feature/2026-08-14-cc-permission-rules.md).

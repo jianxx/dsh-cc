@@ -16,8 +16,9 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
+import { effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import type { Session } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ccToolAliases } from '@jianxx/dsh-cc-tools'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -31,11 +32,31 @@ import { assessBashCommand, assessFilePath, type RiskAssessment } from './classi
 import {
   PERMISSION_MODES,
   SOURCE_PRIORITY,
+  SWITCHABLE_PERMISSION_MODES,
   type PermissionDecision,
   type PermissionMode,
   type PermissionRule,
   type PermissionRuleSet,
   type PermissionRuleSource,
+} from './types.ts'
+import {
+  foldPermissionMode,
+  foldResumeSandbox,
+  setPermissionMode,
+} from './mode.ts'
+
+export {
+  foldPermissionMode,
+  foldResumeSandbox,
+  setPermissionMode,
+  PERMISSION_MODE_EVENT,
+} from './mode.ts'
+export {
+  PERMISSION_MODES,
+  SWITCHABLE_PERMISSION_MODES,
+  PLAN_READONLY_REASON,
+  type PermissionMode,
+  type SwitchablePermissionMode,
 } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -58,6 +79,8 @@ export interface PermissionSettings {
   ask?: string[]
   /** Default permission mode for sessions without a recorded override. */
   defaultMode?: PermissionMode
+  /** `'disable'` turns off the ability to switch to `bypassPermissions`. */
+  disableBypassPermissionsMode?: 'disable'
   /** Additional directories included in the permission scope (escape-check base). */
   additionalDirectories?: string[]
   /** Protected file wildcard patterns — writes to them are high risk. */
@@ -127,6 +150,15 @@ const DEFAULT_FILE_EDIT_TOOLS = ['edit', 'write', 'multi_edit', 'notebook_edit',
 /** The standard read-only tool set, applied when {@link Config.readOnlyTools} is omitted. */
 const DEFAULT_READ_ONLY_TOOLS = ['read', 'glob', 'grep', 'search', 'web_fetch', 'web_search']
 
+/** One short model-facing sentence per permission mode for the prompt context. */
+const MODE_SENTENCE: Record<PermissionMode, string> = {
+  default: 'Permission mode: default. Tool calls follow allow/deny/ask rules; unmatched calls pass through.',
+  acceptEdits: 'Permission mode: acceptEdits. File edits are auto-allowed; other calls follow the rules.',
+  plan: 'Permission mode: plan. Only read-only tools may run; submit the plan via exit_plan_mode.',
+  auto: 'Permission mode: auto. Low-risk approval prompts are auto-allowed; medium-risk prompts still ask the user.',
+  bypassPermissions: 'Permission mode: bypassPermissions. Permission prompts are skipped and the sandbox is full access, except bypass-immune and catastrophic commands which remain denied.',
+}
+
 /** The shared settings schema (Config-facing and settings-provider-facing). */
 function permissionSettingsSchema(): z<PermissionSettings> {
   return z.object({
@@ -134,6 +166,7 @@ function permissionSettingsSchema(): z<PermissionSettings> {
     deny: z.array(z.string()),
     ask: z.array(z.string()),
     defaultMode: z.union(PERMISSION_MODES as PermissionMode[]),
+    disableBypassPermissionsMode: z.union(['disable'] as const),
     additionalDirectories: z.array(z.string()),
     protectedFiles: z.array(z.string()),
     dangerousPatterns: z.array(z.string()),
@@ -182,12 +215,6 @@ export class PermissionRulesService extends Service {
   private settingsRead: () => PermissionSettings = () => ({})
   /** Live merged state; rebuilt on settings change so listeners read a fresh snapshot. */
   private state: { rules: PermissionRuleSet; defaultMode: PermissionMode }
-  /**
-   * Per-session mode overrides, keyed by the live Session object (weak: the
-   * session registry owns lifetime). In-memory by necessity — see setMode's
-   * note on the session-vocabulary boundary for out-of-repo plugins.
-   */
-  private readonly sessionModes = new WeakMap<Session, PermissionMode>()
   /** Disposers for the currently registered monotonic guards. */
   private guardDisposers: (() => void)[] = []
 
@@ -220,6 +247,44 @@ export class PermissionRulesService extends Service {
       if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }
       if (decision.kind === 'ask') return { kind: 'ask', ...decision.reason === undefined ? {} : { reason: decision.reason } }
       return next()
+    })
+
+    // Pin sessions created while the deployment default is a sandbox-affecting or
+    // plan mode so a fresh session inherits the default durably.
+    ctx.on('session/created', (session) => {
+      if (foldPermissionMode(session.events) !== undefined) return
+      if (foldPlanMode(session.events)) return
+      const mode = this.state.defaultMode
+      if (mode === 'bypassPermissions') {
+        if (this.bypassDisabled()) return
+        const resume = effectiveSandboxMode(session.events)
+          ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)
+        setPermissionMode(session, 'bypassPermissions', resume)
+        if ((effectiveSandboxMode(session.events) ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)) !== 'danger-full-access') {
+          setSandboxMode(session, 'danger-full-access')
+        }
+        return
+      }
+      if (mode === 'plan') {
+        session.append('plan/mode', { active: true })
+      }
+    })
+
+    // Optional model-facing mode sentence. Injected via ctx.inject so a missing
+    // system-prompt seam is a silent no-op rather than a required dependency.
+    ctx.inject(['systemPrompt'], (scope) => {
+      scope.systemPrompt.context({
+        name: 'permission:mode',
+        order: 116,
+        text: (context) => {
+          const agent = context.agent
+          if (agent === undefined) return ''
+          const mode = foldPlanMode(agent.session.events)
+            ? 'plan'
+            : (foldPermissionMode(agent.session.events) ?? this.state.defaultMode)
+          return MODE_SENTENCE[mode]
+        },
+      })
     })
   }
 
@@ -302,8 +367,8 @@ export class PermissionRulesService extends Service {
   private effectiveMode(exec: ToolExecution): PermissionMode {
     const agent = exec.agent
     if (agent !== undefined && foldPlanMode(agent.session.events)) return 'plan'
-    const sessionMode = agent === undefined ? undefined : this.sessionModes.get(agent.session)
-    return sessionMode ?? this.state.defaultMode
+    const recorded = agent === undefined ? undefined : foldPermissionMode(agent.session.events)
+    return recorded ?? this.state.defaultMode
   }
 
   /** Whether a call is sandboxed bash for the whole-tool-ask exemption. */
@@ -341,45 +406,102 @@ export class PermissionRulesService extends Service {
    * Fold the engine decision for one call. Bypass-immune matches fall to the
    * guard layer, not here. The risk-classifier escalation runs first (a
    * hard-deny HIGH in every mode; an ask MEDIUM outside bypassPermissions),
-   * then the normal waterfall proceeds unchanged.
+   * then the normal waterfall proceeds unchanged. Under `auto`, a classifier-LOW
+   * call whose waterfall decision is `ask` is auto-allowed (the classifier
+   * proxies the prompt); MEDIUM/HIGH already returned above.
    */
   private decide(exec: ToolExecution): PermissionDecision {
     const risk = this.classify(exec)
     if (risk.level === 'HIGH') {
       return { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` }
     }
+    const mode = this.effectiveMode(exec)
     if (risk.level === 'MEDIUM') {
-      if (this.effectiveMode(exec) === 'bypassPermissions') return { kind: 'allow' }
+      if (mode === 'bypassPermissions') return { kind: 'allow' }
       return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
     }
     const subject = this.subjectOf(exec)
-    return evaluatePermission({
+    const decision = evaluatePermission({
       toolName: exec.name,
       ...subject === undefined ? {} : { subject },
       // Bypass-immune rules are enforced by the monotonic guard layer, not the
       // waterfall — pass an empty bypassImmune so the guard is authoritative.
       rules: { ...this.state.rules, bypassImmune: [] },
-      mode: this.effectiveMode(exec),
-      ...this.config.disableBypassPermissionsMode === true ? { bypassDisabled: true } : {},
+      mode,
+      ...this.bypassDisabled() ? { bypassDisabled: true } : {},
       isFileEdit: this.fileEditTools.has(exec.name),
       isReadOnly: this.readOnlyTools.has(exec.name),
       sandboxedBashExempt: this.sandboxedBash(exec),
     })
+    // auto proxies every ask: at this point the call is classifier-LOW (MEDIUM
+    // and HIGH returned above), so low-risk asks auto-allow.
+    if (mode === 'auto' && decision.kind === 'ask') {
+      return { kind: 'allow' }
+    }
+    return decision
   }
 
   /**
-   * Record a session's permission-mode override in memory. Plan activation,
-   * when active, still overlays at call time. NOTE: the override is per-process
-   * — a resumed session falls back to the deployment default until the session
-   * event vocabulary is extended for out-of-repo plugins (upstream follow-up).
-   * @param agent - the live agent whose mode is changing.
-   * @param mode - the new permission mode; unknown modes throw.
+   * Whether switching to `bypassPermissions` is disabled by Config or the
+   * settings section.
+   */
+  private bypassDisabled(): boolean {
+    return this.config.disableBypassPermissionsMode === true
+      || this.settingsSection().disableBypassPermissionsMode === 'disable'
+  }
+
+  /**
+   * Switch a session's permission mode durably. `plan` is owned by plan-mode and
+   * throws here (enter on the same session via plan-mode's `/plan`). Entering
+   * `bypassPermissions` pins the session sandbox to `danger-full-access` and
+   * records the prior mode for restore; leaving restores the recorded (or
+   * fallback `workspace-write`) confinement. Unknown or disabled modes throw.
+   * @param agent - the live agent whose session mode is changing.
+   * @param mode - the new permission mode.
    */
   setMode(agent: Agent, mode: PermissionMode): void {
-    if (!PERMISSION_MODES.includes(mode)) {
-      throw new TypeError(`permission mode must be one of ${PERMISSION_MODES.join(', ')}`)
+    if (mode === 'plan') {
+      throw new TypeError('permission mode "plan" is owned by plan-mode; use planMode.set or /permissions plan')
     }
-    this.sessionModes.set(agent.session, mode)
+    if (!SWITCHABLE_PERMISSION_MODES.includes(mode)) {
+      throw new TypeError(`permission mode must be one of ${[...SWITCHABLE_PERMISSION_MODES, 'plan'].join(', ')}`)
+    }
+    if (mode === 'bypassPermissions' && this.bypassDisabled()) {
+      throw new Error('bypassPermissions is disabled by disableBypassPermissionsMode')
+    }
+    const session = agent.session
+    const current = foldPermissionMode(session.events) ?? this.state.defaultMode
+    if (current === mode) return
+
+    const wasBypass = current === 'bypassPermissions'
+    const enteringBypass = mode === 'bypassPermissions'
+
+    if (enteringBypass) {
+      const resume = effectiveSandboxMode(session.events)
+        ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)
+      const alreadyFull = (effectiveSandboxMode(session.events) ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)) === 'danger-full-access'
+      setPermissionMode(session, mode, resume)
+      if (!alreadyFull) setSandboxMode(session, 'danger-full-access')
+    } else {
+      setPermissionMode(session, mode)
+      if (wasBypass) {
+        const restore = foldResumeSandbox(session.events)
+          ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)
+          ?? 'workspace-write'
+        if ((effectiveSandboxMode(session.events) ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)) !== restore) {
+          setSandboxMode(session, restore)
+        }
+      }
+    }
+
+    try {
+      agent.inject(createUserMessage({
+        content: [{ type: 'text', text: `The permission mode changed to "${mode}" (changed by the user).` }],
+        source: { kind: 'plugin', plugin: 'permission-rules' },
+      }))
+    } catch {
+      // Tests and headless agents may omit inject; mode is already durable.
+    }
   }
 
   /** The currently merged rule set (for introspection and host preview). */

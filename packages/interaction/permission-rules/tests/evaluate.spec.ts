@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseRule } from '../src/parser.ts'
 import { evaluatePermission, mergeRuleSets } from '../src/evaluate.ts'
+import { PLAN_READONLY_REASON } from '../src/types.ts'
 import type { EvaluationInput, PermissionRuleSet } from '../src/types.ts'
 import { EMPTY_RULE_SET } from '../src/types.ts'
 
@@ -186,6 +187,61 @@ describe('modes', () => {
       bypassDisabled: true,
     }))
     expect(decision).toEqual({ kind: 'passthrough' })
+  })
+
+  it('plan denies a non-read-only call with the exit_plan_mode reason', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'Bash',
+      subject: 'npm install',
+      mode: 'plan',
+    }))
+    expect(decision).toEqual({ kind: 'deny', reason: PLAN_READONLY_REASON })
+  })
+
+  it('plan denies a file-edit call (not read-only) with the same reason', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'edit',
+      isFileEdit: true,
+      mode: 'plan',
+    }))
+    expect(decision).toEqual({ kind: 'deny', reason: PLAN_READONLY_REASON })
+  })
+
+  it('auto behaves identically to default (passthrough with no rules)', () => {
+    const decision = evaluatePermission(input({
+      subject: 'ls',
+      mode: 'auto',
+    }))
+    expect(decision).toEqual({ kind: 'passthrough' })
+  })
+
+  it('auto still honors a whole-tool deny', () => {
+    const decision = evaluatePermission(input({
+      rules: rules({ deny: [parseRule('Bash(rm -rf)', 'deny', 'config')] }),
+      subject: 'rm -rf /tmp/x',
+      mode: 'auto',
+    }))
+    expect(decision).toMatchObject({ kind: 'deny' })
+  })
+
+  it('plan still admits a whole-tool allow for a non-read-only call', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'Bash',
+      subject: 'npm install',
+      mode: 'plan',
+      rules: rules({ allow: [parseRule('Bash', 'allow', 'config')] }),
+    }))
+    expect(decision).toEqual({ kind: 'allow' })
+  })
+
+  it('plan converts a leftover whole-tool ask into the read-only deny', () => {
+    const decision = evaluatePermission(input({
+      toolName: 'Bash',
+      subject: 'npm install',
+      mode: 'plan',
+      rules: rules({ ask: [parseRule('Bash', 'ask', 'config')] }),
+    }))
+    expect(decision).toEqual({ kind: 'deny', reason: PLAN_READONLY_REASON })
   })
 })
 

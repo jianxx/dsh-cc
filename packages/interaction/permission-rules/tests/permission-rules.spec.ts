@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -6,6 +6,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, type ToolExecutionInput, type ToolExecutionResult } from '@jianxx/dsh-cc-tools'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
+import { effectiveSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import PermissionRules, { PERMISSION_SETTINGS_NAMESPACE, type Config } from '@jianxx/dsh-cc-permission-rules'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
@@ -81,7 +84,7 @@ function text(result: ToolExecutionResult): string {
 function openTurnAgent(id: string): Agent {
   const session = Session.create(SessionId(id))
   session.append('turn/start', { turn: 1 })
-  return { id, session } as unknown as Agent
+  return { id, session, inject: () => {} } as unknown as Agent
 }
 
 /** An agent whose session carries a working directory (enables the escape check). */
@@ -93,7 +96,7 @@ function openAgentWithCwd(id: string, cwd: string): Agent {
     cwd,
   })
   session.append('turn/start', { turn: 1 })
-  return { id, session } as unknown as Agent
+  return { id, session, inject: () => {} } as unknown as Agent
 }
 
 describe('plugin pre-execute decisions', () => {
@@ -249,7 +252,7 @@ describe('settings config and hot reload', () => {
   })
 })
 
-describe('session mode overrides (in-memory)', () => {
+describe('session mode overrides (durable)', () => {
   it('applies the latest setMode and leaves other sessions at the deployment default', async () => {
     const ctx = await mount({ rules: { deny: ['edit(/tmp/private*)'] } })
     const agent = openTurnAgent('one')
@@ -261,6 +264,149 @@ describe('session mode overrides (in-memory)', () => {
     // …while another session stays at the default mode and remains denied.
     const denied = await ctx.tools.execute(exec('edit', { file_path: '/tmp/private/x' }, other))
     expect(denied.isError).toBe(true)
+  })
+
+  it('isolation: one session in bypass while another is denied', async () => {
+    const ctx = await mount({ rules: { deny: ['edit(/tmp/private*)'] } })
+    const agent = openTurnAgent('iso-one')
+    const other = openTurnAgent('iso-two')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    const allowed = await ctx.tools.execute(exec('edit', { file_path: '/tmp/private/x' }, agent))
+    expect(allowed.isError).toBe(false)
+    const denied = await ctx.tools.execute(exec('edit', { file_path: '/tmp/private/x' }, other))
+    expect(denied.isError).toBe(true)
+  })
+
+  it('records acceptEdits durably as a permission/mode event and re-folds it', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('dur-ae')
+    ctx.permissionRules.setMode(agent, 'acceptEdits')
+    expect(foldPermissionMode(agent.session.events)).toBe('acceptEdits')
+    // An edit still auto-allows under the durable acceptEdits mode.
+    const result = await ctx.tools.execute(exec('edit', { file_path: 'a.ts' }, agent))
+    expect(result.isError).toBe(false)
+  })
+
+  it('entering bypass pins the sandbox to danger-full-access and records resumeSandbox', async () => {
+    const ctx = await mount()
+    ctx.reflect.provide('shell', { sandboxMode: 'workspace-write' } as never)
+    const agent = openTurnAgent('bypass-pin')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    const events = agent.session.events
+    const modeEvent = events.filter(e => e.type === 'permission/mode').pop()!
+    expect(modeEvent.data).toMatchObject({ mode: 'bypassPermissions', resumeSandbox: 'workspace-write' })
+    const sandboxEvent = events.filter(e => e.type === 'sandbox/mode').pop()!
+    expect(sandboxEvent.data.mode).toBe('danger-full-access')
+  })
+
+  it('leaving bypass restores the recorded resume sandbox', async () => {
+    const ctx = await mount()
+    ctx.reflect.provide('shell', { sandboxMode: 'workspace-write' } as never)
+    const agent = openTurnAgent('bypass-leave')
+    ctx.permissionRules.setMode(agent, 'bypassPermissions')
+    ctx.permissionRules.setMode(agent, 'acceptEdits')
+    expect(effectiveSandboxMode(agent.session.events)).toBe('workspace-write')
+  })
+
+  it('leaving bypass with no recorded resume falls back to workspace-write', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('bypass-norec')
+    agent.session.append('permission/mode', { mode: 'bypassPermissions' })
+    ctx.permissionRules.setMode(agent, 'default')
+    expect(effectiveSandboxMode(agent.session.events)).toBe('workspace-write')
+  })
+
+  it('auto mode auto-allows a classifier-LOW ask without hitting approval', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(ApprovalService, { policy: 'ask' })
+    const asked: unknown[] = []
+    ctx.on('approval/request', async request => { asked.push(request); return 'allowed-once' })
+    await ctx.plugin(PermissionRules, {
+      fileEditTools: ['edit'], readOnlyTools: ['read'], bashToolName: 'Bash',
+      rules: { ask: ['Bash'] },
+    })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'Bash',
+      description: 'shell',
+      parameters: { command: { type: 'string' } },
+      async execute(args) { return [{ type: 'text', text: `ran:${(args as { command: string }).command}` }] },
+    }))
+    const agent = openTurnAgent('auto-low')
+    ctx.permissionRules.setMode(agent, 'auto')
+    const result = await ctx.tools.execute(exec('Bash', { command: 'ls' }, agent))
+    expect(asked).toHaveLength(0)
+    expect(result.isError).toBe(false)
+  })
+
+  it('auto mode still asks on a classifier-MEDIUM call', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(ApprovalService, { policy: 'ask' })
+    const asked: unknown[] = []
+    ctx.on('approval/request', async request => { asked.push(request); return 'allowed-once' })
+    await ctx.plugin(PermissionRules, { fileEditTools: ['edit'], readOnlyTools: ['read'], bashToolName: 'Bash' })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'edit',
+      description: 'edit file',
+      parameters: { file_path: { type: 'string' } },
+      async execute(args) { return [{ type: 'text', text: `edited:${(args as { file_path: string }).file_path}` }] },
+    }))
+    const agent = openAgentWithCwd('auto-medium', '/work')
+    ctx.permissionRules.setMode(agent, 'auto')
+    const result = await ctx.tools.execute(exec('edit', { file_path: '/tmp/out.txt' }, agent))
+    expect(asked).toHaveLength(1)
+    expect(result.isError).toBe(false)
+  })
+
+  it('disableBypassPermissionsMode makes setMode(bypass) throw', async () => {
+    const ctx = await mount({ disableBypassPermissionsMode: true })
+    const agent = openTurnAgent('disable-bypass')
+    expect(() => ctx.permissionRules.setMode(agent, 'bypassPermissions')).toThrow(/disabled/)
+  })
+
+  it('setMode(plan) throws because plan is owned by plan-mode', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('plan-owned')
+    expect(() => ctx.permissionRules.setMode(agent, 'plan')).toThrow(/plan-mode/)
+  })
+
+  it('injects a user-visible mode-change notice when the agent supports inject', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('inject-notice')
+    const session = agent.session
+    const inject = vi.fn()
+    ;(agent as unknown as { inject: () => void }).inject = inject
+    ctx.permissionRules.setMode(agent, 'acceptEdits')
+    expect(inject).toHaveBeenCalledTimes(1)
+    expect(session.events.some(e => e.type === 'permission/mode')).toBe(true)
+  })
+
+  it('session/created pin: bypassPermissions default pins the new session to full access', async () => {
+    const ctx = await mount({ defaultMode: 'bypassPermissions' })
+    ctx.reflect.provide('shell', { sandboxMode: 'workspace-write' } as never)
+    const session = ctx.sessions.create(SessionId('pin-bypass'))
+    expect(foldPermissionMode(session.events)).toBe('bypassPermissions')
+    expect(effectiveSandboxMode(session.events)).toBe('danger-full-access')
+  })
+
+  it('session/created pin: plan default seeds plan/mode active on the new session', async () => {
+    const ctx = await mount({ defaultMode: 'plan' })
+    const session = ctx.sessions.create(SessionId('pin-plan'))
+    expect(foldPlanMode(session.events)).toBe(true)
+  })
+
+  it('plan non-read-only is denied at the plugin layer with exit_plan_mode guidance', async () => {
+    const ctx = await mount()
+    const agent = openTurnAgent('plan-deny')
+    agent.session.append('plan/mode', { active: true })
+    const result = await ctx.tools.execute(exec('edit', { file_path: 'a.ts' }, agent))
+    expect(result.isError).toBe(true)
+    expect(text(result)).toMatch(/exit_plan_mode/)
   })
 })
 

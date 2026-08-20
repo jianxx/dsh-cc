@@ -1,6 +1,6 @@
 {
   "name": "@jianxx/dsh-cc-command-permissions",
-  "description": "Human-facing slash command to show effective permission state and rule counts",
+  "description": "Human-facing slash command to show or switch the permission mode (default|acceptEdits|plan|auto|bypassPermissions)",
   "version": "0.1.0-rc.5",
   "repository": {
     "type": "git",
@@ -27,6 +27,7 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-commands": ">=0.1.0-rc.5",
     "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-plan-mode": ">=0.1.0-rc.5",
     "@deepseek-ai/cordis": ">=0.1.0-rc.5"
   },
   "devDependencies": {
@@ -34,6 +35,7 @@
     "@deepseek-ai/dsh-agent": "link:../../../../deepseek-harness/packages/core/agent",
     "@deepseek-ai/dsh-commands": "link:../../../../deepseek-harness/packages/interaction/commands",
     "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-plan-mode": "link:../../../../deepseek-harness/packages/plan/plan-mode",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis"
   }

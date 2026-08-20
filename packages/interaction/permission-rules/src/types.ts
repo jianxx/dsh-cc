@@ -44,10 +44,21 @@ export const SOURCE_PRIORITY: readonly PermissionRuleSource[] = [
 export type PermissionBehavior = 'allow' | 'deny' | 'ask'
 
 /** The engine's permission mode, controlling tool-class and safe-mode short-circuits. */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'
 
 /** Every {@link PermissionMode}, for option advertisement and runtime validation of untrusted strings. */
-export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto']
+
+/** Modes that may be written to a `permission/mode` event. `plan` is owned by plan-mode. */
+export type SwitchablePermissionMode = Exclude<PermissionMode, 'plan'>
+export const SWITCHABLE_PERMISSION_MODES: readonly SwitchablePermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'auto']
+
+/**
+ * Reason attached to a plan-mode denial of a non-read-only call. Lives here
+ * (not in `mode.ts`) so the browser-safe `evaluate` module can import it
+ * without pulling in the session-vocabulary side effect.
+ */
+export const PLAN_READONLY_REASON = 'plan mode is read-only; submit via exit_plan_mode'
 
 /**
  * One parsed permission rule. `toolName` is the exact tool the rule governs;

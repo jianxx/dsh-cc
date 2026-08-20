@@ -11,7 +11,7 @@ import z from '@deepseek-ai/schemastery'
 export const PermissionRuleSchema: z<string> = z.string()
 
 /** `defaultMode` values — the default permission mode when a tool needs access. */
-export const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
+export const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto'] as const
 export type PermissionMode = (typeof PERMISSION_MODES)[number]
 
 /** The settings.json `permissions` section, matching Claude Code's schema. */

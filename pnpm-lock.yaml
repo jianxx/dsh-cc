@@ -721,6 +721,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-plan-mode':
+        specifier: link:../../../../deepseek-harness/packages/plan/plan-mode
+        version: link:../../../../deepseek-harness/packages/plan/plan-mode
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
@@ -920,6 +923,9 @@ importers:
       '@deepseek-ai/dsh-sandbox':
         specifier: link:../../../../deepseek-harness/packages/sandbox/sandbox
         version: link:../../../../deepseek-harness/packages/sandbox/sandbox
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../../deepseek-harness/packages/sandbox/sandbox-policy
+        version: link:../../../../deepseek-harness/packages/sandbox/sandbox-policy
       '@deepseek-ai/dsh-scope':
         specifier: link:../../../../deepseek-harness/packages/core/scope
         version: link:../../../../deepseek-harness/packages/core/scope
