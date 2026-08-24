@@ -53,7 +53,7 @@ describe('@jianxx/dsh-cc-command-doctor registration', () => {
     }
     ctx.agents.register(agent)
     expect(ctx.commands.find(agent, 'doctor')).toBeDefined()
-    const execution = await ctx.commands.execute(agent, '/doctor', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/doctor', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     expect(execution?.result.text).toContain('Seams:')
     await plugin.dispose()
@@ -124,7 +124,7 @@ describe('/doctor gather', () => {
       whenIdle: () => Promise.resolve(),
     }
     ctx.agents.register(agent)
-    const execution = await ctx.commands.execute(agent, '/doctor', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/doctor', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('Settings: not mounted')
     expect(text).toContain('  fs: not mounted')

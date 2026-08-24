@@ -74,7 +74,7 @@ describe('/tasks human command', () => {
       { id: 'bash-1', kind: 'bash', status: 'running', startedAt: 1_700_000_000_000, label: 'npm test' },
     ])
     const { ctx, agent } = await harness({ list })
-    const execution = await ctx.commands.execute(agent, '/tasks', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/tasks', [], new AbortController().signal)
     expect(list).toHaveBeenCalledWith(agent)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('- bash-1 [bash] running')
@@ -82,7 +82,7 @@ describe('/tasks human command', () => {
 
   it('renders a friendly empty message when no jobs are running', async () => {
     const { ctx, agent } = await harness({ list: () => [] })
-    const execution = await ctx.commands.execute(agent, '/tasks', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/tasks', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('No background jobs are running.')
   })
 })

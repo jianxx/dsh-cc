@@ -91,7 +91,7 @@ describe('/permissions rendering', () => {
 describe('/permissions human command', () => {
   it('renders the rule state when the engine is mounted', async () => {
     const { ctx, agent } = await harness(true)
-    const execution = await ctx.commands.execute(agent, '/permissions', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('Permission rules (read-only)')
@@ -99,14 +99,14 @@ describe('/permissions human command', () => {
   })
   it('reports a friendly message when the engine is not mounted', async () => {
     const { ctx, agent } = await harness(false)
-    const execution = await ctx.commands.execute(agent, '/permissions', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('not mounted')
   })
 
   it('/permissions <mode> switches the permission mode through setMode', async () => {
     const { ctx, agent, setMode } = await harness(true)
-    const execution = await ctx.commands.execute(agent, '/permissions acceptEdits', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions acceptEdits', [], new AbortController().signal)
     expect(setMode).toHaveBeenCalledWith(agent, 'acceptEdits')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('acceptEdits')
@@ -114,7 +114,7 @@ describe('/permissions human command', () => {
 
   it('/permissions plan routes to planMode.set and does not call setMode', async () => {
     const { ctx, agent, setMode, planSet } = await harness(true)
-    const execution = await ctx.commands.execute(agent, '/permissions plan', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions plan', [], new AbortController().signal)
     expect(planSet).toHaveBeenCalledWith(agent, true)
     expect(setMode).not.toHaveBeenCalled()
     expect((execution?.result as { text: string }).text).toContain('plan')
@@ -122,7 +122,7 @@ describe('/permissions human command', () => {
 
   it('/permissions bogus errors and lists the available modes', async () => {
     const { ctx, agent, setMode } = await harness(true)
-    const execution = await ctx.commands.execute(agent, '/permissions bogus', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions bogus', [], new AbortController().signal)
     expect(setMode).not.toHaveBeenCalled()
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('default')
@@ -134,7 +134,7 @@ describe('/permissions human command', () => {
 
   it('errors when the engine is not mounted', async () => {
     const { ctx, agent } = await harness(false)
-    const execution = await ctx.commands.execute(agent, '/permissions auto', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions auto', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('not mounted')
   })
@@ -142,7 +142,7 @@ describe('/permissions human command', () => {
   it('/permissions default leaves an active plan before switching', async () => {
     const { ctx, agent, setMode, planSet } = await harness(true)
     agent.session.append('plan/mode', { active: true })
-    const execution = await ctx.commands.execute(agent, '/permissions default', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permissions default', [], new AbortController().signal)
     expect(planSet).toHaveBeenCalledWith(agent, false)
     expect(setMode).toHaveBeenCalledWith(agent, 'default')
     expect((execution?.result as { text: string }).text).toContain('default')
@@ -162,7 +162,7 @@ describe('CC catalog hides /permission', () => {
     })
     expect(ctx.commands.list(agent).map(entry => entry.name)).toEqual(['permissions'])
     expect(ctx.commands.find(agent, 'permission')).toBeDefined()
-    const execution = await ctx.commands.execute(agent, '/permission workspace-write', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/permission workspace-write', [], new AbortController().signal)
     expect(host).toHaveBeenCalled()
     expect((execution?.result as { text: string }).text).toBe('preset workspace-write')
     await plugin.dispose()

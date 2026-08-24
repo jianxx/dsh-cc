@@ -1,5 +1,5 @@
 # BEGIN dsh-cc header
-# vendored from @deepseek-ai/dsh@0.1.0-rc.6 config/agent-presets/standard/agent.cordis.yml
+# vendored from @deepseek-ai/dsh@0.1.1-rc.2 config/agent-presets/standard/agent.cordis.yml
 # source: config/agent-presets/standard/agent.cordis.yml (deepseek-harness install)
 #
 # This file is the dsh "CC mode" agent preset composition. The baseline below
@@ -219,16 +219,17 @@
         toolName: subagent_fork
         backgroundMode: continuable
 
-    # Product providers are host-plane singletons. Copy this preset, then
-    # remove `disabled` from either ordinary tool row to expose that product
-    # only to agents composed from the copy.
+    # Production dsh does not install these optional providers. Install the
+    # matching Bundle in this Profile and restart the Host, then copy this
+    # preset and remove `disabled` from the matching tool row. Host availability
+    # alone grants no tool.
     - id: tool-subagent-codex
       name: '@deepseek-ai/dsh-tool-subagent'
       disabled: true
       config:
         provider: codex
         toolName: subagent_codex
-        enableRunInBackground: false
+        backgroundMode: one-shot
         maxDepth: provider-managed
 
     - id: tool-subagent-claude-code
@@ -237,7 +238,7 @@
       config:
         provider: claude-code
         toolName: subagent_claude_code
-        enableRunInBackground: false
+        backgroundMode: one-shot
         maxDepth: provider-managed
 
     - id: workflow-worker-thread
@@ -270,7 +271,7 @@
 # Moved in from the cc-shell global swap: fetch is enabled (WebFetch all-on, the
 # prior global behavior) and the search timeout is carried forward. WebFetch is
 # model-directed fetch — an SSRF surface — the web-fetch-http executor row is
-# unshipped by the CLI through rc.6, so no executor is mounted here; see README
+# unshipped by the CLI through 0.1.1-rc.2, so no executor is mounted here; see README
 # "Known limits".
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'

@@ -70,7 +70,7 @@ describe('/release-notes content', () => {
 describe('/release-notes human command', () => {
   it('prints the bundled release notes', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/release-notes', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/release-notes', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('# Release notes')
@@ -78,9 +78,9 @@ describe('/release-notes human command', () => {
   })
   it('honors a line-count argument and ignores an invalid one', async () => {
     const { ctx, agent } = await harness()
-    const short = await ctx.commands.execute(agent, '/release-notes 3', new AbortController().signal)
+    const short = await ctx.commands.execute(agent, '/release-notes 3', [], new AbortController().signal)
     expect((short?.result as { text: string }).text.split('\n')).toHaveLength(3)
-    const full = await ctx.commands.execute(agent, '/release-notes bogus', new AbortController().signal)
+    const full = await ctx.commands.execute(agent, '/release-notes bogus', [], new AbortController().signal)
     expect((full?.result as { text: string }).text).toContain('0.1.0-rc.5')
   })
 })

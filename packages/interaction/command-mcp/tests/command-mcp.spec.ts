@@ -87,7 +87,7 @@ describe('/mcp human command', () => {
 
   it('degrades gracefully when the mcpConnections seam is absent', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/mcp', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     expect((execution?.result as { text: string }).text).toContain('mcp-client absent')
   })
@@ -95,7 +95,7 @@ describe('/mcp human command', () => {
   it('lists connections through the seam', async () => {
     const entries = vi.fn(() => [...SAMPLE])
     const { ctx, agent } = await harness({ entries, disconnect: async () => {}, reconnect: async () => {} })
-    const execution = await ctx.commands.execute(agent, '/mcp', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp', [], new AbortController().signal)
     expect(entries).toHaveBeenCalled()
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('- files (ready) tools: 12')
@@ -104,7 +104,7 @@ describe('/mcp human command', () => {
   it('reconnects a server by name', async () => {
     const reconnect = vi.fn(async () => {})
     const { ctx, agent } = await harness({ entries: () => [], disconnect: async () => {}, reconnect })
-    const execution = await ctx.commands.execute(agent, '/mcp reconnect files', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp reconnect files', [], new AbortController().signal)
     expect(reconnect).toHaveBeenCalledWith('files')
     expect((execution?.result as { text: string }).text).toContain('Reconnecting MCP server "files"')
   })
@@ -112,21 +112,21 @@ describe('/mcp human command', () => {
   it('disconnects a server by name', async () => {
     const disconnect = vi.fn(async () => {})
     const { ctx, agent } = await harness({ entries: () => [], disconnect, reconnect: async () => {} })
-    const execution = await ctx.commands.execute(agent, '/mcp disconnect git', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp disconnect git', [], new AbortController().signal)
     expect(disconnect).toHaveBeenCalledWith('git')
     expect((execution?.result as { text: string }).text).toContain('Disconnected MCP server "git"')
   })
 
   it('reports unknown subcommands as usage', async () => {
     const { ctx, agent } = await harness({ entries: () => [], disconnect: async () => {}, reconnect: async () => {} })
-    const execution = await ctx.commands.execute(agent, '/mcp frobnicate files', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp frobnicate files', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('Usage:')
   })
 
   it('reports a failed drive action gracefully', async () => {
     const reconnect = vi.fn(async () => { throw new Error('no such server') })
     const { ctx, agent } = await harness({ entries: () => [], disconnect: async () => {}, reconnect })
-    const execution = await ctx.commands.execute(agent, '/mcp reconnect nope', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/mcp reconnect nope', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('Failed to reconnect MCP server "nope"')
   })
 })

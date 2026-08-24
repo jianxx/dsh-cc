@@ -99,7 +99,7 @@ describe('/memory rendering', () => {
 describe('/memory human command', () => {
   it('lists name, type, and first line for each topic', async () => {
     const { ctx, agent, dir } = await harness()
-    const execution = await ctx.commands.execute(agent, '/memory', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/memory', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain(`Memory directory: ${dir}`)
@@ -108,14 +108,14 @@ describe('/memory human command', () => {
   })
   it('shows one memory body by name', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/memory build-guide', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/memory build-guide', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('# build-guide')
     expect(text).toContain('Build with pnpm from the repo root.')
   })
   it('reports a missing memory name gracefully', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/memory nope', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/memory nope', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('No memory named "nope".')
   })
 })

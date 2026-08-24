@@ -70,6 +70,7 @@ async function run(test: Awaited<ReturnType<typeof harness>>): Promise<NonNullab
   const execution = await test.ctx.commands.execute(
     test.agent,
     '/stats',
+    [],
     new AbortController().signal,
   )
   if (execution === undefined) throw new Error('stats command was not registered')

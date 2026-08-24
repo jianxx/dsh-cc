@@ -114,7 +114,9 @@ export function apply(ctx: Context, config: Config): void {
   // Native /export comes from @deepseek-ai/dsh-session-log-export, mounted by
   // dsh-web-app's session-log-download row on the WEB profile (a browser-download
   // stub); it is absent on CLI-only profiles. We defer to it where the name is
-  // taken and register our file-writing /export only where it is free.
+  // taken and register our file-writing /export only where it is free. Whether
+  // the native command is present is a property of the active runtime profile,
+  // not of any particular package version, and may change across releases.
   //
   // This behaviour depends on mount-order luck: bundles mount after base/web-app
   // rows, so ours registers LAST — the native command is already registered on

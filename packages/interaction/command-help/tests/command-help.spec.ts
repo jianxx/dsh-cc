@@ -80,16 +80,16 @@ describe('/help rendering', () => {
 describe('/help human command', () => {
   it('lists at least the help command itself', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/help', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/help', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('/help — ')
   })
   it('shows detail for a named command and a friendly message for an unknown one', async () => {
     const { ctx, agent } = await harness()
-    const detail = await ctx.commands.execute(agent, '/help help', new AbortController().signal)
+    const detail = await ctx.commands.execute(agent, '/help help', [], new AbortController().signal)
     expect((detail?.result as { text: string }).text).toContain('usage: /help')
-    const missing = await ctx.commands.execute(agent, '/help nope', new AbortController().signal)
+    const missing = await ctx.commands.execute(agent, '/help nope', [], new AbortController().signal)
     expect((missing?.result as { text: string }).text).toContain('Unknown command /nope')
   })
 })
