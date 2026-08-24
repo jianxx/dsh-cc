@@ -167,9 +167,15 @@ jobs:
       # enforces publish-branch=master|main under -r, so the default git
       # checks fail with ERR_PNPM_GIT_UNKNOWN_BRANCH. Ancestry + version
       # gates above already cover "is this the intended commit".
+      # Sequential + 8s gap: npm rate-limits first publishes on a new
+      # scope (~20–30 PUTs / few minutes). pnpm -r fires them back-to-back
+      # and dies mid-set with E429. The script skips versions already on
+      # the registry, so reruns only attempt the remainder.
       - name: Publish all packages (skips versions already on the registry)
         working-directory: dsh-cc-plugins
-        run: pnpm -r publish --tag "$DIST_TAG" --provenance --report-summary --no-git-checks
+        env:
+          PUBLISH_DELAY_MS: 8000
+        run: node scripts/publish-packages.mjs --tag "$DIST_TAG" --provenance --no-git-checks
 
       - name: GitHub Release
         working-directory: dsh-cc-plugins
