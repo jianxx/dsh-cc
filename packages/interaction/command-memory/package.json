@@ -41,5 +41,8 @@
     "@deepseek-ai/dsh-fs-local": "link:../../../../deepseek-harness/packages/fs/fs-local",
     "@deepseek-ai/dsh-home-paths": "link:../../../../deepseek-harness/packages/util/home-paths",
     "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

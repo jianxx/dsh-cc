@@ -39,5 +39,8 @@
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

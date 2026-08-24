@@ -43,5 +43,8 @@
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

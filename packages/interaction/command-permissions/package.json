@@ -61,5 +61,8 @@
     "@deepseek-ai/dsh-plan-mode": "link:../../../../deepseek-harness/packages/plan/plan-mode",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "tsdown": "0.22.2"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

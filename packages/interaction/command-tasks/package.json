@@ -39,5 +39,8 @@
     "@deepseek-ai/dsh-jobs": "link:../../../../deepseek-harness/packages/jobs/jobs",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

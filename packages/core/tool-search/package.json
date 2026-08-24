@@ -40,5 +40,8 @@
     "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt",
     "@jianxx/dsh-cc-tools": "workspace:^",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

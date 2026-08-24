@@ -36,5 +36,8 @@
     "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

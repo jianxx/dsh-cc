@@ -40,5 +40,8 @@
     "@deepseek-ai/dsh-skill": "link:../../../../deepseek-harness/packages/skill/skill",
     "@deepseek-ai/dsh-scope": "link:../../../../deepseek-harness/packages/core/scope",
     "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
