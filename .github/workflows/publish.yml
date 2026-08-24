@@ -17,6 +17,8 @@
 # =============================================================================
 name: Publish (npm)
 
+run-name: Publish ${{ inputs.tag || github.ref_name }}
+
 on:
   push:
     tags: ['v*']
@@ -40,7 +42,7 @@ env:
 
 jobs:
   publish:
-    name: Verify & publish ${{ env.TAG }}
+    name: Verify and publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: npm-publish
