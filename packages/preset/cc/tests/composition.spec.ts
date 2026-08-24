@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
@@ -21,11 +21,41 @@ const BASE_IDS = [
   'planning', 'compaction', 'delegation', 'tool-ask-user', 'tool-todo', 'tool-web',
 ]
 
-// Locate a version-0.1.0-rc.6 dsh install, mirroring the drift-gate contract:
-// newest-mtime-first across the `~/.npm/_npx` npx-install dirs (each holding a
-// `node_modules/@deepseek-ai/dsh/package.json`) and the `~/.dsh/profiles`
-// install. Returns undefined when none matches.
-function findRc6Install(): string | undefined {
+// The standard-preset anchor for the drift gate. We align with whichever
+// upstream is CURRENTLY linked/installed rather than pinning a version, so the
+// gate tracks the real upstream instead of silently skipping.
+interface AnchorPreset {
+  /** Absolute path to the `config/agent-presets/standard/agent.cordis.yml` file. */
+  file: string
+  /** Human-readable origin, used in gate failure messages. */
+  source: string
+}
+
+// tier-1: the linked upstream checkout. `@deepseek-ai/cordis-plugin-include` is
+// symlinked (via node_modules) into the deepseek-harness repo's vendor/include/,
+// so walking up from its package.json — never a relative path, which breaks in
+// a worktree layout — finds the standard preset in that checkout.
+function resolveLinkedAnchor(): AnchorPreset | undefined {
+  try {
+    const real = realpathSync(includePkg)
+    let cur = dirname(real)
+    for (let i = 0; i < 4; i++) {
+      const cand = join(cur, 'apps', 'cli', 'config', 'agent-presets', 'standard', 'agent.cordis.yml')
+      if (existsSync(cand)) {
+        return { file: cand, source: `linked upstream checkout (${cur})` }
+      }
+      cur = dirname(cur)
+    }
+  } catch {
+    // no linked checkout; fall through to tier-2
+  }
+  return undefined
+}
+
+// tier-2: an installed deployment at or above the vendored floor. Newest-mtime
+// first across `~/.npm/_npx` npx-install dirs and the `~/.dsh/profiles` install.
+function resolveInstalledAnchor(): AnchorPreset | undefined {
+  const floor = parseVendoredFloor(yamlText)
   const candidates: string[] = []
   const npxRoot = join(process.env.HOME ?? '', '.npm', '_npx')
   for (const entry of safeReaddir(npxRoot)) {
@@ -39,13 +69,50 @@ function findRc6Install(): string | undefined {
   if (existsSync(profilePkg)) candidates.push(profilePkg)
 
   candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
-  return candidates.find((p) => {
+  for (const p of candidates) {
     try {
-      return JSON.parse(readFileSync(p, 'utf8')).version === '0.1.0-rc.6'
+      const version = JSON.parse(readFileSync(p, 'utf8')).version
+      if (cmpVersion(version, floor) >= 0) {
+        const file = join(dirname(p), 'config', 'agent-presets', 'standard', 'agent.cordis.yml')
+        // A qualifying install whose layout lacks the preset file (or a future
+        // rename) must fall through to the next candidate, not turn the
+        // should-skip case into a readFileSync failure inside the test.
+        if (!existsSync(file)) continue
+        return {
+          file,
+          source: `deployment install (${p})`,
+        }
+      }
     } catch {
-      return false
+      // unreadable/invalid package.json; skip
     }
-  })
+  }
+  return undefined
+}
+
+/** Resolve the vendored floor from the header's `vendored from @deepseek-ai/dsh@X.Y.Z-rc.N`. */
+function parseVendoredFloor(text: string): string | undefined {
+  const m = text.match(/vendored from @deepseek-ai\/dsh@([\w.\-]+)/)
+  return m ? m[1] : undefined
+}
+
+/** Compare semver `X.Y.Z-rc.N` as numeric tuples; malformed versions never match. */
+function cmpVersion(a: string | undefined, b: string | undefined): number {
+  const pa = parseVer(a)
+  const pb = parseVer(b)
+  if (!pa || !pb) return -1
+  for (let i = 0; i < pa.length; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i]
+  }
+  return 0
+}
+
+const VER_RE = /^(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$/
+function parseVer(v: string | undefined): number[] | undefined {
+  if (!v) return undefined
+  const m = v.match(VER_RE)
+  if (!m) return undefined
+  return [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])]
 }
 
 function safeReaddir(dir: string): string[] {
@@ -56,7 +123,10 @@ function safeReaddir(dir: string): string[] {
   }
 }
 
-const rc6Install = findRc6Install()
+const anchor = resolveLinkedAnchor() ?? resolveInstalledAnchor()
+if (!anchor) {
+  console.warn('[composition] drift gate: no anchor preset found (tier-1 link, tier-2 install); gate skipped')
+}
 
 describe('agent.cordis.yml composition', () => {
   it('parses with the entryListSchema and carries string ids/names', () => {
@@ -161,13 +231,10 @@ describe('agent.cordis.yml composition', () => {
     ).toEqual([])
   })
 
-  it.runIf(!!rc6Install)(
+  it.runIf(!!anchor)(
     'curated baseline matches the vendored standard preset (drift gate)',
     () => {
-      const vendoredBase = readFileSync(
-        join(dirname(rc6Install!), 'config', 'agent-presets', 'standard', 'agent.cordis.yml'),
-        'utf8',
-      )
+      const vendoredBase = readFileSync(anchor!.file, 'utf8')
       const endToken = '# END dsh-cc header'
       const ccToken = '# ── cc rows ──'
       const start = yamlText.indexOf(endToken) + endToken.length + 1
@@ -205,11 +272,27 @@ describe('agent.cordis.yml composition', () => {
       }
       expect(
         diffs,
-        `baseline drifted from the vendored standard preset (${rc6Install}); ` +
+        `baseline drifted from the vendored standard preset (${anchor!.source}); ` +
           `${diffs.length} diff line(s) outside the whitelist`,
       ).toEqual([])
     },
   )
+})
+
+describe('version comparison (drift-gate floor binding)', () => {
+  it('orders rc releases numerically, not lexicographically', () => {
+    expect(cmpVersion('0.1.0-rc.10', '0.1.0-rc.2')).toBeGreaterThan(0)
+  })
+
+  it('ranks a newer upstream release above an older one', () => {
+    expect(cmpVersion('0.1.1-rc.2', '0.1.0-rc.8')).toBeGreaterThan(0)
+  })
+
+  it('rejects malformed versions as unsatisfying any floor', () => {
+    expect(cmpVersion('0.1.0', '0.1.0-rc.2')).toBeLessThan(0)
+    expect(cmpVersion('garbage', '0.1.0-rc.2')).toBeLessThan(0)
+    expect(cmpVersion(undefined, '0.1.0-rc.2')).toBeLessThan(0)
+  })
 })
 
 /** Minimal LCS line-diff. Yields add/del/equal ops against both inputs. */
