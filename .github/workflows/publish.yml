@@ -163,9 +163,13 @@ jobs:
             echo "auth mode: OIDC trusted publishing (no static token configured)"
           fi
 
+      # --no-git-checks: we checkout a tag (detached HEAD). pnpm 11.7 still
+      # enforces publish-branch=master|main under -r, so the default git
+      # checks fail with ERR_PNPM_GIT_UNKNOWN_BRANCH. Ancestry + version
+      # gates above already cover "is this the intended commit".
       - name: Publish all packages (skips versions already on the registry)
         working-directory: dsh-cc-plugins
-        run: pnpm -r publish --tag "$DIST_TAG" --provenance --report-summary
+        run: pnpm -r publish --tag "$DIST_TAG" --provenance --report-summary --no-git-checks
 
       - name: GitHub Release
         working-directory: dsh-cc-plugins
