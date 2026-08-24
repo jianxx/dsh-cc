@@ -123,7 +123,7 @@ describe('/plugin and /reload-plugins human commands', () => {
   it('degrades gracefully when the ccPlugins seam is absent', async () => {
     const { ctx, agent } = await harness()
     for (const path of ['/plugin', '/reload-plugins']) {
-      const execution = await ctx.commands.execute(agent, path, new AbortController().signal)
+      const execution = await ctx.commands.execute(agent, path, [], new AbortController().signal)
       expect(execution?.result.kind).toBe('success')
       expect((execution?.result as { text: string }).text).toContain('cc-shell-glue absent')
     }
@@ -134,7 +134,7 @@ describe('/plugin and /reload-plugins human commands', () => {
       { name: 'cc-a', root: '/r/a', components: [{ kind: 'commands', loaded: 2, skipped: 0, failed: 0 }] },
     ])
     const { ctx, agent } = await harness({ list, rescan: async () => [] })
-    const execution = await ctx.commands.execute(agent, '/plugin', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/plugin', [], new AbortController().signal)
     expect(list).toHaveBeenCalled()
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('- cc-a')
@@ -145,7 +145,7 @@ describe('/plugin and /reload-plugins human commands', () => {
     const list = vi.fn(() => [])
     const rescan = vi.fn(async () => [{ root: '/r/b', name: 'cc-b', error: 'mount failed' }])
     const { ctx, agent } = await harness({ list, rescan })
-    const execution = await ctx.commands.execute(agent, '/reload-plugins', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/reload-plugins', [], new AbortController().signal)
     expect(rescan).toHaveBeenCalled()
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('cc-b (/r/b): mount failed')

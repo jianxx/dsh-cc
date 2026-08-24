@@ -72,7 +72,7 @@ describe('/version report', () => {
 describe('/version human command', () => {
   it('prints the plugin version without a harness line by default', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/version', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/version', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('@jianxx/dsh-cc-plugins 0.1.0-rc.5')
@@ -80,7 +80,7 @@ describe('/version human command', () => {
   it('includes a harness line when the host surfaces one', async () => {
     const { ctx, agent } = await harness()
     ctx.reflect.provide('harnessVersion', { version: '0.2.0-test' })
-    const execution = await ctx.commands.execute(agent, '/version', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/version', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('harness 0.2.0-test')
   })

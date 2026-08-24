@@ -99,6 +99,7 @@ async function run(test: Awaited<ReturnType<typeof harness>>, suffix = ''): Prom
   const execution = await test.ctx.commands.execute(
     test.agent,
     `/export${suffix}`,
+    [],
     new AbortController().signal,
   )
   if (execution === undefined) throw new Error('export command was not registered')

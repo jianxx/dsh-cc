@@ -105,7 +105,7 @@ describe('/status human command', () => {
       whenIdle: () => Promise.resolve(),
     }
     ctx.agents.register(agent)
-    const execution = await ctx.commands.execute(agent, '/status', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/status', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('Session: session-status')

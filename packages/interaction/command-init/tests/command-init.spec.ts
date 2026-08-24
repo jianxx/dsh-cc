@@ -68,7 +68,7 @@ describe('/init payload', () => {
 describe('/init human command', () => {
   it('acknowledges initialization and hands the model a follow-up turn', async () => {
     const { ctx, agent, followups } = await harness()
-    const execution = await ctx.commands.execute(agent, '/init', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/init', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     expect((execution?.result as { text: string }).text).toBe('Initializing CLAUDE.md…')
     expect(followups).toHaveLength(1)

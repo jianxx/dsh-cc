@@ -66,7 +66,7 @@ describe('@jianxx/dsh-cc-command-cost registration', () => {
     expect(loader.unwrapExports(commandCost)).toBe(commandCost)
     expect(ctx.commands.find(agent, 'cost')).toBeDefined()
 
-    const execution = await ctx.commands.execute(agent, '/cost', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/cost', [], new AbortController().signal)
     expect(execution?.result).toEqual({
       kind: 'success',
       text: 'No usage data yet; no model calls have recorded token accounting.',

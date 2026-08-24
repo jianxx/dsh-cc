@@ -115,14 +115,14 @@ describe('/diff rendering', () => {
 describe('/diff human command', () => {
   it('shows the diff stat with no argument', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/diff', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/diff', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('1 file changed, 2 insertions(+)')
   })
   it('shows a capped diff for a targeted path', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/diff src/index.ts', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/diff src/index.ts', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text.split('\n').length).toBeLessThanOrEqual(MAX_DIFF_LINES + 2)
     expect(text).toContain('100 more lines')
@@ -130,7 +130,7 @@ describe('/diff human command', () => {
   it('reports a friendly message when not a git repository', async () => {
     const { ctx, agent, shell } = await harness()
     shell.isRepo = false
-    const execution = await ctx.commands.execute(agent, '/diff', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/diff', [], new AbortController().signal)
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('Not a git repository')
   })

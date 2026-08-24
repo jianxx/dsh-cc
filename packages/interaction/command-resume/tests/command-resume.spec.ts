@@ -88,7 +88,7 @@ describe('/resume human command', () => {
 
   it('degrades gracefully when the session-query seam is absent', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/resume', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/resume', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     expect((execution?.result as { text: string }).text).toContain('No session-query service is mounted')
   })
@@ -101,14 +101,14 @@ describe('/resume human command', () => {
       ids.map(id => ({ sessionId: id, status: 'fulfilled' as const, value: { title: { title: 'Implement search' } } })),
     )
     const { ctx, agent } = await harness({ listSessions, readTitleSnapshots })
-    const execution = await ctx.commands.execute(agent, '/resume', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/resume', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('- sess-1 — Implement search')
     expect((execution?.result as { text: string }).text).toContain('dsh --resume <sessionId>')
   })
 
   it('renders the switch instruction even with no sessions', async () => {
     const { ctx, agent } = await harness({ listSessions: async () => [], readTitleSnapshots: async () => [] })
-    const execution = await ctx.commands.execute(agent, '/resume', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/resume', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('No sessions are available to resume.')
   })
 })

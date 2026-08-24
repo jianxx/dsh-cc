@@ -80,7 +80,7 @@ describe('/skills rendering', () => {
 describe('/skills human command', () => {
   it('lists the registered skills', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/skills', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/skills', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('bootstrap')

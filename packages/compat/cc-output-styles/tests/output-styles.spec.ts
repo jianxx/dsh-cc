@@ -83,7 +83,7 @@ async function styleSectionTextOf(h: Harness): Promise<string | undefined> {
 }
 
 async function runOutputStyle(h: Harness, suffix = ''): Promise<{ kind: string; text: string }> {
-  const execution = await h.ctx.commands.execute(h.agent, `/output-style${suffix}`, new AbortController().signal)
+  const execution = await h.ctx.commands.execute(h.agent, `/output-style${suffix}`, [], new AbortController().signal)
   if (execution === undefined) throw new Error('output-style command was not registered')
   return execution.result as { kind: string; text: string }
 }

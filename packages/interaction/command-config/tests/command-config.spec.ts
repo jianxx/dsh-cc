@@ -96,7 +96,7 @@ describe('/config parsing and allowlist', () => {
 describe('/config human command', () => {
   it('renders the effective config with no args', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/config', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/config', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('ui-theme = ')
@@ -104,7 +104,7 @@ describe('/config human command', () => {
   })
   it('updates an allowlisted key and reports it', async () => {
     const { ctx, agent } = await harness()
-    const execution = await ctx.commands.execute(agent, '/config theme dark ui-theme', new AbortController().signal)
+    const execution = await ctx.commands.execute(agent, '/config theme dark ui-theme', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
     expect(text).toContain('Set ui-theme.theme = "dark"')
@@ -112,9 +112,9 @@ describe('/config human command', () => {
   })
   it('refuses unknown scopes and non-allowlisted keys with a friendly message', async () => {
     const { ctx, agent } = await harness()
-    const badScope = await ctx.commands.execute(agent, '/config theme dark nope', new AbortController().signal)
+    const badScope = await ctx.commands.execute(agent, '/config theme dark nope', [], new AbortController().signal)
     expect((badScope?.result as { text: string }).text).toContain('Unknown configuration scope "nope"')
-    const badKey = await ctx.commands.execute(agent, '/config secret pwn ui-theme', new AbortController().signal)
+    const badKey = await ctx.commands.execute(agent, '/config secret pwn ui-theme', [], new AbortController().signal)
     expect((badKey?.result as { text: string }).text).toContain('is not writable')
   })
 })
