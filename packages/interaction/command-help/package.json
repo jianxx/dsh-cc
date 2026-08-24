@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-command-help",
   "description": "Human-facing slash command to list or detail available slash commands",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",

@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-claude-code-agents",
   "description": "Load Claude Code `.claude/agents` definitions as agent presets for the DeepSeek Harness",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",

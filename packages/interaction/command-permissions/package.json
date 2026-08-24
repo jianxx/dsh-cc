@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-command-permissions",
   "description": "Human-facing /permissions command (CC rule-engine modes) plus a popupSelect decoration for the bare invocation",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",

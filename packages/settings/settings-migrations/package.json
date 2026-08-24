@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-settings-migrations",
   "description": "Claude Code-style settings migration mechanism for the DeepSeek Harness: defineMigration list, version-gated runMigrations, and an atomic read/write settings.json seam",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
