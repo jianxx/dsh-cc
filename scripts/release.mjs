@@ -110,10 +110,23 @@ for (const path of toUpdate) {
   planned.push({ path, name: json.name, from: json.version, to: argVersion });
 }
 
+// FALLBACK_VERSION (command-version/version.ts) is the display value used when
+// package.json is unreadable at runtime — keep it in lockstep with the release,
+// and fail loudly if the constant ever moves/renames rather than shipping stale.
+const FALLBACK_REL = "packages/interaction/command-version/src/version.ts";
+const fallbackPath = join(ROOT, FALLBACK_REL);
+const fallbackSrc = readFileSync(fallbackPath, "utf8");
+const fallbackRe = /export const FALLBACK_VERSION = (['"])([^'"]+)\1/;
+const fallbackFrom = fallbackSrc.match(fallbackRe)?.[2];
+if (fallbackFrom === undefined) {
+  fail(`could not locate FALLBACK_VERSION in ${FALLBACK_REL} — update release.mjs alongside it`);
+}
+
 console.log(`  [${label}] planned version writes (${planned.length}):`);
 for (const p of planned) {
   console.log(`    ${p.name}: ${p.from} -> ${p.to}  (${join("..", p.path).replace(join("..", ROOT), ".")})`);
 }
+console.log(`    FALLBACK_VERSION: ${fallbackFrom} -> ${argVersion}  (${FALLBACK_REL})`);
 console.log(`  [${label}] commit message: chore(release): ${tag}`);
 
 if (dryRun) {
@@ -128,6 +141,11 @@ for (const p of planned) {
   json.version = argVersion;
   writeFileSync(p.path, `${JSON.stringify(json, null, 2)}\n`, "utf8");
 }
+writeFileSync(
+  fallbackPath,
+  fallbackSrc.replace(fallbackRe, (_m, q) => `export const FALLBACK_VERSION = ${q}${argVersion}${q}`),
+  "utf8",
+);
 
 git("add", "-A");
 git("commit", "-m", `chore(release): ${tag}`);

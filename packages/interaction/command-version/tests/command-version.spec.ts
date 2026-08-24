@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -7,6 +8,13 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as commandVersion from '@jianxx/dsh-cc-command-version'
 import { FALLBACK_VERSION, formatVersion, readOwnVersion } from '@jianxx/dsh-cc-command-version/version'
+
+// Derived from this package's own manifest (readOwnVersion's data source),
+// not a literal: pins the version sync invariant (kept in lockstep by
+// scripts/release.mjs) without breaking on every release bump.
+const OWN_VERSION: string = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version
 
 function makeAgent(ctx: Context): Agent {
   const session = ctx.sessions.create(SessionId(`command-version-${Math.random()}`))
@@ -65,7 +73,7 @@ describe('/version report', () => {
     expect(formatVersion(own, '0.1.0-rc.5')).toBe(`@jianxx/dsh-cc-plugins ${own}\nharness 0.1.0-rc.5`)
   })
   it('falls back to the compile-time constant', () => {
-    expect(FALLBACK_VERSION).toBe('0.1.0-rc.5')
+    expect(FALLBACK_VERSION).toBe(OWN_VERSION)
   })
 })
 
@@ -75,7 +83,7 @@ describe('/version human command', () => {
     const execution = await ctx.commands.execute(agent, '/version', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
-    expect(text).toContain('@jianxx/dsh-cc-plugins 0.1.0-rc.5')
+    expect(text).toContain(`@jianxx/dsh-cc-plugins ${OWN_VERSION}`)
   })
   it('includes a harness line when the host surfaces one', async () => {
     const { ctx, agent } = await harness()
