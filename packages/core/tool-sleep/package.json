@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-tool-sleep",
   "description": "Sleep model tool over a cooperative AbortSignal wait: align with Claude Code's SleepTool duration, interrupt-cancel, and concurrency semantics",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",

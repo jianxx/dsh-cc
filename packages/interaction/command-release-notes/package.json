@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-command-release-notes",
   "description": "Human-facing slash command to print the bundled release notes changelog",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",

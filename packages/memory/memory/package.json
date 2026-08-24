@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-memory",
   "description": "Claude Code-style file-based memory: memdir format, system-prompt section, and dynamic recall",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
