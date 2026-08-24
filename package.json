@@ -15,7 +15,9 @@
     "test": "vitest run",
     "check:exports": "node scripts/check-export-targets.mjs",
     "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs",
-    "check:spec-deps": "node scripts/check-spec-deps.mjs"
+    "check:spec-deps": "node scripts/check-spec-deps.mjs",
+    "check:publish": "node scripts/check-publish-manifests.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "husky": "^9.1.7",

@@ -51,5 +51,8 @@
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
     "@jianxx/dsh-cc-tools": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

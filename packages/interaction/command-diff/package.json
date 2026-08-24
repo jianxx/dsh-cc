@@ -40,5 +40,8 @@
     "@deepseek-ai/dsh-shell": "link:../../../../deepseek-harness/packages/shell/shell",
     "@deepseek-ai/dsh-subprocess": "link:../../../../deepseek-harness/packages/subprocess/subprocess",
     "@deepseek-ai/dsh-sandbox": "link:../../../../deepseek-harness/packages/sandbox/sandbox"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

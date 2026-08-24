@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+/**
+ * check-publish-manifests.test.mjs — self-running test harness.
+ *
+ * Uses node:assert/strict + node:child_process (NOT vitest; the repo vitest
+ * config only includes spec files under packages/<category>/<pkg>/tests).
+ *
+ * Covers: the minimal semver comparator's prerelease/release edge cases,
+ * loud failure on unrecognized range shapes, and fixture-based happy /
+ * violation paths through the manifest scanner. One smoke assertion runs
+ * the scanner over the REAL repo's publishConfig + no-link rules — that
+ * assertion will only pass once the parallel manifest remediation lands.
+ */
+import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  parseVersion,
+  compareVersions,
+  rangeSatisfiedBy,
+  findManifestViolations,
+} from "./check-publish-manifests.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, "..");
+const SCRIPT = join(__dirname, "check-publish-manifests.mjs");
+
+let failures = 0;
+function pass(name) {
+  console.log(`[PASS] ${name}`);
+}
+function fail(name, detail) {
+  console.error(`[FAIL] ${name}: ${detail}`);
+  failures++;
+}
+function check(name, fn) {
+  try {
+    fn();
+    pass(name);
+  } catch (e) {
+    fail(name, e.message);
+  }
+}
+function runScript(args, cwd) {
+  const res = spawnSync("node", [SCRIPT, cwd], { encoding: "utf-8" });
+  return { stdout: res.stdout ?? "", stderr: res.stderr ?? "", status: res.status };
+}
+
+/* ---- semver comparator: prerelease edge cases ---- */
+
+check("parseVersion: 0.1.1-rc.2", () => {
+  assert.deepEqual(parseVersion("0.1.1-rc.2").release, [0, 1, 1]);
+  assert.deepEqual(parseVersion("0.1.1-rc.2").prerelease, ["rc", "2"]);
+});
+check("parseVersion: bare 0.1.1 has empty prerelease", () => {
+  assert.deepEqual(parseVersion("0.1.1").prerelease, []);
+});
+check("compareVersions: final > same-tuple prerelease", () => {
+  assert.equal(compareVersions(parseVersion("0.1.1"), parseVersion("0.1.1-rc.2")), 1);
+});
+check("compareVersions: 0.2.0 > 0.1.1-rc.2", () => {
+  assert.equal(compareVersions(parseVersion("0.2.0"), parseVersion("0.1.1-rc.2")), 1);
+});
+
+/* 0.2.0-rc.1 vs >=0.1.1-rc.2 → NOT satisfied (pre-release of higher tuple) */
+check("0.2.0-rc.1 NOT satisfied by >=0.1.1-rc.2", () => {
+  assert.equal(rangeSatisfiedBy(">=0.1.1-rc.2", "0.2.0-rc.1"), false);
+});
+/* 0.1.1-rc.3 satisfied by >=0.1.1-rc.2 */
+check("0.1.1-rc.3 satisfied by >=0.1.1-rc.2", () => {
+  assert.equal(rangeSatisfiedBy(">=0.1.1-rc.2", "0.1.1-rc.3"), true);
+});
+/* 0.1.1 (final) satisfied by >=0.1.1-rc.2 */
+check("0.1.1 satisfied by >=0.1.1-rc.2", () => {
+  assert.equal(rangeSatisfiedBy(">=0.1.1-rc.2", "0.1.1"), true);
+});
+/* exact floor boundary satisfied */
+check("0.1.1-rc.2 satisfies its own >= floor", () => {
+  assert.equal(rangeSatisfiedBy(">=0.1.1-rc.2", "0.1.1-rc.2"), true);
+});
+/* caret: ^3.18.1 — 3.18.1 yes, 4.0.0 no */
+check("^3.18.1 satisfied by 3.18.1", () => {
+  assert.equal(rangeSatisfiedBy("^3.18.1", "3.18.1"), true);
+});
+check("^3.18.1 NOT satisfied by 4.0.0", () => {
+  assert.equal(rangeSatisfiedBy("^3.18.1", "4.0.0"), false);
+});
+/* bare exact */
+check("exact 3.18.1 satisfied by 3.18.1, not 3.18.2", () => {
+  assert.equal(rangeSatisfiedBy("3.18.1", "3.18.1"), true);
+  assert.equal(rangeSatisfiedBy("3.18.1", "3.18.2"), false);
+});
+/* unrecognized range shapes fail loudly */
+for (const bad of ["~3.18.1", ">=0.1.1 <0.2.0", "1.2.x", "*"]) {
+  check(`unrecognized range '${bad}' throws`, () => {
+    assert.throws(
+      () => rangeSatisfiedBy(bad, "3.18.1"),
+      /unrecognized range shape/,
+    );
+  });
+}
+check("malformed >= floor throws", () => {
+  assert.throws(() => rangeSatisfiedBy(">=not-a-version", "0.1.0"), /malformed '>=' range/);
+});
+
+/* ---- fixture: happy path ---- */
+
+function makeFixture(files) {
+  const dir = mkdtempSync(join(tmpdir(), "publish-manifests-"));
+  for (const [rel, text] of Object.entries(files)) {
+    const p = join(dir, rel);
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, text);
+  }
+  return dir;
+}
+const GOOD_PUBLIC = {
+  "packages/a/public-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-public-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      dependencies: {},
+    },
+    null,
+    2,
+  ),
+};
+const BAD_PUBLIC = {
+  "packages/a/closed-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-closed-pkg",
+      version: "0.1.0",
+      dependencies: { foo: "1.0.0" },
+    },
+    null,
+    2,
+  ),
+};
+const BAD_LINK = {
+  "packages/a/link-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-link-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      dependencies: { "@deepseek-ai/dsh-llm": "link:../../../../somewhere" },
+    },
+    null,
+    2,
+  ),
+};
+const GOOD_PRIVATE = {
+  "packages/a/private-pkg/package.json": JSON.stringify(
+    { name: "@jianxx/dsh-cc-private-pkg", version: "0.1.0", private: true },
+    null,
+    2,
+  ),
+};
+
+// note: fixtures on tmpdir have NO sibling deepseek-harness, so the
+// harness range-check block is skipped — the no-link + publishConfig rules
+// are exercised directly.
+{
+  const dir = makeFixture({ ...GOOD_PUBLIC, ...GOOD_PRIVATE });
+  try {
+    check("fixture happy path: CLI exits 0", () => {
+      const { status } = runScript([], dir);
+      assert.equal(status, 0, `expected exit 0, got ${status}`);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+{
+  const dir = makeFixture({ ...GOOD_PUBLIC, ...BAD_PUBLIC, ...BAD_LINK });
+  try {
+    check("fixture violation path: CLI exits 1", () => {
+      const { status, stderr } = runScript([], dir);
+      assert.equal(status, 1, `expected exit 1, got ${status}`);
+      assert.ok(stderr.includes("closed-pkg"), `expected closed-pkg in output`);
+      assert.ok(stderr.includes("link-pkg"), `expected link-pkg in output`);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+{
+  const dir = makeFixture({ ...GOOD_PUBLIC, ...BAD_PUBLIC, ...BAD_LINK });
+  try {
+    check("fixture violation path: in-process problems listed", () => {
+      const problems = findManifestViolations(dir);
+      const reasons = problems.map((p) => p.reason).join("\n");
+      assert.ok(problems.some((p) => p.pkg.includes("closed-pkg")), "missing access violation");
+      assert.ok(problems.some((p) => p.pkg.includes("link-pkg")), "missing link violation");
+      assert.ok(reasons.includes("publishConfig.access"), "access reason text");
+      assert.ok(reasons.includes("link:"), "link reason text");
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/* ---- smoke: real repo MUST pass publishConfig + no-link rules ---- */
+// NOTE: this only passes once the parallel manifest remediation lands. If
+// it fails here because remediation is pending, it is a known-failure, not
+// a code defect — do not weaken the assertion.
+{
+  check("REAL repo passes publishConfig + no-link rules", () => {
+    const problems = findManifestViolations(ROOT);
+    const linkAccess = problems.filter((p) =>
+      /publishConfig.access|link: value/.test(p.reason),
+    );
+    assert.equal(
+      linkAccess.length,
+      0,
+      `expected zero publishConfig/no-link violations, got ${
+        linkAccess.length
+      }: ${linkAccess.map((p) => `${p.pkg} (${p.reason})`).join("; ")}`,
+    );
+  });
+}
+
+if (failures > 0) {
+  console.error(`\n${failures} case(s) failed.`);
+  process.exit(1);
+}
+console.log("publish-manifests check passed.");

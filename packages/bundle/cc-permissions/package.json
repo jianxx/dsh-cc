@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Claude Code permission parity layer for dsh profiles: five-level settings cascade + CC permission-rule engine",
   "type": "module",
-  "files": ["cordis.patch.yml"],
+  "files": [
+    "cordis.patch.yml"
+  ],
   "exports": {
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
@@ -23,5 +25,8 @@
     "@jianxx/dsh-cc-settings-cascade": "workspace:^",
     "@jianxx/dsh-cc-permission-rules": "workspace:^",
     "@jianxx/dsh-cc-command-permissions": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

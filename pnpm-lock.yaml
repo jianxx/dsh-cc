@@ -64,9 +64,6 @@ importers:
 
   packages/bundle/cc-shell:
     dependencies:
-      '@deepseek-ai/dsh-settings':
-        specifier: link:../../../../deepseek-harness/packages/settings/settings
-        version: link:../../../../deepseek-harness/packages/settings/settings
       '@jianxx/dsh-cc-claude-code-agents':
         specifier: workspace:^
         version: link:../../preset/claude-code-agents
@@ -116,6 +113,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../../deepseek-harness/packages/settings/settings
+        version: link:../../../../deepseek-harness/packages/settings/settings
       '@deepseek-ai/dsh-subagent':
         specifier: link:../../../../deepseek-harness/packages/subagent/subagent
         version: link:../../../../deepseek-harness/packages/subagent/subagent
@@ -166,10 +166,6 @@ importers:
         version: 6.0.3
 
   packages/compaction/compaction-micro:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -198,12 +194,11 @@ importers:
       '@deepseek-ai/dsh-token-meter':
         specifier: link:../../../../deepseek-harness/packages/llm/token-meter
         version: link:../../../../deepseek-harness/packages/llm/token-meter
-
-  packages/compat/cc-model-aliases:
-    dependencies:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+
+  packages/compat/cc-model-aliases:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -211,15 +206,12 @@ importers:
       '@deepseek-ai/dsh-settings':
         specifier: link:../../../../deepseek-harness/packages/settings/settings
         version: link:../../../../deepseek-harness/packages/settings/settings
-
-  packages/compat/cc-output-styles:
-    dependencies:
-      '@deepseek-ai/dsh-home-paths':
-        specifier: link:../../../../deepseek-harness/packages/util/home-paths
-        version: link:../../../../deepseek-harness/packages/util/home-paths
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+
+  packages/compat/cc-output-styles:
+    dependencies:
       yaml:
         specifier: ^2.4.2
         version: 2.9.0
@@ -236,6 +228,9 @@ importers:
       '@deepseek-ai/dsh-commands':
         specifier: link:../../../../deepseek-harness/packages/interaction/commands
         version: link:../../../../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-home-paths':
+        specifier: link:../../../../deepseek-harness/packages/util/home-paths
+        version: link:../../../../deepseek-harness/packages/util/home-paths
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
@@ -251,6 +246,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/compat/cc-plugin-loader:
     devDependencies:
@@ -286,10 +284,6 @@ importers:
         version: link:../../core/tools
 
   packages/core/tool-notebook-edit:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -309,6 +303,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../tools
@@ -341,10 +338,6 @@ importers:
         version: link:../tools
 
   packages/core/tool-sleep:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -358,15 +351,14 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../tools
 
   packages/core/tool-structured-output:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -380,15 +372,14 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../tools
 
   packages/core/tools:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -420,6 +411,9 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: link:../../../../deepseek-harness/packages/interaction/user-approval
         version: link:../../../../deepseek-harness/packages/interaction/user-approval
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       fast-check:
         specifier: 4.8.0
         version: 4.8.0
@@ -440,10 +434,6 @@ importers:
         version: link:../../../../deepseek-harness/packages/shell/shell
 
   packages/hooks/hooks-claude-code:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -496,6 +486,9 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: link:../../../../deepseek-harness/packages/interaction/user-approval
         version: link:../../../../deepseek-harness/packages/interaction/user-approval
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-agent-loop-mock':
         specifier: workspace:^
         version: link:../../test-support/agent-loop-mock
@@ -915,10 +908,6 @@ importers:
         version: link:../../../../deepseek-harness/packages/core/session
 
   packages/interaction/permission-rules:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -959,15 +948,15 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: link:../../../../deepseek-harness/packages/interaction/user-approval
         version: link:../../../../deepseek-harness/packages/interaction/user-approval
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
 
   packages/mcp/mcp-client:
     dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -1005,6 +994,9 @@ importers:
       '@deepseek-ai/dsh-timeout':
         specifier: link:../../../../deepseek-harness/packages/util/timeout
         version: link:../../../../deepseek-harness/packages/util/timeout
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -1017,9 +1009,6 @@ importers:
 
   packages/mcp/mcp-config:
     dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-mcp-client':
         specifier: workspace:^
         version: link:../mcp-client
@@ -1030,12 +1019,12 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
-
-  packages/memory/memory:
-    dependencies:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+
+  packages/memory/memory:
+    dependencies:
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -1070,12 +1059,12 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
-
-  packages/memory/memory-consolidation:
-    dependencies:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+
+  packages/memory/memory-consolidation:
+    dependencies:
       '@jianxx/dsh-cc-memory':
         specifier: workspace:^
         version: link:../memory
@@ -1104,6 +1093,9 @@ importers:
       '@deepseek-ai/dsh-subagent':
         specifier: link:../../../../deepseek-harness/packages/subagent/subagent
         version: link:../../../../deepseek-harness/packages/subagent/subagent
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/preset/cc:
     dependencies:
@@ -1355,9 +1347,6 @@ importers:
 
   packages/skill/skill-claude-code:
     dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
       yaml:
         specifier: ^2.4.2
         version: 2.9.0
@@ -1377,6 +1366,9 @@ importers:
       '@deepseek-ai/dsh-skill':
         specifier: link:../../../../deepseek-harness/packages/skill/skill
         version: link:../../../../deepseek-harness/packages/skill/skill
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -1431,9 +1423,6 @@ importers:
 
   packages/subagent/task:
     dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-claude-code-agents':
         specifier: workspace:^
         version: link:../../preset/claude-code-agents
@@ -1462,6 +1451,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/test-support/agent-loop-mock:
     devDependencies:
@@ -1470,10 +1462,6 @@ importers:
         version: link:../../../../deepseek-harness/packages/llm/llm
 
   packages/workspace/tool-git-worktree:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../../deepseek-harness/vendor/schemastery
-        version: link:../../../../deepseek-harness/vendor/schemastery
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -1511,6 +1499,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../../deepseek-harness/packages/core/system-prompt
         version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools

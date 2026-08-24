@@ -75,6 +75,10 @@ jobs:
         working-directory: dsh-cc-plugins
         run: node scripts/check-spec-deps.mjs
 
+      - name: Publishable manifest invariants (check:publish)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-publish-manifests.mjs
+
       - name: Cache harness build outputs (restore)
         id: cache-harness
         uses: actions/cache/restore@v4
