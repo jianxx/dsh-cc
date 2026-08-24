@@ -29,15 +29,15 @@
   "license": "Apache-2.0",
   "peerDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
-    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-commands": ">=0.1.1-rc.2",
     "@jianxx/dsh-cc-hook-protocol": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",
-    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.5",
-    "@deepseek-ai/dsh-skill": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-settings": ">=0.1.1-rc.2",
+    "@deepseek-ai/dsh-skill": ">=0.1.1-rc.2",
     "@jianxx/dsh-cc-skill-loader": "workspace:^",
-    "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-subagent": ">=0.1.1-rc.2",
     "@jianxx/dsh-cc-tools": "workspace:^",
-    "@deepseek-ai/cordis": ">=0.1.0-rc.5"
+    "@deepseek-ai/cordis": ">=0.1.1-rc.2"
   },
   "devDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
