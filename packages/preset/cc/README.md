@@ -26,6 +26,7 @@ Both scripts copy, they do not symlink; plugin code and preset files are read at
 
 - **Web UI**: pick "CC mode" from the agent-preset selector; or
 - **settings**: `~/.dsh/settings.json` → `"agent-presets": { "default": "cc" }`.
+- **TUI**: `dsh --profile tui` (or `dsh-cc`) boots the terminal surface with this preset as the default.
 
 ## Known limits
 

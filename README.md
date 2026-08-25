@@ -48,6 +48,9 @@ packages/
   session/command-cost|export|stats  /cost /export /stats
   bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
   bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts `dsh-tool-ask-user` AskUserQuestion over the base-owned `dsh-user-questions` seam and `dsh-schedule`)
+  bundle/cc-tui                    terminal surface over dsh-base (profile `tui`, CC preset default)
+  ui/tui                           Ink protocol driver for the tui profile
+  launcher/tui                     optional `dsh-cc` bin → `dsh --profile tui`
   test-support/agent-loop-mock     vendored test fixture (not a plugin)
 ```
 
@@ -56,42 +59,50 @@ packages/
 Prereq: a dsh CLI installation (`dsh` on PATH, version ≥ 0.1.0-rc.5).
 
 ```sh
-# pick a profile name (created on first use); rc.6 add syntax:
-dsh plugin --profile cc add <this-repo>   # or the published npm names / file: links
+# terminal (peer of `dsh web`): CC-mode TUI
+dsh plugin --profile tui add @jianxx/dsh-cc-bundle-permissions \
+  @jianxx/dsh-cc-bundle-shell @jianxx/dsh-cc-bundle-tui
+dsh --profile tui
 
-# compose: bundles are hoisted into the profile and listed in dsh.profile.bundles *ahead* of
-# your own patch file, their roofs sorted before your cordis.patch.yml.
-dsh --profile cc "your task"
+# optional shortcut (same profile):
+#   npm i -g @jianxx/dsh-cc && dsh-cc
+
+# web: same CC backend, browser surface
+dsh plugin --profile web add @jianxx/dsh-cc-bundle-permissions \
+  @jianxx/dsh-cc-bundle-shell
+dsh web
 ```
 
-`dsh plugin` forwards to pnpm in `$DSH_HOME/profiles/cc` and auto-registers every
+`dsh plugin` forwards to pnpm in `$DSH_HOME/profiles/<name>` and auto-registers every
 installed package that declares `dsh.bundle` into `dsh.profile.bundles` (append on add,
 drop on remove). Hoisted pnpm linking puts the whole plugin tree flat, while every
 in-box dsh package (peer deps like `@deepseek-ai/cordis`) resolves through the
 installer-maintained `$DSH_HOME/profiles/node_modules` symlink fallback — external
 plugins always share the installation's single cordis instance.
 
-Recommended order in `~/.dsh/profiles/cc/package.json`:
+Recommended order in `~/.dsh/profiles/tui/package.json`:
 
 ```json
 {
   "dependencies": {
     "@jianxx/dsh-cc-bundle-permissions": "...",
-    "@jianxx/dsh-cc-bundle-shell": "..."
+    "@jianxx/dsh-cc-bundle-shell": "...",
+    "@jianxx/dsh-cc-bundle-tui": "..."
   },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@jianxx/dsh-cc-bundle-permissions",
-        "@jianxx/dsh-cc-bundle-shell"
+        "@jianxx/dsh-cc-bundle-shell",
+        "@jianxx/dsh-cc-bundle-tui"
       ]
     }
   }
 }
 ```
 
-Your own tweaks land in `~/.dsh/profiles/cc/cordis.patch.yml` (applied after every bundle).
+Your own tweaks land in `~/.dsh/profiles/tui/cordis.patch.yml` (applied after every bundle). The `web` profile keeps the two CC host bundles without `cc-tui`.
 
 ### Local development without publishing
 
@@ -127,6 +138,8 @@ The second script rsyncs `packages/preset/cc/agent.cordis.yml` and
 `packages/preset/cc/preset.yml` into `~/.dsh/.agent-presets/cc` (respecting
 `$DSH_HOME`). Re-run it whenever those files change, then restart dsh — the
 preset list is re-scanned at the next boot.
+
+On the **tui** profile the same preset is the default (`dsh --profile tui` / `dsh-cc`); the plugin copies it into `~/.dsh/.agent-presets/cc` on boot.
 
 Select the preset either through the web UI's preset selector, or by setting
 `agent-presets.default="cc"` in settings. To uninstall, delete the

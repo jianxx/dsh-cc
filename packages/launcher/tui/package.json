@@ -1,0 +1,22 @@
+{
+  "name": "@jianxx/dsh-cc",
+  "version": "0.1.0",
+  "description": "Optional dsh-cc shortcut: bootstraps the tui profile and runs dsh --profile tui",
+  "type": "module",
+  "bin": {
+    "dsh-cc": "./bin/dsh-cc.js"
+  },
+  "files": [
+    "bin",
+    "bootstrap.mjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/launcher/tui"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
+}

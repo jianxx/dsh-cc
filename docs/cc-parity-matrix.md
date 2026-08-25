@@ -72,7 +72,7 @@ dsh-web-app surgery criteria).
 | Sandbox | ✅ | `dsh-sandbox-local` + policy (base) |
 | Credentials | ✅ | `dsh-credentials-local` (base) |
 | Notifications (bell/OS/iterm) | ❌ | no notification seam in deepseek-harness; needs a new design |
-| Vim mode / keybindings / statusline / ghost text | ❌ | interactive-terminal features; the harness is headless/web-first — a terminal-REPL shell would be a separate design domain |
+| Vim mode / keybindings / statusline / ghost text | 🔶 | `dsh --profile tui` (`@jianxx/dsh-cc-bundle-tui`) is the terminal surface; Shift+Tab cycles CC permission modes, slash catalog via `ctx.commands`. Vim / ghost text still later |
 | IDE integration / LSP | ✅ | mounted via `dsh-lsp`/`dsh-lsp-stdio`/`dsh-tool-lsp` 三包（`ctx.lsp` provider registry + stdio provider + 模型工具 `lsp`，goToDefinition/findReferences/goToImplementation/hover）；`/ide` 与 editor pods 属交互壳范畴，headless 仍不适用 |
 | Remote / web sessions | 🔶 different | CC `bridge/` is claude.ai-bound 🚫; dsh has its own web/host/sdk/acp stack outside this repo |
 | Voice | 🚫 | vendor feature, no design asset |
