@@ -28,7 +28,9 @@ import { formatStatusLine } from '../statusline.ts'
 import {
   applySessionEvent,
   type SessionEventLike,
+  type ToolPresenters,
 } from '../transcript.ts'
+import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import {
   clearRows,
   createInitialState,
@@ -91,6 +93,13 @@ type LlmLike = {
 
 type PersistenceLike = {
   list(signal?: AbortSignal): Promise<{ id: string; cwd?: string; createdAt: number }[]>
+}
+
+type ToolsLike = {
+  get(name: string, scope?: unknown): {
+    presentCall?(args: unknown): ToolCallView | undefined
+    presentResult?(args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
+  } | undefined
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -163,9 +172,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   writeResumeTarget(String(agent.session.id))
   emit(setPermissionMode(state, liveMode(agent, 'default')))
 
+  const tools = ctx.get('tools') as ToolsLike | undefined
+  const presenters: ToolPresenters | undefined = tools === undefined
+    ? undefined
+    : {
+      presentCall(name, args) {
+        return tools.get(name, agent)?.presentCall?.(args)
+      },
+      presentResult(name, args, result) {
+        return tools.get(name, agent)?.presentResult?.(args, result)
+      },
+    }
+
   ctx.on('session/event', (session, event: SessionEvent) => {
     if (session.id !== agent.session.id) return
-    emit(applySessionEvent(state, event as SessionEventLike))
+    emit(applySessionEvent(state, event as SessionEventLike, presenters))
     const eventType = event.type as string
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       emit(setPermissionMode(state, liveMode(agent, state.permissionMode)))

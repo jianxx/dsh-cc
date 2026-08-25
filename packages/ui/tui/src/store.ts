@@ -13,6 +13,8 @@ export type TranscriptRow =
     callId: string
     name: string
     args: string
+    title: string
+    body?: string
     result?: string
     error?: boolean
     running: boolean

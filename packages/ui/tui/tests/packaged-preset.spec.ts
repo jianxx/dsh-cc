@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ensurePackagedPreset } from '@jianxx/dsh-cc-tui/packaged-preset.ts'
+import { ensurePackagedPreset, packagedPresetRoot } from '@jianxx/dsh-cc-tui/packaged-preset.ts'
 
 function sourceDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-preset-src-'))
@@ -30,6 +30,16 @@ describe('ensurePackagedPreset', () => {
     const result = ensurePackagedPreset({ dshHome, sourceRoot: sourceDir(), revision: '1' })
     expect(result.status).toBe('conflict')
     expect(readFileSync(join(dshHome, '.agent-presets', 'cc', 'preset.yml'), 'utf8')).toBe('name: mine\n')
+  })
+
+  it('discovers the repo CC preset and can install it', () => {
+    const source = packagedPresetRoot()
+    expect(source).toBeDefined()
+    expect(readFileSync(join(source!, 'preset.yml'), 'utf8')).toContain('CC mode')
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-home-'))
+    const result = ensurePackagedPreset({ dshHome, sourceRoot: source, revision: 'repo' })
+    expect(result.status).toBe('installed')
+    expect(readFileSync(join(dshHome, '.agent-presets', 'cc', 'agent.cordis.yml'), 'utf8')).toContain('cc-services')
   })
 
   it('reports missing-source when the package has no preset files', () => {

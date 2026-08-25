@@ -28,7 +28,32 @@ describe('applySessionEvent', () => {
       data: { callId: '1', name: 'bash', text: 'ok' },
     })
     expect(state.rows).toHaveLength(1)
-    expect(state.rows[0]).toMatchObject({ kind: 'tool', callId: '1', running: false, result: 'ok' })
+    expect(state.rows[0]).toMatchObject({
+      kind: 'tool',
+      callId: '1',
+      running: false,
+      title: 'bash',
+      result: 'ok',
+    })
+  })
+
+  it('uses presentCall/presentResult views when a presenter is supplied', () => {
+    let state = createInitialState()
+    const presenters = {
+      presentCall: () => ({ card: 'terminal' as const, title: 'ls -la', cwd: '/tmp' }),
+      presentResult: () => ({ card: 'terminal' as const, output: 'ok', exitCode: 0 }),
+    }
+    state = applySessionEvent(state, {
+      type: 'tool/call',
+      data: { callId: '1', name: 'Bash', arguments: '{"command":"ls -la"}' },
+    }, presenters)
+    expect(state.rows[0]).toMatchObject({ kind: 'tool', title: 'ls -la', body: 'cwd /tmp', running: true })
+    state = applySessionEvent(state, {
+      type: 'tool/result',
+      data: { callId: '1', name: 'Bash', text: 'ok' },
+    }, presenters)
+    expect(state.rows[0]).toMatchObject({ kind: 'tool', title: 'ls -la', running: false, error: false })
+    expect((state.rows[0] as { body?: string }).body).toContain('exit 0')
   })
 
   it('folds permission/mode and plan/mode into the footer', () => {

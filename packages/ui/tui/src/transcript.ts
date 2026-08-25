@@ -5,6 +5,12 @@
  */
 
 import {
+  formatCallCard,
+  formatResultCard,
+  type ToolCallView,
+  type ToolResultView,
+} from './tool-card.ts'
+import {
   setBusy,
   setPermissionMode,
   upsertRow,
@@ -15,6 +21,21 @@ import {
 export interface SessionEventLike {
   readonly type: string
   readonly data?: unknown
+}
+
+/** Optional presenters looked up by tool name (agent-scoped registry). */
+export interface ToolPresenters {
+  presentCall?(name: string, args: unknown): ToolCallView | undefined
+  presentResult?(name: string, args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
+}
+
+function parseArgs(raw: string): unknown {
+  if (raw.length === 0) return {}
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
 }
 
 function textOf(data: unknown): string {
@@ -83,8 +104,13 @@ function chunkText(data: unknown): string {
  * Apply one session event to the view model.
  * @param state - current TUI state.
  * @param event - a `session/event` envelope.
+ * @param presenters - optional presentCall/presentResult lookup.
  */
-export function applySessionEvent(state: TuiState, event: SessionEventLike): TuiState {
+export function applySessionEvent(
+  state: TuiState,
+  event: SessionEventLike,
+  presenters?: ToolPresenters,
+): TuiState {
   const data = event.data
   switch (event.type) {
     case 'user/message':
@@ -96,24 +122,45 @@ export function applySessionEvent(state: TuiState, event: SessionEventLike): Tui
     }
     case 'assistant/message':
       return setBusy(state, false)
-    case 'tool/call':
+    case 'tool/call': {
+      const name = nameOf(data)
+      const args = argsOf(data)
+      const view = presenters?.presentCall?.(name, parseArgs(args))
+      const card = formatCallCard(view, { name, args })
       return upsertRow(state, {
         kind: 'tool',
         callId: callIdOf(data),
-        name: nameOf(data),
-        args: argsOf(data),
+        name,
+        args,
+        title: card.title,
+        ...card.body === undefined ? {} : { body: card.body },
         running: true,
       })
-    case 'tool/result':
+    }
+    case 'tool/result': {
+      const name = nameOf(data)
+      const callId = callIdOf(data)
+      const pending = state.rows.find(row => row.kind === 'tool' && row.callId === callId)
+      const pendingTitle = pending?.kind === 'tool' ? pending.title : name
+      const pendingArgs = pending?.kind === 'tool' ? pending.args : argsOf(data)
+      const isError = data !== null && typeof data === 'object' && (data as { error?: unknown }).error !== undefined
+      const fallback = textOf(data) || argsOf(data)
+      const view = presenters?.presentResult?.(name, parseArgs(pendingArgs), {
+        content: data,
+        isError,
+      })
+      const card = formatResultCard(view, { pendingTitle, fallback, error: isError })
       return upsertRow(state, {
         kind: 'tool',
-        callId: callIdOf(data),
-        name: nameOf(data),
-        args: '',
-        result: textOf(data) || argsOf(data),
-        error: data !== null && typeof data === 'object' && (data as { error?: unknown }).error !== undefined,
+        callId,
+        name,
+        args: pendingArgs,
+        title: card.title,
+        ...card.body === undefined ? {} : { body: card.body, result: card.body },
+        error: card.error,
         running: false,
       })
+    }
     case 'turn/start':
       return setBusy(state, true)
     case 'turn/end':

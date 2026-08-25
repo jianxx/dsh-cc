@@ -19,10 +19,10 @@ function renderRow(row: TranscriptRow, index: number): ReactNode {
       return <Text key={index} dimColor italic>{row.text}</Text>
     case 'tool': {
       const status = row.running ? '…' : (row.error === true ? '✗' : '✓')
-      const body = row.result === undefined || row.result.length === 0 ? row.args : row.result
+      const body = row.body ?? row.result ?? row.args
       return (
         <Text key={index} color={row.error === true ? 'red' : 'yellow'}>
-          {`⏺ ${row.name} ${status}${body.length > 0 ? `\n  ⎿ ${body.split('\n')[0]}` : ''}`}
+          {`⏺ ${row.title} ${status}${body !== undefined && body.length > 0 ? `\n  ⎿ ${body.split('\n')[0]}` : ''}`}
         </Text>
       )
     }
