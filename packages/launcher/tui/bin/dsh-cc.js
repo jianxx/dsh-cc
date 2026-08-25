@@ -39,6 +39,14 @@ if (add !== undefined) {
 }
 
 const { env, args } = interceptResume(undefined, process.argv.slice(2), { ...process.env })
+if (env.DSH_CC_RESUME_SESSION === undefined) {
+  try {
+    const marker = readFileSync(join(home, 'tui', 'resume.txt'), 'utf8').trim()
+    if (marker.length > 0) env.DSH_CC_RESUME_SESSION = marker
+  } catch {
+    // No marker is the common first-run case.
+  }
+}
 env.NODE_ENV ??= 'production'
 
 const child = spawn('dsh', ['--profile', PROFILE, ...args], { env, stdio: 'inherit' })

@@ -5,7 +5,7 @@
  */
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
-export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help'] as const
+export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help', 'resume', 'model'] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
 

@@ -24,4 +24,6 @@ one backend.
 - Shift+Tab — cycle CC permission modes (`default` → `acceptEdits` → `plan` → `auto` → `bypassPermissions`)
 - Esc — interrupt the current turn
 - `/quit` — exit
-- other `/commands` — harness catalog (CC preset)
+- `/model` — list or switch the live LLM route
+- `/resume [id]` — list persisted sessions, or pin the next launch id
+- other `/commands` — harness catalog (CC preset), including `/permissions`

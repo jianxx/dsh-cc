@@ -106,7 +106,7 @@ export function App({ driver }: AppProps): ReactElement {
         </Box>
       )}
       <Text>{state.busy ? '◌ working…' : `❯ ${state.draft}`}</Text>
-      <Text dimColor>{`mode ${state.permissionMode} · shift+tab cycle · /quit`}</Text>
+      <Text dimColor>{driver.statusLine}</Text>
     </Box>
   )
 }

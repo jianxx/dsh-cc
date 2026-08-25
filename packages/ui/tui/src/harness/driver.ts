@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -22,6 +22,9 @@ import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash } from '../slash.ts'
+import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
+import { writeResumeTarget } from '../resume-target.ts'
+import { formatStatusLine } from '../statusline.ts'
 import {
   applySessionEvent,
   type SessionEventLike,
@@ -47,6 +50,7 @@ export interface DriverConfig {
 
 export interface Driver {
   readonly state: TuiState
+  readonly statusLine: string
   subscribe(listener: (state: TuiState) => void): () => void
   setDraft(draft: string): void
   submit(): Promise<void>
@@ -58,6 +62,12 @@ export interface Driver {
 }
 
 type PermissionRulesLike = {
+  readonly ruleSet: {
+    readonly allow: readonly unknown[]
+    readonly deny: readonly unknown[]
+    readonly ask: readonly unknown[]
+    readonly bypassImmune: readonly unknown[]
+  }
   setMode(agent: Agent, mode: string): void
 }
 
@@ -72,6 +82,15 @@ type CommandsLike = {
     images: readonly unknown[],
     signal: AbortSignal,
   ): Promise<{ result?: { kind: string; text?: string } } | undefined>
+}
+
+type LlmLike = {
+  listProviders(): { id: string }[]
+  listModels(provider: string): Promise<{ provider: string; id: string; name: string }[]>
+}
+
+type PersistenceLike = {
+  list(signal?: AbortSignal): Promise<{ id: string; cwd?: string; createdAt: number }[]>
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -117,20 +136,31 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const composition = await composePreset(ctx, config.agentPreset ?? 'cc')
   const sessionId = SessionId(config.sessionId ?? `tui-${randomUUID()}`)
   const cwd = config.cwd ?? process.cwd()
+  const selection: ModelSelectionRef = { assembled: undefined, current: undefined }
+
+  const presetSetup = composition.setup
+  const withSelection: AgentSetup = async (agentCtx) => {
+    if (presetSetup !== undefined) await presetSetup(agentCtx)
+    installModelSelection(agentCtx, selection)
+  }
 
   const resume = config.sessionId !== undefined && config.sessionId.length > 0
   const handle: AgentHandle = resume
     ? await ctx.agents.resume({
       resumeSessionId: sessionId,
-      ...composition.setup === undefined ? {} : { setup: composition.setup },
+      setup: withSelection,
     })
     : await ctx.agents.create({
       sessionId,
       meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
-      ...composition.setup === undefined ? {} : { setup: composition.setup },
+      setup: withSelection,
     })
 
   const agent = handle.agent
+  if (agent.options.provider !== undefined && agent.options.model !== undefined) {
+    selection.current = { provider: agent.options.provider, model: agent.options.model }
+  }
+  writeResumeTarget(String(agent.session.id))
   emit(setPermissionMode(state, liveMode(agent, 'default')))
 
   ctx.on('session/event', (session, event: SessionEvent) => {
@@ -222,7 +252,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setPermissionMode(state, mode))
   }
 
-  const runLocal = async (name: string): Promise<void> => {
+  const loadCatalog = async (): Promise<CatalogEntry[]> => {
+    const llm = ctx.get('llm') as LlmLike | undefined
+    if (llm === undefined) return []
+    const entries: CatalogEntry[] = []
+    for (const provider of llm.listProviders()) {
+      const models = await llm.listModels(provider.id)
+      for (const model of models) {
+        entries.push({ provider: model.provider, id: model.id, name: model.name })
+      }
+    }
+    return entries
+  }
+
+  const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
       await handle.dispose()
       return
@@ -234,7 +277,57 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (name === 'tui-help') {
       emit(upsertRow(state, {
         kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /quit exits. Other /commands go to the CC catalog.',
+        text: 'Shift+Tab cycles permission modes. /model lists adapters. /resume lists sessions. /quit exits.',
+      }))
+      return
+    }
+    if (name === 'resume') {
+      if (rawInput.length > 0) {
+        writeResumeTarget(rawInput)
+        emit(upsertRow(state, {
+          kind: 'status',
+          text: `Resume target set to ${rawInput}. Restart with dsh --profile tui --resume ${rawInput}`,
+        }))
+        return
+      }
+      const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
+      if (persistence === undefined) {
+        emit(setNotice(state, 'No session persistence is mounted in this composition.'))
+        return
+      }
+      const headers = await persistence.list()
+      if (headers.length === 0) {
+        emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
+        return
+      }
+      const lines = headers
+        .slice()
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(header => `- ${header.id}${header.cwd === undefined ? '' : ` — cwd: ${header.cwd}`}`)
+      emit(upsertRow(state, {
+        kind: 'status',
+        text: ['Recent sessions:', ...lines, 'To switch: /resume <sessionId> then restart, or dsh --profile tui --resume <id>'].join('\n'),
+      }))
+      return
+    }
+    if (name === 'model') {
+      const catalog = await loadCatalog()
+      const current = selection.current === undefined
+        ? undefined
+        : { provider: selection.current.provider, model: selection.current.model }
+      if (rawInput.length === 0) {
+        emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, current) }))
+        return
+      }
+      const chosen = parseModelChoice(rawInput, catalog)
+      if (chosen === undefined) {
+        emit(setNotice(state, `Unknown model "${rawInput}". Try /model for the catalog.`))
+        return
+      }
+      selection.current = { provider: chosen.provider, model: chosen.model }
+      emit(upsertRow(state, {
+        kind: 'status',
+        text: `Model is now ${chosen.provider}/${chosen.model}.`,
       }))
     }
   }
@@ -258,7 +351,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setDraft(state, ''))
     const parsed = parseSlash(draft)
     if (parsed.kind === 'local') {
-      await runLocal(parsed.name)
+      await runLocal(parsed.name, parsed.rawInput)
       return
     }
     if (parsed.kind === 'harness') {
@@ -272,9 +365,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }))
   }
 
+  const statusLineOf = (): string => formatStatusLine({
+    cwd: agent.session.header.cwd ?? cwd,
+    sessionId: String(agent.session.id),
+    permissionMode: state.permissionMode,
+    ...selection.current === undefined ? {} : { model: selection.current.model },
+    busy: state.busy,
+  })
+
   return {
     get state() {
       return state
+    },
+    get statusLine() {
+      return statusLineOf()
     },
     subscribe(listener) {
       listeners.add(listener)
