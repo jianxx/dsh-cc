@@ -135,6 +135,9 @@
     },
     {
       "path": "./packages/ui/tui"
+    },
+    {
+      "path": "./packages/ui/pi-tui"
     }
   ]
 }
