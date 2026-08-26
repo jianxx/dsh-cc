@@ -9,7 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './index.ts'
 import { createDriver } from './harness/driver.ts'
 import { ensurePackagedPreset } from './packaged-preset.ts'
-import { resetTerminalModes, setupGracefulExit } from './terminal.ts'
+import { acquireTerminal } from './terminal/lease.ts'
 import { App } from './ui.tsx'
 
 /**
@@ -38,13 +38,19 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
 
   if (process.stdin.isTTY) {
     process.stdin.setEncoding('utf8')
-    process.stdin.setRawMode(true)
     process.stdin.resume()
   }
 
   const instance = render(createElement(App, { driver }), { exitOnCtrlC: false })
 
   let shuttingDown = false
+
+  const lease = acquireTerminal({
+    onSignal: () => {
+      shutdown()
+    },
+  })
+
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
@@ -54,21 +60,15 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
       // best-effort
     }
     void driver.dispose().finally(() => {
-      resetTerminalModes(process.stdout, false)
+      lease.release()
       process.exit(0)
     })
   }
 
-  const releaseExit = setupGracefulExit({
-    onSignal: () => {
-      shutdown()
-    },
-  })
-
   // apply() must settle so the Loader fiber activates. Ink holds the process
   // via stdin; teardown is the fiber disposer (and the signal handlers).
   ctx.effect(() => () => {
-    releaseExit()
+    lease.release()
     instance.unmount()
     void driver.dispose()
   })
