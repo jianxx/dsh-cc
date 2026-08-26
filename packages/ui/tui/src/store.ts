@@ -62,6 +62,26 @@ export interface QuestionView {
   custom: string
 }
 
+/**
+ * One LLM adapter entry shown in the `/model` picker. Mirrors the harness
+ * {@link CatalogEntry} but lives in the view layer (harness-import-free).
+ */
+export interface CatalogEntryView {
+  provider: string
+  id: string
+  name: string
+}
+
+/**
+ * Live view of the `/model` picker overlay: the catalog rows, the focused
+ * index, and the active model route (if any) so the renderer can mark it.
+ */
+export interface ModelPickerView {
+  entries: readonly CatalogEntryView[]
+  focused: number
+  current?: { provider: string; model: string }
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -70,6 +90,7 @@ export interface TuiState {
   notice?: string
   approval?: ApprovalView
   question?: QuestionView
+  modelPicker?: ModelPickerView
   /** Texts submitted while the agent was busy (pending steering). */
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
@@ -137,6 +158,28 @@ export function setApproval(state: TuiState, approval: ApprovalView | undefined)
 export function setQuestion(state: TuiState, question: QuestionView | undefined): TuiState {
   const { question: _dropped, ...rest } = state
   return question === undefined ? rest : { ...rest, question }
+}
+
+/** Park or clear the `/model` picker overlay. */
+export function setModelPicker(state: TuiState, picker: ModelPickerView | undefined): TuiState {
+  const { modelPicker: _dropped, ...rest } = state
+  return picker === undefined ? rest : { ...rest, modelPicker: picker }
+}
+
+/** Focus a model-picker row by index, clamped to [0, entries.length-1]. */
+export function focusModelPicker(state: TuiState, index: number): TuiState {
+  const picker = state.modelPicker
+  if (picker === undefined || picker.entries.length === 0) return state
+  const max = picker.entries.length - 1
+  const focused = Math.max(0, Math.min(index, max))
+  return setModelPicker(state, { ...picker, focused })
+}
+
+/** Move the model-picker focus by one row (clamped; no wrap). */
+export function moveModelPickerFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const picker = state.modelPicker
+  if (picker === undefined) return state
+  return focusModelPicker(state, picker.focused + delta)
 }
 
 /** Focus a question row by index, clamped to [0, options.length]. */

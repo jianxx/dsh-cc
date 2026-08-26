@@ -22,6 +22,9 @@ export interface InputSink {
   questionBackspace(): void
   questionSubmit(): void
   questionCancel(): void
+  modelPickerMove(delta: -1 | 1): void
+  modelPickerSubmit(): void
+  modelPickerCancel(): void
   dispose(): Promise<void>
 }
 
@@ -84,6 +87,31 @@ export function routeQuestionInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open model picker. Only arrows, enter, and
+ * escape are recognized; everything else is dropped — the picker is modal and
+ * the composer editor must never see keystrokes while it is open.
+ */
+export function routeModelPickerInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.modelPickerCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.modelPickerMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.modelPickerMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    driver.modelPickerSubmit()
+    return
+  }
+  // All other keys are consumed and ignored (modal).
+}
+
+/**
  * Apply one raw keypress against the live driver. Returns whether the app
  * should exit. Called from the pi-tui global input listener before the editor
  * receives the keystroke.
@@ -102,6 +130,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.question !== undefined) {
     routeQuestionInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.modelPicker !== undefined) {
+    routeModelPickerInput(driver, data)
     return { kind: 'none' }
   }
 

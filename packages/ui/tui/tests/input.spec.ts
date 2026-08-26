@@ -4,7 +4,10 @@ import {
   createInitialState,
   setApproval,
   setBusy,
+  setModelPicker,
   setQuestion,
+  type CatalogEntryView,
+  type ModelPickerView,
   type QuestionView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
@@ -19,12 +22,19 @@ interface QuestionCalls {
   cancelled: number
 }
 
+interface ModelPickerCalls {
+  moved: number[]
+  submitted: number
+  cancelled: number
+}
+
 function sink(initial: TuiState = createInitialState()): InputSink & {
   disposed: boolean
   interrupted: boolean
   cycled: boolean
   toggled: boolean
   questionCalls: QuestionCalls
+  modelPickerCalls: ModelPickerCalls
 } {
   let state = initial
   const questionCalls: QuestionCalls = {
@@ -36,12 +46,18 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     submitted: 0,
     cancelled: 0,
   }
+  const modelPickerCalls: ModelPickerCalls = {
+    moved: [],
+    submitted: 0,
+    cancelled: 0,
+  }
   return {
     disposed: false,
     interrupted: false,
     cycled: false,
     toggled: false,
     questionCalls,
+    modelPickerCalls,
     get state() {
       return state
     },
@@ -76,6 +92,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     questionCancel() {
       questionCalls.cancelled += 1
+    },
+    modelPickerMove(delta) {
+      modelPickerCalls.moved.push(delta)
+    },
+    modelPickerSubmit() {
+      modelPickerCalls.submitted += 1
+    },
+    modelPickerCancel() {
+      modelPickerCalls.cancelled += 1
     },
     async dispose() {
       this.disposed = true
@@ -231,6 +256,90 @@ describe('handleComposerInput question routing', () => {
     expect(driver.questionCalls.typed).toEqual(['h'])
     expect(driver.questionCalls.picked).toEqual([1])
     expect(driver.questionCalls.cancelled).toBe(1)
+  })
+})
+
+const PICKER_ENTRIES: readonly CatalogEntryView[] = [
+  { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'Flash' },
+  { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+]
+
+function pickerState(overrides: Partial<ModelPickerView> = {}): TuiState {
+  return setModelPicker(createInitialState(), {
+    entries: PICKER_ENTRIES,
+    focused: 0,
+    ...overrides,
+  })
+}
+
+describe('handleComposerInput model picker routing', () => {
+  it('arrow up moves focus up (-1)', () => {
+    const driver = sink(pickerState({ focused: 1 }))
+    const action = handleComposerInput(driver, '\x1b[A')
+    expect(driver.modelPickerCalls.moved).toEqual([-1])
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('arrow down moves focus down (+1)', () => {
+    const driver = sink(pickerState())
+    handleComposerInput(driver, '\x1b[B')
+    expect(driver.modelPickerCalls.moved).toEqual([1])
+  })
+
+  it('enter submits the focused entry', () => {
+    const driver = sink(pickerState())
+    handleComposerInput(driver, '\r')
+    expect(driver.modelPickerCalls.submitted).toBe(1)
+  })
+
+  it('escape cancels the picker', () => {
+    const driver = sink(pickerState())
+    handleComposerInput(driver, '\x1b')
+    expect(driver.modelPickerCalls.cancelled).toBe(1)
+  })
+
+  it('all other keys are consumed and never reach the editor (modal)', () => {
+    const driver = sink(pickerState())
+    for (const key of ['h', ' ', '2', '\x7f', 'abc']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    // Nothing routed to question handlers (no question open).
+    expect(driver.questionCalls.moved).toEqual([])
+    expect(driver.questionCalls.typed).toEqual([])
+    // Nothing routed to global handlers.
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('a question overlay outranks the model picker (precedence: approval > question > modelPicker)', () => {
+    let state = setQuestion(createInitialState(), {
+      header: 'Pick',
+      question: 'Which?',
+      options: [{ label: 'a' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    state = setModelPicker(state, { entries: PICKER_ENTRIES, focused: 0 })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.questionCalls.submitted).toBe(1)
+    expect(driver.modelPickerCalls.submitted).toBe(0)
+  })
+
+  it('does not toggle thinking while a model picker is open (overlay wins)', () => {
+    const driver = sink(pickerState())
+    handleComposerInput(driver, '\x0f')
+    expect(driver.toggled).toBe(false)
+  })
+
+  it('does not interrupt on escape while a model picker is open (cancel wins)', () => {
+    const driver = sink(setBusy(pickerState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.modelPickerCalls.cancelled).toBe(1)
   })
 })
 

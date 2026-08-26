@@ -6,7 +6,7 @@
  */
 
 import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
-import type { ApprovalView, QuestionView } from '../store.ts'
+import type { ApprovalView, ModelPickerView, QuestionView } from '../store.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { bold, dim, yellow } from './theme.ts'
 
@@ -75,5 +75,52 @@ export function createQuestionBox(question: QuestionView): Container {
     ? '↑↓ move · space toggle · enter confirm · esc cancel'
     : '↑↓ move · enter select · type to answer freely · esc cancel'
   box.addChild(new Text(dim(hint), 0, 0))
+  return box
+}
+
+/**
+ * Maximum model-picker rows rendered at once. A longer catalog is windowed
+ * around the focus so the box can never overflow the frame (the 16-line
+ * catalog-dump regression class).
+ */
+const MODEL_PICKER_VISIBLE_ROWS = 10
+
+/**
+ * Model picker box: a modal list of `provider/id — name` rows with a `❯`
+ * focus marker and a `*` on the active route, windowed to
+ * {@link MODEL_PICKER_VISIBLE_ROWS} rows around the focus.
+ *
+ * Hand-rolled (not the vendored `SelectList`) because SelectList owns its own
+ * `selectedIndex` and routes input through its own `handleInput`, which would
+ * fight the driver-owned `modelPicker` state and the emit/setter flow the rest
+ * of the overlays use. SelectList also renders a `→` prefix and a two-column
+ * layout that clash with the `❯` + Text-row convention shared by the approval
+ * and question boxes. A focused-list mirroring the question overlay keeps one
+ * state owner and one styling language.
+ */
+export function createModelPickerBox(picker: ModelPickerView): Container {
+  const box = new Container()
+  box.addChild(new Text(bold('Select model'), 0, 0))
+
+  const total = picker.entries.length
+  const cap = MODEL_PICKER_VISIBLE_ROWS
+  let start = 0
+  if (total > cap) {
+    start = Math.max(0, Math.min(picker.focused - Math.floor(cap / 2), total - cap))
+  }
+  const end = Math.min(start + cap, total)
+
+  for (let index = start; index < end; index += 1) {
+    const entry = picker.entries[index]!
+    const focused = picker.focused === index
+    const isCurrent = picker.current !== undefined
+      && picker.current.provider === entry.provider
+      && picker.current.model === entry.id
+    const marker = focused ? '❯ ' : '  '
+    const currentMark = isCurrent ? ' *' : ''
+    box.addChild(new Text(`${marker}${entry.provider}/${entry.id} — ${entry.name}${currentMark}`, 0, 0))
+  }
+
+  box.addChild(new Text(dim('↑↓ move · enter select · esc cancel'), 0, 0))
   return box
 }

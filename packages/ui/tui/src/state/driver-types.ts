@@ -56,6 +56,19 @@ export interface Driver {
   /** Dismiss the overlay resolving the first option (legacy escape behavior). */
   questionCancel(): void
   /**
+   * Open the `/model` picker overlay: loads the catalog, parks `modelPicker`
+   * state focused on the current route, or falls back to the status-row
+   * notice when the catalog is empty. The arg path (`/model <n|provider/id>`)
+   * bypasses the overlay and stays scriptable.
+   */
+  openModelPicker(): Promise<void>
+  /** Move the model-picker focus by one row (clamped; no wrap). */
+  modelPickerMove(delta: -1 | 1): void
+  /** Select the focused entry, close the overlay, and emit the status row. */
+  modelPickerSubmit(): void
+  /** Close the overlay without changing the selection. */
+  modelPickerCancel(): void
+  /**
    * Merged slash-command catalog: TUI-local commands first, then harness
    * commands (deduped by name, local wins). The array identity is stable
    * across calls until the catalog changes (so callers can detect a refresh

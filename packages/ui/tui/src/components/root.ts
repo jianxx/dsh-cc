@@ -17,12 +17,12 @@ import {
   type TUI,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput } from '../input.ts'
+import { routeQuestionInput, routeModelPickerInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
-import { createApprovalBox, createQuestionBox } from './overlays.ts'
+import { createApprovalBox, createModelPickerBox, createQuestionBox } from './overlays.ts'
 
 export interface BuildRootOptions {
   terminal?: Terminal
@@ -112,6 +112,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       routeQuestionInput(driver, data)
       return { consume: true }
     }
+    if (live.modelPicker !== undefined) {
+      // Modal model picker: arrows/enter/esc only, everything else consumed.
+      routeModelPickerInput(driver, data)
+      return { consume: true }
+    }
     if (matchesKey(data, 'shift+tab')) {
       driver.cyclePermissionMode()
       return { consume: true }
@@ -147,6 +152,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
     }
     if (state.question !== undefined) {
       overlays.addChild(createQuestionBox(state.question))
+    }
+    if (state.modelPicker !== undefined) {
+      overlays.addChild(createModelPickerBox(state.modelPicker))
     }
     overlays.invalidate()
 

@@ -40,10 +40,12 @@ import {
   clearRows,
   createInitialState,
   enqueue,
+  moveModelPickerFocus,
   moveQuestionFocus,
   setApproval,
   setBusy,
   setDraft,
+  setModelPicker,
   setNotice,
   setPermissionMode,
   setQuestion,
@@ -51,6 +53,7 @@ import {
   toggleThinking,
   typeQuestionText,
   upsertRow,
+  type CatalogEntryView,
   type TuiState,
 } from '../store.ts'
 
@@ -402,6 +405,36 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     return entries
   }
 
+  // `/model` (no args) opens a modal picker instead of dumping a text catalog.
+  // The arg path (`/model <n|provider/id>`) stays text-based for scripts.
+  const openModelPicker = async (): Promise<void> => {
+    const catalog = await loadCatalog()
+    const current = selection.current === undefined
+      ? undefined
+      : { provider: selection.current.provider, model: selection.current.model }
+    if (catalog.length === 0) {
+      emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, current) }))
+      return
+    }
+    const entries: CatalogEntryView[] = catalog.map(entry => ({
+      provider: entry.provider,
+      id: entry.id,
+      name: entry.name,
+    }))
+    let focused = 0
+    if (current !== undefined) {
+      const index = entries.findIndex(
+        entry => entry.provider === current.provider && entry.id === current.model,
+      )
+      if (index >= 0) focused = index
+    }
+    emit(setModelPicker(state, {
+      entries,
+      focused,
+      ...current === undefined ? {} : { current },
+    }))
+  }
+
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
       await handle.dispose()
@@ -448,17 +481,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       return
     }
     if (name === 'model') {
-      const catalog = await loadCatalog()
-      const current = selection.current === undefined
-        ? undefined
-        : { provider: selection.current.provider, model: selection.current.model }
       if (rawInput.length === 0) {
-        emit(upsertRow(state, {
-          kind: 'status',
-          text: `${formatModelCatalog(catalog, current)}\nPick with /model <n> or /model provider/id`,
-        }))
+        await openModelPicker()
         return
       }
+      const catalog = await loadCatalog()
       const chosen = parseModelChoice(rawInput, catalog)
       if (chosen === undefined) {
         emit(setNotice(state, `Unknown model "${rawInput}". Try /model for the catalog.`))
@@ -630,6 +657,28 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     questionCancel() {
       const question = state.question
       resolveQuestion(question !== undefined && question.options.length > 0 ? [question.options[0]!.label] : [])
+    },
+    async openModelPicker() {
+      await openModelPicker()
+    },
+    modelPickerMove(delta) {
+      emit(moveModelPickerFocus(state, delta))
+    },
+    modelPickerSubmit() {
+      const picker = state.modelPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      emit(setModelPicker(state, undefined))
+      if (entry !== undefined) {
+        selection.current = { provider: entry.provider, model: entry.id }
+        emit(upsertRow(state, {
+          kind: 'status',
+          text: `Model is now ${entry.provider}/${entry.id}.`,
+        }))
+      }
+    },
+    modelPickerCancel() {
+      emit(setModelPicker(state, undefined))
     },
     listCommands() {
       return commandCatalog

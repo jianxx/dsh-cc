@@ -10,13 +10,16 @@ import {
   backspaceQuestionText,
   createInitialState,
   enqueue,
+  moveModelPickerFocus,
   moveQuestionFocus,
   setApproval,
   setBusy,
+  setModelPicker,
   setQuestion,
   toggleQuestionOption,
   typeQuestionText,
   upsertRow,
+  type CatalogEntryView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -165,6 +168,27 @@ function fakeDriver(
     },
     questionCancel() {
       state = setQuestion(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    modelPickerMove(delta) {
+      state = moveModelPickerFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    modelPickerSubmit() {
+      const picker = state.modelPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      state = setModelPicker(state, undefined)
+      if (entry !== undefined) {
+        state = upsertRow(state, {
+          kind: 'status',
+          text: `Model is now ${entry.provider}/${entry.id}.`,
+        })
+      }
+      for (const l of listeners) l(state)
+    },
+    modelPickerCancel() {
+      state = setModelPicker(state, undefined)
       for (const l of listeners) l(state)
     },
     listCommands() {
@@ -696,6 +720,98 @@ describe('vt-renderer', () => {
     expect(stripped).toContain('Other: zed')
     // The editor draft stays empty — printable keys never reached it.
     expect(driver.state.draft).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the model picker with entries, focus marker, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const entries: CatalogEntryView[] = [
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+      { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+    ]
+    let state = setModelPicker(createInitialState(), {
+      entries,
+      focused: 1,
+      current: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Select model')
+    expect(stripped).toContain('deepseek-official/deepseek-v4-flash — DeepSeek V4 Flash')
+    expect(stripped).toContain('deepseek-official/deepseek-v4-pro — DeepSeek V4 Pro')
+    expect(stripped).toContain('openai/gpt-5 — GPT-5')
+    // Focus marker sits on the focused (index 1) entry.
+    expect(stripped).toContain('❯ deepseek-official/deepseek-v4-pro')
+    // Current-model marker on the active route.
+    expect(stripped).toMatch(/deepseek-v4-pro.*\*/)
+    // Footer hint.
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('never renders more rows than the visible-window cap for a long catalog', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    // 25 entries — well past the cap.
+    const entries: CatalogEntryView[] = Array.from({ length: 25 }, (_, i) => ({
+      provider: 'p',
+      id: `m${i + 1}`,
+      name: `Model ${i + 1}`,
+    }))
+    let state = setModelPicker(createInitialState(), {
+      entries,
+      focused: 0,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    // The first and last catalog entries cannot both be visible when the
+    // window caps at MODEL_PICKER_VISIBLE_ROWS (10).
+    expect(stripped).toContain('p/m1 — Model 1')
+    expect(stripped).not.toContain('p/m25 — Model 25')
+    // Count rendered entry rows (lines containing "p/m") — must not exceed the cap.
+    const entryLines = stripped.split('\n').filter(l => l.includes('p/m'))
+    expect(entryLines.length).toBeLessThanOrEqual(10)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('enter on the focused model picker entry selects it and emits the status row', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const entries: CatalogEntryView[] = [
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'Flash' },
+      { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+    ]
+    let state = setModelPicker(createInitialState(), { entries, focused: 1 })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\r')
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Model is now openai/gpt-5.')
+    // Overlay dismissed.
+    expect(stripped).not.toContain('Select model')
 
     root.tui.stop()
     root.destroy()

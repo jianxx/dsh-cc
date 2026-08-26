@@ -6,11 +6,16 @@ import {
   dequeue,
   enqueue,
   focusQuestionOption,
+  focusModelPicker,
+  moveModelPickerFocus,
   moveQuestionFocus,
+  setModelPicker,
   setQuestion,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
+  type CatalogEntryView,
+  type ModelPickerView,
   type QuestionView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
@@ -165,6 +170,68 @@ describe('question helpers', () => {
   it('backspaceQuestionText on an empty buffer is a no-op', () => {
     const base = questionState({ custom: '' })
     expect(backspaceQuestionText(base)).toBe(base)
+  })
+})
+
+const PICKER_ENTRIES: readonly CatalogEntryView[] = [
+  { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+  { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+  { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+]
+
+function pickerState(overrides: Partial<ModelPickerView> = {}): TuiState {
+  const picker: ModelPickerView = {
+    entries: PICKER_ENTRIES,
+    focused: 0,
+    ...overrides,
+  }
+  return setModelPicker(createInitialState(), picker)
+}
+
+describe('model picker helpers', () => {
+  it('setModelPicker parks the picker and drops the field when cleared', () => {
+    const state = pickerState({ focused: 1 })
+    expect(state.modelPicker?.entries).toBe(PICKER_ENTRIES)
+    expect(state.modelPicker?.focused).toBe(1)
+    const cleared = setModelPicker(state, undefined)
+    expect(cleared.modelPicker).toBeUndefined()
+    // Cleared state does not carry the dropped field at all.
+    expect('modelPicker' in cleared).toBe(false)
+  })
+
+  it('setModelPicker does not mutate the original state', () => {
+    const state = createInitialState()
+    const parked = setModelPicker(state, { entries: PICKER_ENTRIES, focused: 0 })
+    expect(state.modelPicker).toBeUndefined()
+    expect(parked.modelPicker?.focused).toBe(0)
+    expect(parked).not.toBe(state)
+  })
+
+  it('moveModelPickerFocus clamps focus to [0, entries.length-1]', () => {
+    const base = pickerState({ focused: 0 })
+    expect(moveModelPickerFocus(base, 1).modelPicker?.focused).toBe(1)
+    // Clamp at the top — does not wrap to the bottom.
+    expect(moveModelPickerFocus(base, -1).modelPicker?.focused).toBe(0)
+    // Clamp at the bottom.
+    const bottom = pickerState({ focused: 2 })
+    expect(moveModelPickerFocus(bottom, 1).modelPicker?.focused).toBe(2)
+  })
+
+  it('moveModelPickerFocus is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(moveModelPickerFocus(base, 1)).toBe(base)
+  })
+
+  it('focusModelPicker clamps into range', () => {
+    const base = pickerState({ focused: 0 })
+    expect(focusModelPicker(base, 99).modelPicker?.focused).toBe(2)
+    expect(focusModelPicker(base, -3).modelPicker?.focused).toBe(0)
+    expect(focusModelPicker(base, 2).modelPicker?.focused).toBe(2)
+  })
+
+  it('focusModelPicker is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(focusModelPicker(base, 1)).toBe(base)
   })
 })
 
