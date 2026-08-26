@@ -31,9 +31,10 @@ function makeCtx(capture: {
     agents: {
       create: async (opts: unknown) => {
         capture.create = opts
+        const agentOpts = (opts as { agentOptions?: Record<string, unknown> })?.agentOptions ?? {}
         return {
           agent: {
-            options: {},
+            options: agentOpts,
             session: { id: 's-test', header: {}, events: [] },
             id: 'a-test',
             status: 'idle',
@@ -45,9 +46,10 @@ function makeCtx(capture: {
       },
       resume: async (opts: unknown) => {
         capture.resume = opts
+        const agentOpts = (opts as { agentOptions?: Record<string, unknown> })?.agentOptions ?? {}
         return {
           agent: {
-            options: {},
+            options: agentOpts,
             session: { id: 's-test', header: {}, events: capture.resumeEvents ?? [] },
             id: 'a-test',
             status: capture.resumeStatus ?? 'idle',
@@ -137,5 +139,65 @@ describe('createDriver agentOptions passthrough', () => {
     expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'hello' })
     // The chunk set busy=true during the fold, but agent.status=idle overrides it.
     expect(driver.state.busy).toBe(false)
+  })
+
+  it('emits a boot banner status row with cwd on a fresh create', async () => {
+    const capture: { create?: unknown } = {}
+    const driver = await createDriver(makeCtx(capture) as never, { cwd: '/fake/path' })
+    const banner = driver.state.rows.find(r => r.kind === 'status')
+    expect(banner).toBeDefined()
+    expect((banner as { text: string }).text).toMatch(/dsh cc-mode/)
+    expect((banner as { text: string }).text).toContain('/fake/path')
+    expect((banner as { text: string }).text).toContain('/tui-help')
+  })
+
+  it('labels the banner with the resolved model when agentOptions are set', async () => {
+    const capture: { create?: unknown } = {}
+    const driver = await createDriver(makeCtx(capture) as never, {
+      provider: 'mock',
+      model: 'e2e-1',
+    })
+    const banner = driver.state.rows.find(r => r.kind === 'status') as { text: string } | undefined
+    expect(banner).toBeDefined()
+    expect(banner!.text).toContain('e2e-1')
+  })
+
+  it('labels the banner "default model" when no model is resolved', async () => {
+    const capture: { create?: unknown } = {}
+    const driver = await createDriver(makeCtx(capture) as never, {})
+    const banner = driver.state.rows.find(r => r.kind === 'status') as { text: string } | undefined
+    expect(banner).toBeDefined()
+    expect(banner!.text).toContain('default model')
+  })
+
+  it('places the boot banner as the first row above replayed history on resume', async () => {
+    const resumeEvents = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'remember this' }], source: { kind: 'user' } } },
+      { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'ack' } } },
+    ]
+    const capture: { resumeEvents?: unknown[]; resumeStatus?: string } = {
+      resumeEvents,
+      resumeStatus: 'idle',
+    }
+    const driver = await createDriver(makeCtx(capture) as never, { sessionId: 'prior-session' })
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
+    expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
+    // Replayed history follows the banner.
+    expect(driver.state.rows[1]).toMatchObject({ kind: 'user', text: 'remember this' })
+  })
+
+  it('toggleThinking flips thinkingExpanded and notifies subscribers', async () => {
+    const driver = await createDriver(makeCtx({}) as never, {})
+    expect(driver.state.thinkingExpanded).toBe(false)
+    let emissions = 0
+    const unsub = driver.subscribe(() => { emissions++ }) // initial emit -> 1
+    expect(emissions).toBe(1)
+    driver.toggleThinking() // -> 2
+    expect(driver.state.thinkingExpanded).toBe(true)
+    expect(emissions).toBe(2)
+    driver.toggleThinking() // -> 3
+    expect(driver.state.thinkingExpanded).toBe(false)
+    expect(emissions).toBe(3)
+    unsub()
   })
 })

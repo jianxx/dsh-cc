@@ -101,6 +101,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       driver.cyclePermissionMode()
       return { consume: true }
     }
+    if (matchesKey(data, Key.ctrl('o'))) {
+      driver.toggleThinking()
+      return { consume: true }
+    }
     if (matchesKey(data, Key.escape)) {
       if (live.busy) {
         driver.interrupt()
@@ -113,7 +117,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
   // Rebuild transcript + overlays + statusline on every driver emit.
   const unsubscribe = driver.subscribe((state) => {
-    transcript.setRows(state.rows)
+    transcript.setRows(state.rows, { thinkingExpanded: state.thinkingExpanded })
 
     queueLine.setText(
       state.queued.length === 0

@@ -46,6 +46,8 @@ export interface TuiState {
   question?: QuestionView
   /** Texts submitted while the agent was busy (pending steering). */
   queued: readonly string[]
+  /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
+  thinkingExpanded: boolean
 }
 
 /** Empty composer + idle agent. */
@@ -56,6 +58,7 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     busy: false,
     permissionMode,
     queued: [],
+    thinkingExpanded: false,
   }
 }
 
@@ -143,4 +146,9 @@ export function dequeue(state: TuiState, text: string): TuiState {
 export function clearQueue(state: TuiState): TuiState {
   if (state.queued.length === 0) return state
   return { ...state, queued: [] }
+}
+
+/** Flip the thinking-accordion expansion flag (Ctrl+O). */
+export function toggleThinking(state: TuiState): TuiState {
+  return { ...state, thinkingExpanded: !state.thinkingExpanded }
 }

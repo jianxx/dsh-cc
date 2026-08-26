@@ -77,6 +77,7 @@ function fakeDriver(initial: TuiState): Driver {
     async submit() {},
     interrupt() {},
     cyclePermissionMode() {},
+    toggleThinking() {},
     answerApproval() {},
     answerQuestion() {},
     async dispose() {},

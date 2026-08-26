@@ -133,8 +133,8 @@ describe('createDriver busy input semantics', () => {
     expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' })
     expect(driver.state.queued).toEqual([])
     expect(driver.state.busy).toBe(false)
-    const statusRows = driver.state.rows.filter(r => r.kind === 'status')
-    expect(statusRows).toHaveLength(1)
-    expect(statusRows[0]!.text).toContain('Interrupted')
+    // The boot banner is also a status row; pin the interruption row specifically.
+    const interrupted = driver.state.rows.filter(r => r.kind === 'status' && r.text.includes('Interrupted'))
+    expect(interrupted).toHaveLength(1)
   })
 })

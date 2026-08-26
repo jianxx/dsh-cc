@@ -13,6 +13,7 @@ export interface InputSink {
   state: TuiState
   interrupt(): void
   cyclePermissionMode(): void
+  toggleThinking(): void
   answerApproval(allowed: boolean): void
   answerQuestion(selected: string): void
   dispose(): Promise<void>
@@ -52,6 +53,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (matchesKey(data, 'shift+tab')) {
     driver.cyclePermissionMode()
+    return { kind: 'none' }
+  }
+
+  if (matchesKey(data, Key.ctrl('o'))) {
+    driver.toggleThinking()
     return { kind: 'none' }
   }
 

@@ -44,6 +44,7 @@ import {
   setNotice,
   setPermissionMode,
   setQuestion,
+  toggleThinking,
   upsertRow,
   type TuiState,
 } from '../store.ts'
@@ -169,6 +170,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   writeResumeTarget(String(agent.session.id))
   emit(setPermissionMode(state, liveMode(agent, 'default')))
+
+  // Boot banner: one status row greeting. Emitted before the resume fold so it
+  // lands as row 0, above replayed history (matching the host's header block).
+  const modelLabel = selection.current?.model ?? 'default model'
+  emit(upsertRow(state, {
+    kind: 'status',
+    text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
+  }))
 
   const tools = ctx.get('tools') as ToolsLike | undefined
   const presenters: ToolPresenters | undefined = tools === undefined
@@ -450,6 +459,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       const next = nextPermissionMode(current)
       if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return
       applyMode(next)
+    },
+    toggleThinking() {
+      emit(toggleThinking(state))
     },
     answerApproval(allowed) {
       pendingApproval?.resolve(allowed ? 'allowed-once' : 'rejected')

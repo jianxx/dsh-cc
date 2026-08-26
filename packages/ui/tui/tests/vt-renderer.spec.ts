@@ -108,6 +108,10 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
       for (const l of listeners) l(state)
     },
     cyclePermissionMode() {},
+    toggleThinking() {
+      state = { ...state, thinkingExpanded: !state.thinkingExpanded }
+      for (const l of listeners) l(state)
+    },
     answerApproval(_allowed: boolean) {
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
@@ -273,6 +277,150 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).not.toContain('⏵ queued:')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a running tool row with a present-tense verb before the title', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'r1',
+      name: 'bash',
+      args: '{"command":"ls"}',
+      title: 'bash',
+      running: true,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Running')
+    expect(stripped).toContain('bash')
+    expect(stripped).toContain('…')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a completed tool row with a checkmark and no verb', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'ok',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('ls -la')
+    expect(stripped).toContain('✓')
+    expect(stripped).not.toContain('Running')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a thinking row collapsed to a one-line hint by default (body hidden)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'let me reason\nabout this\nnow' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('thinking (3 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('▸')
+    // Collapsed: the body text must NOT leak into the grid.
+    expect(stripped).not.toContain('let me reason')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the thinking body with a ▾ marker when thinkingExpanded is true', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'let me reason\nabout this' })
+    state = { ...state, thinkingExpanded: true }
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('▾')
+    expect(stripped).toContain('let me reason')
+    expect(stripped).not.toContain('Ctrl+O to expand')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('re-renders a thinking row on a flag flip despite unchanged row identity', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'secret reasoning' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('thinking (1 lines — Ctrl+O to expand)')
+    expect(stripped).not.toContain('secret reasoning')
+
+    // Flip the flag WITHOUT touching the rows array reference — the cached
+    // thinking row must still rebuild so the body appears.
+    driver.setState({ ...state, thinkingExpanded: true })
+    await settle()
+
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('secret reasoning')
+    expect(stripped).not.toContain('Ctrl+O to expand')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('toggles thinking on ctrl+o and re-renders the transcript', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'hidden thought' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('hidden thought')
+
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('hidden thought')
+    expect(driver.state.thinkingExpanded).toBe(true)
 
     root.tui.stop()
     root.destroy()

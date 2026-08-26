@@ -15,6 +15,7 @@ export interface Driver {
   submit(text?: string): Promise<void>
   interrupt(): void
   cyclePermissionMode(): void
+  toggleThinking(): void
   answerApproval(allowed: boolean): void
   answerQuestion(selected: string): void
   dispose(): Promise<void>

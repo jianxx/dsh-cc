@@ -4,6 +4,7 @@ import {
   createInitialState,
   dequeue,
   enqueue,
+  toggleThinking,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -63,5 +64,25 @@ describe('queue helpers', () => {
   it('createInitialState defaults queued to an empty array', () => {
     const state: TuiState = createInitialState()
     expect(state.queued).toEqual([])
+  })
+})
+
+describe('thinkingExpanded', () => {
+  it('defaults to false on a fresh state', () => {
+    expect(createInitialState().thinkingExpanded).toBe(false)
+  })
+
+  it('toggleThinking flips the flag', () => {
+    const state = createInitialState()
+    expect(toggleThinking(state).thinkingExpanded).toBe(true)
+    expect(toggleThinking(toggleThinking(state)).thinkingExpanded).toBe(false)
+  })
+
+  it('does not mutate the original state', () => {
+    const state = createInitialState()
+    const next = toggleThinking(state)
+    expect(state.thinkingExpanded).toBe(false)
+    expect(next.thinkingExpanded).toBe(true)
+    expect(next).not.toBe(state)
   })
 })

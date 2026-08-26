@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { handleComposerInput, type InputSink } from '@jianxx/dsh-cc-tui/input.ts'
 import { createInitialState, setApproval, setQuestion, setBusy, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
 
-function sink(initial: TuiState = createInitialState()): InputSink & { disposed: boolean; interrupted: boolean; cycled: boolean } {
+function sink(initial: TuiState = createInitialState()): InputSink & { disposed: boolean; interrupted: boolean; cycled: boolean; toggled: boolean } {
   let state = initial
   return {
     disposed: false,
     interrupted: false,
     cycled: false,
+    toggled: false,
     get state() {
       return state
     },
@@ -16,6 +17,10 @@ function sink(initial: TuiState = createInitialState()): InputSink & { disposed:
     },
     cyclePermissionMode() {
       this.cycled = true
+    },
+    toggleThinking() {
+      this.toggled = true
+      state = { ...state, thinkingExpanded: !state.thinkingExpanded }
     },
     answerApproval() {},
     answerQuestion() {},
@@ -85,5 +90,19 @@ describe('handleComposerInput', () => {
     const action = handleComposerInput(driver, '\x03')
     expect(action).toEqual({ kind: 'quit' })
     expect(driver.disposed).toBe(true)
+  })
+
+  it('toggles thinking on ctrl+o and consumes the key', () => {
+    const driver = sink()
+    const action = handleComposerInput(driver, '\x0f') // ctrl+o
+    expect(driver.toggled).toBe(true)
+    expect(driver.state.thinkingExpanded).toBe(true)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('does not toggle thinking while an approval overlay is open (overlay wins)', () => {
+    const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
+    handleComposerInput(driver, '\x0f')
+    expect(driver.toggled).toBe(false)
   })
 })
