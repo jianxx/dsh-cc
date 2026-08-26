@@ -11,16 +11,32 @@ import { createMarkdownTheme } from './markdown-theme.ts'
 import { bold, dim, yellow } from './theme.ts'
 
 /**
- * Approval box: "Approve <tool>?" + optional command + "1 yes · 2 no".
+ * Approval box: "Approve <tool>?" + optional reason + optional command
+ * preview (capped at three lines) + an explicit key→outcome hint.
  */
 export function createApprovalBox(approval: ApprovalView): Container {
   const box = new Container()
   box.addChild(new Text(yellow(`Approve ${approval.toolName}?`), 0, 0))
-  if (approval.command !== undefined) {
-    box.addChild(new Text(dim(approval.command), 0, 0))
+  if (approval.reason !== undefined) {
+    box.addChild(new Text(dim(approval.reason), 0, 0))
   }
-  box.addChild(new Text(yellow('1 yes · 2 no'), 0, 0))
+  if (approval.command !== undefined) {
+    for (const line of commandPreviewLines(approval.command)) {
+      box.addChild(new Text(dim(line), 0, 0))
+    }
+  }
+  box.addChild(new Text(dim('1 Yes, allow once · 2 No, reject'), 0, 0))
   return box
+}
+
+/**
+ * Cap a command preview at three lines; a trailing `…` marks the cut so a
+ * long multi-line script cannot push the composer off-screen.
+ */
+function commandPreviewLines(command: string, maxLines = 3): string[] {
+  const lines = command.split('\n')
+  if (lines.length <= maxLines) return lines
+  return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1]!} …`]
 }
 
 /**

@@ -221,26 +221,71 @@ describe('vt-renderer', () => {
     root.destroy()
   })
 
-  it('shows an approval overlay and dismisses it on 1', async () => {
+  it('approval box renders tool name, reason, capped command preview, and explicit choices', async () => {
     const vt = new VirtualTerminal(80, 24)
     let state = createInitialState()
-    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /' })
+    state = setApproval(state, {
+      toolName: 'Bash',
+      reason: 'destructive git operation',
+      command: 'set -e\necho one\necho two\necho three',
+    })
     const driver = fakeDriver(state)
 
     const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
     root.tui.start()
     await settle()
 
-    let g = vt.grid()
-    expect(g.join('\n')).toContain('Approve Bash')
-    expect(g.join('\n')).toContain('1 yes')
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('Approve Bash')
+    expect(joined).toContain('destructive git operation')
+    // First three command lines render; the fourth is cut with a … trailer.
+    expect(joined).toContain('set -e')
+    expect(joined).toContain('echo one')
+    expect(joined).toContain('echo two')
+    expect(joined).toContain('…')
+    expect(joined).not.toContain('echo three')
+    // Explicit key → outcome mapping, not a bare yes/no.
+    expect(joined).toContain('1 Yes, allow once')
+    expect(joined).toContain('2 No, reject')
 
-    // Answer "yes" by pressing 1.
-    vt.sendInput('1')
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 1 resolves allow, 2 resolves reject, other keys never reach the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /tmp/x' })
+    const driver = fakeDriver(state)
+    const answers: boolean[] = []
+    const baseAnswer = driver.answerApproval.bind(driver)
+    driver.answerApproval = (allowed: boolean) => {
+      answers.push(allowed)
+      baseAnswer(allowed)
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
     await settle()
 
-    g = vt.grid()
-    expect(g.join('\n')).not.toContain('Approve Bash')
+    // A non-answer key is consumed by the overlay: the editor draft stays
+    // untouched while the approval box is open.
+    vt.sendInput('x')
+    await settle()
+    expect(root.editor.getText()).toBe('')
+
+    vt.sendInput('1')
+    await settle()
+    expect(answers).toEqual([true])
+    expect(vt.grid().join('\n')).not.toContain('Approve Bash')
+
+    // Reopen and reject with 2.
+    driver.setState(setApproval(driver.state, { toolName: 'Bash', command: 'rm -rf /tmp/x' }))
+    await settle()
+    vt.sendInput('2')
+    await settle()
+    expect(answers).toEqual([true, false])
+    expect(root.editor.getText()).toBe('')
 
     root.tui.stop()
     root.destroy()

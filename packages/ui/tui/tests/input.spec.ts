@@ -97,26 +97,28 @@ function questionState(overrides: Partial<QuestionView> = {}): TuiState {
 }
 
 describe('handleComposerInput', () => {
-  it('answers an approval overlay with yes on 1', () => {
+  it('answers an approval overlay with yes on 1 or y/Y', () => {
     let allowed: boolean | undefined
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
     driver.answerApproval = value => {
       allowed = value
     }
-    handleComposerInput(driver, '1')
-    expect(allowed).toBe(true)
+    for (const key of ['1', 'y', 'Y']) {
+      handleComposerInput(driver, key)
+      expect(allowed).toBe(true)
+    }
   })
 
-  it('answers an approval overlay with no on 2 or escape', () => {
+  it('answers an approval overlay with no on 2, n/N, or escape', () => {
     let allowed: boolean | undefined
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
     driver.answerApproval = value => {
       allowed = value
     }
-    handleComposerInput(driver, '2')
-    expect(allowed).toBe(false)
-    handleComposerInput(driver, '\x1b')
-    expect(allowed).toBe(false)
+    for (const key of ['2', 'n', 'N', '\x1b']) {
+      handleComposerInput(driver, key)
+      expect(allowed).toBe(false)
+    }
   })
 
   it('does not toggle thinking while an approval overlay is open (overlay wins)', () => {
