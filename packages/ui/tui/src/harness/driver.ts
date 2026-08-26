@@ -20,6 +20,8 @@ import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
+import type { Driver } from '../state/driver-types.ts'
+export type { Driver } from '../state/driver-types.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash } from '../slash.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
@@ -48,19 +50,6 @@ export interface DriverConfig {
   cwd?: string
   agentPreset?: string
   sessionId?: string
-}
-
-export interface Driver {
-  readonly state: TuiState
-  readonly statusLine: string
-  subscribe(listener: (state: TuiState) => void): () => void
-  setDraft(draft: string): void
-  submit(): Promise<void>
-  interrupt(): void
-  cyclePermissionMode(): void
-  answerApproval(allowed: boolean): void
-  answerQuestion(selected: string): void
-  dispose(): Promise<void>
 }
 
 type PermissionRulesLike = {
@@ -369,8 +358,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
-  const submit = async (): Promise<void> => {
-    const draft = state.draft
+  const submit = async (text?: string): Promise<void> => {
+    const draft = text ?? state.draft
     if (draft.trim().length === 0) return
     emit(setDraft(state, ''))
     const parsed = parseSlash(draft)

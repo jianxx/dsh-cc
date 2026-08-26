@@ -47,8 +47,7 @@
   "dependencies": {
     "@jianxx/dsh-cc-command-permissions": "workspace:^",
     "@jianxx/dsh-cc-permission-rules": "workspace:^",
-    "ink": "^6.8.0",
-    "react": "^19.2.8"
+    "@jianxx/dsh-cc-pi-tui": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
@@ -63,7 +62,7 @@
     "@deepseek-ai/dsh-user-approval": "link:../../../../deepseek-harness/packages/interaction/user-approval",
     "@deepseek-ai/dsh-user-questions": "link:../../../../deepseek-harness/packages/interaction/user-questions",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
-    "@types/react": "^19.2.18"
+    "@xterm/headless": "5.5.0"
   },
   "publishConfig": {
     "access": "public"

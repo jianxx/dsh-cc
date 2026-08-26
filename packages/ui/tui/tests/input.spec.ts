@@ -1,76 +1,89 @@
 import { describe, expect, it } from 'vitest'
 import { handleComposerInput, type InputSink } from '@jianxx/dsh-cc-tui/input.ts'
-import { createInitialState, setApproval, setDraft, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
+import { createInitialState, setApproval, setQuestion, setBusy, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
 
-function sink(initial: TuiState = createInitialState()): InputSink & { submitted: string[] } {
+function sink(initial: TuiState = createInitialState()): InputSink & { disposed: boolean; interrupted: boolean; cycled: boolean } {
   let state = initial
-  const submitted: string[] = []
   return {
-    submitted,
+    disposed: false,
+    interrupted: false,
+    cycled: false,
     get state() {
       return state
     },
-    setDraft(draft) {
-      state = setDraft(state, draft)
+    interrupt() {
+      this.interrupted = true
     },
-    async submit() {
-      submitted.push(state.draft)
-      state = setDraft(state, '')
+    cyclePermissionMode() {
+      this.cycled = true
     },
-    interrupt() {},
-    cyclePermissionMode() {},
     answerApproval() {},
     answerQuestion() {},
-    async dispose() {},
+    async dispose() {
+      this.disposed = true
+    },
   }
 }
 
 describe('handleComposerInput', () => {
-  it('appends printable keys onto the live draft, not a stale snapshot', () => {
-    const driver = sink()
-    handleComposerInput(driver, 'h', {})
-    handleComposerInput(driver, 'i', {})
-    expect(driver.state.draft).toBe('hi')
-  })
-
-  it('submits the live draft on return', () => {
-    const driver = sink()
-    handleComposerInput(driver, 'a', {})
-    handleComposerInput(driver, 'b', {})
-    const action = handleComposerInput(driver, '', { return: true })
-    expect(action).toEqual({ kind: 'none' })
-    expect(driver.submitted).toEqual(['ab'])
-    expect(driver.state.draft).toBe('')
-  })
-
-  it('treats a raw carriage return as submit when Ink omits key.return', () => {
-    const driver = sink()
-    handleComposerInput(driver, 'hi', {})
-    handleComposerInput(driver, '\r', {})
-    expect(driver.submitted).toEqual(['hi'])
-  })
-
-  it('backspaces the live draft', () => {
-    const driver = sink()
-    handleComposerInput(driver, 'ab', {})
-    handleComposerInput(driver, '', { backspace: true })
-    expect(driver.state.draft).toBe('a')
-  })
-
-  it('treats /quit return as an exit', () => {
-    const driver = sink()
-    handleComposerInput(driver, '/quit', {})
-    expect(handleComposerInput(driver, '', { return: true })).toEqual({ kind: 'quit' })
-  })
-
-  it('answers an approval overlay instead of typing into the draft', () => {
+  it('answers an approval overlay with yes on 1', () => {
     let allowed: boolean | undefined
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
     driver.answerApproval = value => {
       allowed = value
     }
-    handleComposerInput(driver, '1', {})
+    handleComposerInput(driver, '1')
     expect(allowed).toBe(true)
-    expect(driver.state.draft).toBe('')
+  })
+
+  it('answers an approval overlay with no on 2 or escape', () => {
+    let allowed: boolean | undefined
+    const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
+    driver.answerApproval = value => {
+      allowed = value
+    }
+    handleComposerInput(driver, '2')
+    expect(allowed).toBe(false)
+    handleComposerInput(driver, '\x1b')
+    expect(allowed).toBe(false)
+  })
+
+  it('answers a question overlay by digit', () => {
+    let selected: string | undefined
+    const driver = sink(setQuestion(createInitialState(), { header: 'Pick', options: ['a', 'b', 'c'] }))
+    driver.answerQuestion = value => {
+      selected = value
+    }
+    handleComposerInput(driver, '2')
+    expect(selected).toBe('b')
+  })
+
+  it('answers a question overlay with the first option on escape', () => {
+    let selected: string | undefined
+    const driver = sink(setQuestion(createInitialState(), { header: 'Pick', options: ['a', 'b'] }))
+    driver.answerQuestion = value => {
+      selected = value
+    }
+    handleComposerInput(driver, '\x1b')
+    expect(selected).toBe('a')
+  })
+
+  it('cycles permission mode on shift+tab', () => {
+    const driver = sink()
+    handleComposerInput(driver, '\x1b[Z')
+    expect(driver.cycled).toBe(true)
+  })
+
+  it('interrupts on escape when busy', () => {
+    const driver = sink(setBusy(createInitialState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(true)
+  })
+
+  it('treats ctrl+c as an exit', () => {
+    const driver = sink()
+    const action = handleComposerInput(driver, '\x03')
+    expect(action).toEqual({ kind: 'quit' })
+    expect(driver.disposed).toBe(true)
   })
 })

@@ -1,27 +1,16 @@
 /**
- * Pure composer key handling. Reads the live driver snapshot so keystrokes
- * never land on a stale React closure.
+ * Global composer key handling. The editor owns typing, backspace, and enter;
+ * this module handles only overlay answers, permission cycling, interrupt,
+ * and quit. Reads the live driver snapshot so keystrokes never land on a
+ * stale closure.
  * @module @jianxx/dsh-cc-tui/input
  */
 
-import { parseSlash } from './slash.ts'
+import { Key, matchesKey } from '@jianxx/dsh-cc-pi-tui'
 import type { TuiState } from './store.ts'
-
-export interface InputKey {
-  return?: boolean
-  escape?: boolean
-  backspace?: boolean
-  delete?: boolean
-  tab?: boolean
-  shift?: boolean
-  ctrl?: boolean
-  meta?: boolean
-}
 
 export interface InputSink {
   state: TuiState
-  setDraft(draft: string): void
-  submit(): Promise<void>
   interrupt(): void
   cyclePermissionMode(): void
   answerApproval(allowed: boolean): void
@@ -34,52 +23,47 @@ export type InputAction =
   | { kind: 'quit' }
 
 /**
- * Apply one keypress against the live driver. Returns whether the app should exit.
+ * Apply one raw keypress against the live driver. Returns whether the app
+ * should exit. Called from the pi-tui global input listener before the editor
+ * receives the keystroke.
  */
-export function handleComposerInput(
-  driver: InputSink,
-  input: string,
-  key: InputKey,
-): InputAction {
+export function handleComposerInput(driver: InputSink, data: string): InputAction {
   const live = driver.state
+
   if (live.approval !== undefined) {
-    if (input === '1' || input === 'y' || input === 'Y') driver.answerApproval(true)
-    else if (input === '2' || input === 'n' || input === 'N' || key.escape === true) driver.answerApproval(false)
-    return { kind: 'none' }
-  }
-  if (live.question !== undefined) {
-    const index = Number.parseInt(input, 10)
-    const option = live.question.options[index - 1]
-    if (option !== undefined) driver.answerQuestion(option)
-    else if (key.escape === true) driver.answerQuestion(live.question.options[0] ?? '')
-    return { kind: 'none' }
-  }
-  if (key.tab === true && key.shift === true) {
-    driver.cyclePermissionMode()
-    return { kind: 'none' }
-  }
-  if (key.escape === true) {
-    if (live.busy) driver.interrupt()
-    return { kind: 'none' }
-  }
-  if (key.return === true || input === '\r' || input === '\n') {
-    const parsed = parseSlash(live.draft)
-    void driver.submit()
-    if (parsed.kind === 'local' && (parsed.name === 'quit' || parsed.name === 'exit')) {
-      return { kind: 'quit' }
+    if (matchesKey(data, '1') || data === 'y' || data === 'Y') {
+      driver.answerApproval(true)
+    } else if (matchesKey(data, '2') || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) {
+      driver.answerApproval(false)
     }
     return { kind: 'none' }
   }
-  if (key.backspace === true || key.delete === true) {
-    driver.setDraft(live.draft.slice(0, -1))
+
+  if (live.question !== undefined) {
+    const index = Number.parseInt(data, 10)
+    const option = live.question.options[index - 1]
+    if (option !== undefined) {
+      driver.answerQuestion(option)
+    } else if (matchesKey(data, Key.escape)) {
+      driver.answerQuestion(live.question.options[0] ?? '')
+    }
     return { kind: 'none' }
   }
-  if (input === 'c' && key.ctrl === true) {
+
+  if (matchesKey(data, 'shift+tab')) {
+    driver.cyclePermissionMode()
+    return { kind: 'none' }
+  }
+
+  if (matchesKey(data, Key.escape)) {
+    if (live.busy) driver.interrupt()
+    return { kind: 'none' }
+  }
+
+  if (matchesKey(data, Key.ctrl('c'))) {
     void driver.dispose()
     return { kind: 'quit' }
   }
-  if (input.length > 0 && key.ctrl !== true && key.meta !== true) {
-    driver.setDraft(live.draft + input)
-  }
+
   return { kind: 'none' }
 }

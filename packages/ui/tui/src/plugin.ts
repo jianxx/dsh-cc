@@ -1,16 +1,14 @@
 /**
- * Boot wiring: packaged CC preset, TTY restore, driver, Ink mount.
+ * Boot wiring: packaged CC preset, TTY lease, driver, pi-tui mount.
  * @module @jianxx/dsh-cc-tui/plugin
  */
 
-import { createElement } from 'react'
-import { render } from 'ink'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './index.ts'
 import { createDriver } from './harness/driver.ts'
 import { ensurePackagedPreset } from './packaged-preset.ts'
 import { acquireTerminal } from './terminal/lease.ts'
-import { App } from './ui.tsx'
+import { buildRoot } from './components/root.ts'
 
 /**
  * Start the TUI inside a dsh process.
@@ -24,7 +22,7 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
   } else if (packaged.status === 'missing-source') {
     ctx.logger.warn(
       'dsh-cc-tui: packaged CC preset files were not found next to the plugin; '
-        + 'ensure ~/.dsh/.agent-presets/cc exists (dsh-cc or scripts/sync-cc-preset.sh)',
+      + 'ensure ~/.dsh/.agent-presets/cc exists (dsh-cc or scripts/sync-cc-preset.sh)',
     )
   }
 
@@ -41,21 +39,14 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     process.stdin.resume()
   }
 
-  const instance = render(createElement(App, { driver }), { exitOnCtrlC: false })
-
   let shuttingDown = false
-
-  const lease = acquireTerminal({
-    onSignal: () => {
-      shutdown()
-    },
-  })
 
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
     try {
-      instance.unmount()
+      root.destroy()
+      root.tui.stop()
     } catch {
       // best-effort
     }
@@ -65,15 +56,19 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     })
   }
 
-  // apply() must settle so the Loader fiber activates. Ink holds the process
-  // via stdin; teardown is the fiber disposer (and the signal handlers).
-  ctx.effect(() => () => {
-    lease.release()
-    instance.unmount()
-    void driver.dispose()
+  const lease = acquireTerminal({
+    onSignal: () => {
+      shutdown()
+    },
   })
 
-  void instance.waitUntilExit().then(() => {
-    shutdown()
+  const root = buildRoot(driver, { onQuit: shutdown })
+
+  root.tui.start()
+
+  ctx.effect(() => () => {
+    lease.release()
+    root.destroy()
+    void driver.dispose()
   })
 }

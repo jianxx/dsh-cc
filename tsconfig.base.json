@@ -232,6 +232,9 @@
       ],
       "@jianxx/dsh-cc-tui/*": [
         "./packages/ui/tui/src/*"
+      ],
+      "@jianxx/dsh-cc-pi-tui": [
+        "./packages/ui/pi-tui/src/index.ts"
       ]
     },
     "rewriteRelativeImportExtensions": true
