@@ -21,7 +21,12 @@ function shortenCwd(cwd: string): string {
   return cwd
 }
 
-function shortenSession(sessionId: string): string {
+/**
+ * Compact a session id to its `prefix-first8hex` form (e.g.
+ * `tui-abcdef01-…` → `tui-abcdef01`). Falls back to the full id when the
+ * shape doesn't match. Shared by the footer and `/agents`.
+ */
+export function shortenSession(sessionId: string): string {
   const match = sessionId.match(/^([a-z]+-[0-9a-f]{8})/i)
   return match?.[1] ?? sessionId
 }

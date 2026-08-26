@@ -5,7 +5,7 @@
  */
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
-export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help', 'resume', 'model'] as const
+export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'agents'] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
 
@@ -27,6 +27,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'tui-help', description: 'Show TUI keyboard and command help' },
   { name: 'resume', description: 'Switch to a resumed session (picker or /resume <id>)', argumentHint: '<sessionId>' },
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
+  { name: 'agents', description: 'List subagent activity' },
 ] as const
 
 export type ParsedSlash =

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   backspaceQuestionText,
   clearQueue,
+  countRunningSubagents,
   createInitialState,
   dequeue,
   enqueue,
@@ -14,9 +15,11 @@ import {
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
+  upsertSubagent,
   type CatalogEntryView,
   type ModelPickerView,
   type QuestionView,
+  type SubagentRunView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -252,5 +255,119 @@ describe('thinkingExpanded', () => {
     expect(state.thinkingExpanded).toBe(false)
     expect(next.thinkingExpanded).toBe(true)
     expect(next).not.toBe(state)
+  })
+})
+
+describe('subagent helpers', () => {
+  it('createInitialState defaults subagents to an empty array', () => {
+    expect(createInitialState().subagents).toEqual([])
+  })
+
+  it('upsertSubagent appends a new run', () => {
+    const state = upsertSubagent(createInitialState(), {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running',
+    })
+    expect(state.subagents).toHaveLength(1)
+    expect(state.subagents[0]).toMatchObject({ runId: 'r1', status: 'running' })
+  })
+
+  it('upsertSubagent updates an existing run in place by runId (running → done)', () => {
+    let state = upsertSubagent(createInitialState(), {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running',
+    })
+    state = upsertSubagent(state, {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'done', stopReason: 'end_turn',
+    })
+    expect(state.subagents).toHaveLength(1)
+    expect(state.subagents[0]!.status).toBe('done')
+    expect(state.subagents[0]!.stopReason).toBe('end_turn')
+  })
+
+  it('upsertSubagent omits stopReason when not provided', () => {
+    const state = upsertSubagent(createInitialState(), {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running',
+    })
+    expect('stopReason' in (state.subagents[0]!)).toBe(false)
+  })
+
+  it('upsertSubagent does not mutate the original state', () => {
+    const base = createInitialState()
+    const next = upsertSubagent(base, {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running',
+    })
+    expect(base.subagents).toEqual([])
+    expect(next.subagents).toHaveLength(1)
+    expect(next).not.toBe(base)
+  })
+
+  it('caps the list at 20, dropping oldest running when all are running', () => {
+    let state = createInitialState()
+    for (let i = 0; i < 21; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `r${i}`, provider: 'p', sessionId: `s${i}`, status: 'running',
+      })
+    }
+    expect(state.subagents).toHaveLength(20)
+    expect(state.subagents.find(r => r.runId === 'r0')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'r1')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r20')).toBeDefined()
+  })
+
+  it('caps by dropping oldest done before oldest running', () => {
+    let state = createInitialState()
+    // 15 done (d0..d14) then 10 running (r0..r9) = 25; cap 20 → drop 5 oldest done.
+    for (let i = 0; i < 15; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `d${i}`, provider: 'p', sessionId: `s${i}`, status: 'done', stopReason: 'x',
+      })
+    }
+    for (let i = 0; i < 10; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `r${i}`, provider: 'p', sessionId: `s${i}`, status: 'running',
+      })
+    }
+    expect(state.subagents).toHaveLength(20)
+    expect(state.subagents.find(r => r.runId === 'd0')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'd4')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'd5')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r0')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r9')).toBeDefined()
+  })
+
+  it('drops oldest running only after all done are exhausted', () => {
+    let state = createInitialState()
+    // 1 done + 21 running = 22; cap 20 → drop the 1 done, then 1 oldest running.
+    state = upsertSubagent(state, {
+      runId: 'd0', provider: 'p', sessionId: 's0', status: 'done', stopReason: 'x',
+    })
+    for (let i = 0; i < 21; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `r${i}`, provider: 'p', sessionId: `s${i}`, status: 'running',
+      })
+    }
+    expect(state.subagents).toHaveLength(20)
+    expect(state.subagents.find(r => r.runId === 'd0')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'r0')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'r1')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r20')).toBeDefined()
+  })
+
+  it('countRunningSubagents counts only running runs', () => {
+    let state = createInitialState()
+    state = upsertSubagent(state, { runId: 'r1', provider: 'p', sessionId: 's1', status: 'running' })
+    state = upsertSubagent(state, { runId: 'r2', provider: 'p', sessionId: 's2', status: 'done', stopReason: 'x' })
+    state = upsertSubagent(state, { runId: 'r3', provider: 'p', sessionId: 's3', status: 'running' })
+    expect(countRunningSubagents(state)).toBe(2)
+  })
+
+  it('countRunningSubagents is zero on an empty state', () => {
+    expect(countRunningSubagents(createInitialState())).toBe(0)
+  })
+
+  it('SubagentRunView status is narrowed to running | done', () => {
+    const view: SubagentRunView = {
+      runId: 'r1', provider: 'p', sessionId: 's1', status: 'done', stopReason: 'end_turn',
+    }
+    expect(view.status === 'running' || view.status === 'done').toBe(true)
   })
 })

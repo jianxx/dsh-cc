@@ -27,7 +27,7 @@ import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
 import { loadHistory, saveHistory } from '../history.ts'
-import { formatStatusLine } from '../statusline.ts'
+import { formatStatusLine, shortenSession } from '../statusline.ts'
 import {
   applySessionEvent,
   type SessionEventLike,
@@ -55,8 +55,10 @@ import {
   toggleThinking,
   typeQuestionText,
   upsertRow,
+  upsertSubagent,
   type CatalogEntryView,
   type SessionEntryView,
+  type SubagentRunView,
   type TuiState,
 } from '../store.ts'
 
@@ -112,6 +114,32 @@ type ToolsLike = {
     presentCall?(args: unknown): ToolCallView | undefined
     presentResult?(args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
   } | undefined
+}
+
+/**
+ * `subagent/start` snapshot. The real `SubagentRunInfo` is declared in
+ * @deepseek-ai/subagent (via cordis module augmentation), which the tui
+ * package doesn't import — so a structural local type stands in. Fields are
+ * `unknown` because the driver stringifies them into the view layer.
+ */
+type SubagentRunInfoLike = {
+  runId: unknown
+  provider: unknown
+  id: unknown
+  local: boolean
+}
+
+/**
+ * `subagent/end` snapshot. `stopReason` and `lastAssistantMessage` are
+ * optional on the payload; only `stopReason` is surfaced to the view.
+ */
+type SubagentRunEndInfoLike = {
+  runId: unknown
+  provider: unknown
+  id: unknown
+  local: boolean
+  stopReason?: unknown
+  lastAssistantMessage?: unknown
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -403,6 +431,36 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     })
   }
 
+  // Subagent lifecycle: `subagent/start`|`subagent/end` are global,
+  // process-scoped observe-only snapshots paired by `runId` (declared via
+  // module augmentation in @deepseek-ai/subagent, which tui doesn't import).
+  // Same cast pattern as `commands/change` above. Tracking is event-only —
+  // no `SubagentRuntime.listChildren` call — so the driver stays
+  // composition-agnostic (tool-cordis may be absent). Events are NOT
+  // session-filtered: per-session parentage isn't on the payload, so the
+  // list tracks all runs observed this process; `/agents` labels it
+  // accordingly and does not overclaim parentage.
+  const subagentStart = 'subagent/start' as Parameters<typeof ctx.on>[0]
+  const subagentEnd = 'subagent/end' as Parameters<typeof ctx.on>[0]
+  ctx.on(subagentStart, (info: SubagentRunInfoLike) => {
+    emit(upsertSubagent(state, {
+      runId: String(info.runId),
+      provider: String(info.provider),
+      sessionId: String(info.id),
+      status: 'running',
+    }))
+  })
+  ctx.on(subagentEnd, (info: SubagentRunEndInfoLike) => {
+    const view: SubagentRunView = {
+      runId: String(info.runId),
+      provider: String(info.provider),
+      sessionId: String(info.id),
+      status: 'done',
+      ...(info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
+    }
+    emit(upsertSubagent(state, view))
+  })
+
   const loadCatalog = async (): Promise<CatalogEntry[]> => {
     const llm = ctx.get('llm') as LlmLike | undefined
     if (llm === undefined) return []
@@ -571,7 +629,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (name === 'tui-help') {
       emit(upsertRow(state, {
         kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /model lists adapters. /resume lists sessions. /quit exits.',
+        text: 'Shift+Tab cycles permission modes. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
       }))
       return
     }
@@ -599,6 +657,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         kind: 'status',
         text: `Model is now ${chosen.provider}/${chosen.model}.`,
       }))
+    }
+    if (name === 'agents') {
+      const runs = state.subagents
+      if (runs.length === 0) {
+        emit(upsertRow(state, { kind: 'status', text: 'No subagent activity this session.' }))
+        return
+      }
+      const lines = ['Subagent activity:']
+      for (const run of runs) {
+        const marker = run.status === 'running' ? '●' : '✓'
+        const short = shortenSession(run.sessionId)
+        const reason = run.stopReason === undefined ? '' : ` [${run.stopReason}]`
+        lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
+      }
+      emit(upsertRow(state, { kind: 'status', text: lines.join('\n') }))
     }
   }
 

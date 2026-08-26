@@ -105,6 +105,21 @@ export interface SessionSwitcherView {
   currentId: string
 }
 
+/**
+ * One observed subagent run. `subagent/start` and `subagent/end` are global
+ * (process-scoped) observe-only snapshots paired by `runId`; the driver
+ * folds them into this view without calling `listChildren` — tracking is
+ * event-only, so it stays composition-agnostic.
+ */
+export interface SubagentRunView {
+  runId: string
+  provider: string
+  sessionId: string
+  status: 'running' | 'done'
+  /** Present once the `subagent/end` snapshot lands. */
+  stopReason?: string
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -119,6 +134,8 @@ export interface TuiState {
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
   thinkingExpanded: boolean
+  /** Observed subagent runs (newest appended; capped at 20). */
+  subagents: readonly SubagentRunView[]
 }
 
 /** Empty composer + idle agent. */
@@ -130,6 +147,7 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     permissionMode,
     queued: [],
     thinkingExpanded: false,
+    subagents: [],
   }
 }
 
@@ -318,4 +336,47 @@ export function clearQueue(state: TuiState): TuiState {
 /** Flip the thinking-accordion expansion flag (Ctrl+O). */
 export function toggleThinking(state: TuiState): TuiState {
   return { ...state, thinkingExpanded: !state.thinkingExpanded }
+}
+
+/** Maximum subagent runs retained in state; oldest done drops first. */
+const SUBAGENT_CAP = 20
+
+/**
+ * Drop entries from the front (oldest) until `runs` fits `cap`, preferring
+ * to evict `done` runs before `running` ones. Mutates a copy; callers pass
+ * the already-upserted list.
+ */
+function trimSubagents(runs: SubagentRunView[], cap: number): SubagentRunView[] {
+  let result = runs
+  while (result.length > cap) {
+    const doneIndex = result.findIndex(run => run.status === 'done')
+    const dropAt = doneIndex >= 0 ? doneIndex : 0
+    result = result.slice(0, dropAt).concat(result.slice(dropAt + 1))
+  }
+  return result
+}
+
+/**
+ * Append or update a subagent run by `runId` (start then end updates in
+ * place). The list is capped at {@link SUBAGENT_CAP}: when over, the oldest
+ * `done` entry drops first, then the oldest `running`.
+ */
+export function upsertSubagent(state: TuiState, view: SubagentRunView): TuiState {
+  const index = state.subagents.findIndex(run => run.runId === view.runId)
+  const next: SubagentRunView[] = index >= 0
+    ? (() => {
+      const updated = state.subagents.slice()
+      updated[index] = view
+      return updated
+    })()
+    : [...state.subagents, view]
+  if (next.length === state.subagents.length && next.length <= SUBAGENT_CAP) {
+    return { ...state, subagents: next }
+  }
+  return { ...state, subagents: trimSubagents(next, SUBAGENT_CAP) }
+}
+
+/** Count runs still in the `running` state (R5 statusline feed). */
+export function countRunningSubagents(state: TuiState): number {
+  return state.subagents.reduce((count, run) => count + (run.status === 'running' ? 1 : 0), 0)
 }
