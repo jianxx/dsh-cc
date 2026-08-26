@@ -5,7 +5,7 @@ import { applySessionEvent } from '@jianxx/dsh-cc-tui/transcript.ts'
 describe('applySessionEvent', () => {
   it('appends user text and streams assistant deltas', () => {
     let state = createInitialState()
-    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi' } })
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi', source: { kind: 'user' } } })
     state = applySessionEvent(state, { type: 'assistant/chunk', data: { text: 'hel' } })
     state = applySessionEvent(state, { type: 'assistant/chunk', data: { text: 'lo' } })
     expect(state.rows).toEqual([
@@ -102,7 +102,7 @@ describe('applySessionEvent', () => {
     state = enqueue(state, 'hello')
     state = enqueue(state, 'still here')
     expect(state.queued).toEqual(['hello', 'still here'])
-    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hello' } })
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hello', source: { kind: 'user' } } })
     expect(state.queued).toEqual(['still here'])
     expect(state.rows).toEqual([{ kind: 'user', text: 'hello' }])
   })
@@ -110,9 +110,175 @@ describe('applySessionEvent', () => {
   it('leaves non-matching queued entries untouched on user/message', () => {
     let state = createInitialState()
     state = enqueue(state, 'pending')
-    state = applySessionEvent(state, { type: 'user/message', data: { text: 'other' } })
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'other', source: { kind: 'user' } } })
     expect(state.queued).toEqual(['pending'])
     expect(state.rows).toEqual([{ kind: 'user', text: 'other' }])
+  })
+
+  describe('user/message source routing', () => {
+    const CLAUDE_MD = [
+      '<system-reminder>',
+      '# Workspace instructions',
+      ...Array.from({ length: 40 }, (_, i) => `Rule ${i}: filler CLAUDE.md line`),
+      '</system-reminder>',
+    ].join('\n')
+
+    it('renders a user row for human input (kind user)', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'user/message',
+        data: { content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } },
+      })
+      expect(state.rows).toEqual([{ kind: 'user', text: 'hi' }])
+    })
+
+    it('hides plugin-injected instructions (CLAUDE.md payload)', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: CLAUDE_MD }],
+          source: { kind: 'plugin', plugin: 'workspace-instructions', form: 'instructions' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides a plugin-injected skill catalog', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'The following skills are available: find-docs, lark-im…' }],
+          source: { kind: 'plugin', plugin: 'skills', form: 'catalog' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides a plugin-injected runtime-context snapshot', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'Current runtime context: today is 2026-08-26.' }],
+          source: {
+            kind: 'plugin',
+            plugin: 'runtime-context',
+            form: 'snapshot',
+            sections: [{ name: 'date', text: 'today is 2026-08-26' }],
+          },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('renders a notice form as exactly one dim status row with its summary', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'Elided compaction detail:\n' + CLAUDE_MD }],
+          source: { kind: 'plugin', plugin: 'compaction', form: 'notice', summary: 'Compacted 12 messages' },
+        },
+      })
+      expect(state.rows).toEqual([{ kind: 'status', text: 'Compacted 12 messages' }])
+    })
+
+    it('hides a notice form without a string summary', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: CLAUDE_MD }],
+          source: { kind: 'plugin', plugin: 'compaction', form: 'notice' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides a relay-form plugin message', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'relayed subagent chatter' }],
+          source: { kind: 'plugin', plugin: 'subagent', form: 'relay' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides a plugin message with no form', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: CLAUDE_MD }],
+          source: { kind: 'plugin', plugin: 'workspace-instructions' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides tool-sourced user messages', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: 'tool_result body' }],
+          source: { kind: 'tool' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides messages with a missing source', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: { content: [{ type: 'text', text: CLAUDE_MD }] },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('hides messages with an unknown source kind', () => {
+      const state = createInitialState()
+      const next = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: CLAUDE_MD }],
+          source: { kind: 'time-travel' },
+        },
+      })
+      expect(next).toBe(state)
+    })
+
+    it('adds no row for kind user with no text blocks but still dequeues', () => {
+      let state = createInitialState()
+      state = enqueue(state, '')
+      expect(state.queued).toEqual([''])
+      state = applySessionEvent(state, {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'image', attachment: {} as never }],
+          source: { kind: 'user' },
+        },
+      })
+      expect(state.queued).toEqual([])
+      expect(state.rows).toEqual([])
+    })
+
+    it('adds no row for kind user with whitespace-only text but still dequeues', () => {
+      let state = createInitialState()
+      state = enqueue(state, '   ')
+      state = applySessionEvent(state, {
+        type: 'user/message',
+        data: { content: [{ type: 'text', text: '   ' }], source: { kind: 'user' } },
+      })
+      expect(state.queued).toEqual([])
+      expect(state.rows).toEqual([])
+    })
   })
 
   describe('diff card propagation', () => {

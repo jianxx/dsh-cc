@@ -121,6 +121,15 @@ describe('resume replay — folding a durable event log', () => {
       { type: 'session/start', data: {} },
       { type: 'turn/start', data: { turn: 1 } },
       { type: 'user/message', data: { content: [{ type: 'text', text: 'list files' }], source: { kind: 'user' } } },
+      // Plugin-injected context landing mid-turn (CLAUDE.md instructions):
+      // replay must NOT render it as if the user typed it.
+      {
+        type: 'user/message',
+        data: {
+          content: [{ type: 'text', text: '<system-reminder># Workspace instructions\nlong CLAUDE.md payload</system-reminder>' }],
+          source: { kind: 'plugin', plugin: 'workspace-instructions', form: 'instructions' },
+        },
+      },
       { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'Hello' } } },
       { type: 'assistant/message', data: { turn: 1, step: 1, message: {} } },
       { type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' } },
@@ -147,6 +156,11 @@ describe('resume replay — folding a durable event log', () => {
       title: 'run: bash',
     }))
     expect(folded.busy).toBe(false)
+
+    // The injected instructions event folds to nothing — no row carries its
+    // content, so replay does not dump it as a user message.
+    const leaked = folded.rows.filter(row => 'text' in row && row.text.includes('<system-reminder>'))
+    expect(leaked).toEqual([])
   })
 
   it('renders the folded rows through TranscriptView into the terminal', async () => {

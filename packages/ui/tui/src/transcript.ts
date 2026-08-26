@@ -191,11 +191,37 @@ export function applySessionEvent(
   const data = event.data
   switch (event.type) {
     case 'user/message': {
+      // Route on UserMessage.source.kind: only human input renders as a user
+      // row. Injected context (kind 'plugin') is model-facing — a notice form
+      // surfaces as a one-line dim status per its contract, every other form
+      // (instructions/catalog/snapshot/relay/recall) stays hidden. Tool and
+      // unknown/absent kinds fold to nothing: never dump unrecognized
+      // injected content as if the user typed it.
+      const source = data !== null && typeof data === 'object'
+        ? (data as { source?: unknown }).source
+        : undefined
+      const kind = source !== null && typeof source === 'object'
+        && typeof (source as { kind?: unknown }).kind === 'string'
+        ? (source as { kind: string }).kind
+        : undefined
+      if (kind !== 'user') {
+        if (kind === 'plugin') {
+          const plugin = source as { form?: unknown; summary?: unknown }
+          if (plugin.form === 'notice' && typeof plugin.summary === 'string') {
+            return upsertRow(state, { kind: 'status', text: plugin.summary })
+          }
+        }
+        return state
+      }
       const text = textOf(data)
       // Clear the matching queued chip when its message lands in the trail,
       // then upsert the user row. (Both paths — followup and steer — enqueue
-      // at submit, so the chip clears here on the durable event.)
-      return upsertRow(dequeue(state, text), { kind: 'user', text })
+      // at submit, so the chip clears here on the durable event.) Empty or
+      // whitespace-only text adds no row (no blank `> ` lines) but still
+      // dequeues so the queue stays consistent.
+      const dequeued = dequeue(state, text)
+      if (text.trim().length === 0) return dequeued
+      return upsertRow(dequeued, { kind: 'user', text })
     }
     case 'assistant/chunk': {
       const chunk = unwrapChunk(data)
