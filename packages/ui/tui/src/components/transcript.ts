@@ -14,6 +14,7 @@ import {
   type Component,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { TranscriptRow } from '../store.ts'
+import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { cyan, dim, italic, red, yellow } from './theme.ts'
 
@@ -23,6 +24,10 @@ export const TRANSCRIPT_LINE_BUDGET = 2000
 /** Cheap source-line count for a row (NOT rendered lines). */
 function rowSourceLines(row: TranscriptRow): number {
   if (row.kind === 'tool') {
+    if (row.diffs !== undefined && row.diffs.length > 0) {
+      // Diff hunks replace the summary body; count their rendered lines.
+      return 1 + renderDiffLines(row.diffs).length
+    }
     const body = row.body ?? row.result ?? row.args ?? ''
     return 1 + body.split('\n').length
   }
@@ -39,13 +44,22 @@ function renderRowText(row: TranscriptRow): string {
       return dim(italic(row.text))
     case 'tool': {
       const status = row.running ? '…' : (row.error === true ? '✗' : '✓')
-      const body = row.body ?? row.result ?? row.args
       const head = yellow(`⏺ ${row.title} ${status}`)
+      const headLine = row.error === true ? red(head) : head
+
+      // When structured diffs are present, render real hunks beneath the head.
+      // The one-line summary body is replaced to avoid duplicating the path info.
+      if (row.diffs !== undefined && row.diffs.length > 0) {
+        const diffLines = renderDiffLines(row.diffs)
+        return diffLines.length > 0 ? `${headLine}\n${diffLines.join('\n')}` : headLine
+      }
+
+      const body = row.body ?? row.result ?? row.args
       if (body !== undefined && body.length > 0) {
         const firstLine = body.split('\n')[0] ?? ''
-        return `${head}\n  ⎿ ${row.error === true ? red(firstLine) : firstLine}`
+        return `${headLine}\n  ⎿ ${row.error === true ? red(firstLine) : firstLine}`
       }
-      return row.error === true ? red(head) : head
+      return headLine
     }
     case 'status':
       return dim(row.text)

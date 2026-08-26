@@ -4,6 +4,8 @@
  * @module @jianxx/dsh-cc-tui/store
  */
 
+import type { FileDiff } from './tool-card.ts'
+
 export type TranscriptRow =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string }
@@ -18,6 +20,8 @@ export type TranscriptRow =
     result?: string
     error?: boolean
     running: boolean
+    /** Structured file diffs from a presenter's diff-card view; rendered as hunks. */
+    diffs?: readonly FileDiff[]
   }
   | { kind: 'status'; text: string }
 

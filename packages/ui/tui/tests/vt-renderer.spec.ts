@@ -124,6 +124,11 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
   }
 }
 
+/** Strip SGR sequences for structural assertions. */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
 /** Wait for the throttled async render to settle. */
 async function settle(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 60))
@@ -221,6 +226,36 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders diff hunks beneath a tool row head when diffs are present', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    // Head line with the title.
+    expect(joined).toContain('Edit foo.ts')
+    // Path header and hunk lines visible on screen.
+    expect(joined).toContain('foo.ts')
+    expect(stripAnsi(joined)).toContain('- old line')
+    expect(stripAnsi(joined)).toContain('+ new line')
 
     root.tui.stop()
     root.destroy()

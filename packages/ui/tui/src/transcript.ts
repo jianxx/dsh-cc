@@ -211,6 +211,7 @@ export function applySessionEvent(
       const args = argsOf(data)
       const view = presenters?.presentCall?.(name, parseArgs(args))
       const card = formatCallCard(view, { name, args })
+      const diffs = view !== undefined && view.card === 'diff' ? view.diffs : undefined
       return upsertRow(state, {
         kind: 'tool',
         callId: callIdOf(data),
@@ -218,6 +219,7 @@ export function applySessionEvent(
         args,
         title: card.title,
         ...card.body === undefined ? {} : { body: card.body },
+        ...diffs !== undefined ? { diffs } : {},
         running: true,
       })
     }
@@ -234,6 +236,7 @@ export function applySessionEvent(
         isError,
       })
       const card = formatResultCard(view, { pendingTitle, fallback, error: isError })
+      const diffs = view !== undefined && view.card === 'diff' ? view.diffs : undefined
       return upsertRow(state, {
         kind: 'tool',
         callId,
@@ -241,6 +244,7 @@ export function applySessionEvent(
         args: pendingArgs,
         title: card.title,
         ...card.body === undefined ? {} : { body: card.body, result: card.body },
+        ...diffs !== undefined ? { diffs } : {},
         error: card.error,
         running: false,
       })

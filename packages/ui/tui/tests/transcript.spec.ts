@@ -115,6 +115,61 @@ describe('applySessionEvent', () => {
     expect(state.rows).toEqual([{ kind: 'user', text: 'other' }])
   })
 
+  describe('diff card propagation', () => {
+    it('stores diffs on the tool row when presentCall returns a diff card', () => {
+      let state = createInitialState()
+      const presenters = {
+        presentCall: () => ({
+          card: 'diff' as const,
+          title: 'Edit foo.ts',
+          diffs: [{ path: 'foo.ts', oldText: 'a\n', newText: 'b\n' }],
+        }),
+      }
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: '1', name: 'Edit', arguments: '{"path":"foo.ts"}' },
+      }, presenters)
+      const row = state.rows[0]
+      expect(row).toMatchObject({ kind: 'tool', callId: '1', title: 'Edit foo.ts', running: true })
+      expect((row as { diffs?: unknown }).diffs).toEqual([
+        { path: 'foo.ts', oldText: 'a\n', newText: 'b\n' },
+      ])
+    })
+
+    it('stores diffs on the tool row when presentResult returns a diff card', () => {
+      let state = createInitialState()
+      const diffs = [{ path: 'bar.ts', oldText: null, newText: 'hi\n' }]
+      const presenters = {
+        presentCall: () => ({ card: 'diff' as const, title: 'Write bar.ts', diffs }),
+        presentResult: () => ({ card: 'diff' as const, title: 'Wrote bar.ts', diffs }),
+      }
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: '2', name: 'Write', arguments: '{"path":"bar.ts"}' },
+      }, presenters)
+      state = applySessionEvent(state, {
+        type: 'tool/result',
+        data: { callId: '2', name: 'Write', text: 'ok' },
+      }, presenters)
+      const row = state.rows[0]
+      expect(row).toMatchObject({ kind: 'tool', callId: '2', running: false })
+      expect((row as { diffs?: unknown }).diffs).toEqual(diffs)
+    })
+
+    it('leaves diffs undefined when the presenter returns a non-diff card', () => {
+      let state = createInitialState()
+      const presenters = {
+        presentCall: () => ({ card: 'terminal' as const, title: 'ls', cwd: '/tmp' }),
+      }
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: '3', name: 'Bash', arguments: '{"command":"ls"}' },
+      }, presenters)
+      const row = state.rows[0]
+      expect((row as { diffs?: unknown }).diffs).toBeUndefined()
+    })
+  })
+
   it('ignores unknown durable event types', () => {
     const state = createInitialState()
     expect(applySessionEvent(state, { type: 'made-up/event', data: {} })).toBe(state)
