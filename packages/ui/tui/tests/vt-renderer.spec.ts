@@ -7,11 +7,15 @@ import {
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
+  backspaceQuestionText,
   createInitialState,
   enqueue,
+  moveQuestionFocus,
   setApproval,
   setBusy,
   setQuestion,
+  toggleQuestionOption,
+  typeQuestionText,
   upsertRow,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
@@ -121,7 +125,45 @@ function fakeDriver(
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
     },
-    answerQuestion(_selected: string) {
+    questionMove(delta) {
+      state = moveQuestionFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    questionToggle() {
+      const q = state.question
+      if (q === undefined) return
+      if (q.focused >= q.options.length) {
+        state = typeQuestionText(state, ' ')
+      } else if (q.multiSelect) {
+        state = toggleQuestionOption(state, q.focused)
+      } else {
+        state = setQuestion(state, undefined)
+      }
+      for (const l of listeners) l(state)
+    },
+    questionPick(index) {
+      const q = state.question
+      if (q === undefined || index < 0 || index >= q.options.length) return
+      if (q.multiSelect) {
+        state = toggleQuestionOption(state, index)
+      } else {
+        state = setQuestion(state, undefined)
+      }
+      for (const l of listeners) l(state)
+    },
+    questionType(text) {
+      state = typeQuestionText(state, text)
+      for (const l of listeners) l(state)
+    },
+    questionBackspace() {
+      state = backspaceQuestionText(state)
+      for (const l of listeners) l(state)
+    },
+    questionSubmit() {
+      state = setQuestion(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    questionCancel() {
       state = setQuestion(state, undefined)
       for (const l of listeners) l(state)
     },
@@ -477,6 +519,138 @@ describe('vt-renderer', () => {
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('newer')
     expect(stripped).not.toContain('older')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the question overlay with options, focus marker, Other row, and hint', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Decision',
+      question: 'Which flavor?',
+      options: [{ label: 'vanilla' }, { label: 'chocolate' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Which flavor?')
+    expect(stripped).toContain('vanilla')
+    expect(stripped).toContain('chocolate')
+    // Focus marker sits on the focused (first) option.
+    expect(stripped).toContain('❯ 1. vanilla')
+    // Free-text escape hatch row is always present.
+    expect(stripped).toContain('Other:')
+    // Single-select footer hint.
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a plan-review question with the Plan review title and plan markdown', async () => {
+    const vt = new VirtualTerminal(80, 30)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Decision',
+      question: 'Approve this plan?',
+      detail: '## The plan\n\n- refactor the store\n- add tests',
+      options: [{ label: 'Ship it' }, { label: 'Keep iterating' }],
+      multiSelect: false,
+      intent: { kind: 'plan-review', approve: 'Ship it' },
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Plan review')
+    expect(stripped).toContain('Approve this plan?')
+    // Plan markdown body renders (heading text + list items via Markdown).
+    expect(stripped).toContain('The plan')
+    expect(stripped).toContain('refactor the store')
+    expect(stripped).toContain('add tests')
+    // Options still follow the plan.
+    expect(stripped).toContain('Ship it')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('multi-select shows [ ] before unselected options and [x] after a space toggle', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Pick',
+      question: 'Which areas?',
+      options: [{ label: 'ui' }, { label: 'api' }],
+      multiSelect: true,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ 1. [ ] ui')
+    expect(stripped).toContain('2. [ ] api')
+    expect(stripped).toContain('space toggle')
+
+    // Space toggles the focused option ('ui') — [x] appears.
+    vt.sendInput(' ')
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('1. [x] ui')
+    expect(stripped).toContain('2. [ ] api')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('typing while a question is open feeds the Other row, not the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Pick',
+      question: 'Name it',
+      options: [{ label: 'alpha' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    for (const ch of 'zed') vt.sendInput(ch)
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Other: zed')
+    // The editor draft stays empty — printable keys never reached it.
+    expect(driver.state.draft).toBe('')
 
     root.tui.stop()
     root.destroy()

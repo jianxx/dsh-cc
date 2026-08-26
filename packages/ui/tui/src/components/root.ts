@@ -17,6 +17,7 @@ import {
   type TUI,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
+import { routeQuestionInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
@@ -106,10 +107,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       return { consume: true }
     }
     if (live.question !== undefined) {
-      const index = Number.parseInt(data, 10)
-      const option = live.question.options[index - 1]
-      if (option !== undefined) driver.answerQuestion(option)
-      else if (matchesKey(data, Key.escape)) driver.answerQuestion(live.question.options[0] ?? '')
+      // While a question is open every key belongs to the overlay — routed and
+      // consumed here so the editor never sees typing, arrows, or enter.
+      routeQuestionInput(driver, data)
       return { consume: true }
     }
     if (matchesKey(data, 'shift+tab')) {

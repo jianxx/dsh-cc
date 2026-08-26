@@ -35,17 +35,21 @@ import {
 } from '../transcript.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import {
+  backspaceQuestionText,
   clearQueue,
   clearRows,
   createInitialState,
   enqueue,
+  moveQuestionFocus,
   setApproval,
   setBusy,
   setDraft,
   setNotice,
   setPermissionMode,
   setQuestion,
+  toggleQuestionOption,
   toggleThinking,
+  typeQuestionText,
   upsertRow,
   type TuiState,
 } from '../store.ts'
@@ -244,7 +248,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     })
   })
 
-  let pendingQuestion: { resolve: (answer: AskUserQuestionAnswer) => void; reject: (error: unknown) => void } | undefined
+  let pendingQuestion: {
+    id: string
+    resolve: (answer: AskUserQuestionAnswer) => void
+    reject: (error: unknown) => void
+  } | undefined
   const userQuestions = ctx.get('userQuestions') as
     | { registerProvider(provider: { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
     | undefined
@@ -256,10 +264,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
           const first = request.questions[0]
           emit(setQuestion(state, {
             header: first?.header ?? 'Question',
-            options: (first?.options ?? []).map(option => option.label),
+            question: first?.question ?? '',
+            ...first?.detail === undefined ? {} : { detail: first.detail },
+            options: (first?.options ?? []).map(option => ({
+              label: option.label,
+              ...option.description === undefined ? {} : { description: option.description },
+            })),
+            multiSelect: first?.multiSelect === true,
+            ...first?.intent === undefined ? {} : { intent: first.intent },
+            focused: 0,
+            selected: [],
+            custom: '',
           }))
           return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
             pendingQuestion = {
+              id: first?.id ?? '',
               resolve: (answer) => resolve({
                 answers: answer.answers.map((item, index) => ({
                   id: request.questions[index]?.id ?? item.id,
@@ -280,6 +299,25 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     } catch (error) {
       if ((error as { code?: string }).code !== 'DUPLICATE_PROVIDER') throw error
     }
+  }
+
+  /**
+   * Resolve the open question and dismiss the overlay. Labels are echoed
+   * verbatim — the plan-review `intent.approve` contract requires the exact
+   * label string, never an inferred or re-indexed one.
+   */
+  const resolveQuestion = (selected: readonly string[], custom?: string): void => {
+    const pending = pendingQuestion
+    if (pending === undefined) return
+    pendingQuestion = undefined
+    emit(setQuestion(state, undefined))
+    pending.resolve({
+      answers: [{
+        id: pending.id,
+        selected: [...selected],
+        ...custom === undefined ? {} : { custom },
+      }],
+    })
   }
 
   const applyMode = (mode: PermissionCommandMode): void => {
@@ -536,10 +574,62 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       pendingApproval = undefined
       emit(setApproval(state, undefined))
     },
-    answerQuestion(selected) {
-      pendingQuestion?.resolve({ answers: [{ id: '', selected: [selected] }] })
-      pendingQuestion = undefined
-      emit(setQuestion(state, undefined))
+    questionMove(delta) {
+      emit(moveQuestionFocus(state, delta))
+    },
+    questionToggle() {
+      const question = state.question
+      if (question === undefined) return
+      if (question.focused >= question.options.length) {
+        emit(typeQuestionText(state, ' '))
+        return
+      }
+      if (question.multiSelect) {
+        emit(toggleQuestionOption(state, question.focused))
+        return
+      }
+      resolveQuestion([question.options[question.focused]!.label])
+    },
+    questionPick(index) {
+      const question = state.question
+      if (question === undefined) return
+      const option = question.options[index]
+      if (option === undefined) return
+      if (question.multiSelect) {
+        emit(toggleQuestionOption(state, index))
+        return
+      }
+      resolveQuestion([option.label])
+    },
+    questionType(text) {
+      emit(typeQuestionText(state, text))
+    },
+    questionBackspace() {
+      emit(backspaceQuestionText(state))
+    },
+    questionSubmit() {
+      const question = state.question
+      if (question === undefined) return
+      const custom = question.custom.trim()
+      let selected: string[]
+      if (question.selected.length > 0) {
+        selected = [...question.selected]
+      } else if (custom.length > 0) {
+        selected = []
+      } else {
+        // Nothing chosen and no free text: enter resolves the focused option
+        // (the first option when the "Other" row holds focus) so the question
+        // always gets an answer.
+        const fallback = question.focused < question.options.length
+          ? question.options[question.focused]!.label
+          : question.options[0]?.label
+        selected = fallback === undefined ? [] : [fallback]
+      }
+      resolveQuestion(selected, custom.length > 0 ? custom : undefined)
+    },
+    questionCancel() {
+      const question = state.question
+      resolveQuestion(question !== undefined && question.options.length > 0 ? [question.options[0]!.label] : [])
     },
     listCommands() {
       return commandCatalog

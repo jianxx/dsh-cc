@@ -5,9 +5,10 @@
  * @module @jianxx/dsh-cc-tui/components/overlays
  */
 
-import { Container, Text } from '@jianxx/dsh-cc-pi-tui'
+import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
 import type { ApprovalView, QuestionView } from '../store.ts'
-import { dim, yellow } from './theme.ts'
+import { createMarkdownTheme } from './markdown-theme.ts'
+import { bold, dim, yellow } from './theme.ts'
 
 /**
  * Approval box: "Approve <tool>?" + optional command + "1 yes · 2 no".
@@ -23,14 +24,40 @@ export function createApprovalBox(approval: ApprovalView): Container {
 }
 
 /**
- * Question box: header + numbered options.
+ * Question box v2: title + question text, the plan markdown for plan-review
+ * intents, focusable option rows (multi-select checkboxes), the trailing
+ * free-text "Other" row, and a key hint footer.
  */
 export function createQuestionBox(question: QuestionView): Container {
   const box = new Container()
-  box.addChild(new Text(question.header, 0, 0))
-  for (let index = 0; index < question.options.length; index += 1) {
-    const option = question.options[index]!
-    box.addChild(new Text(`${index + 1}. ${option}`, 0, 0))
+  const planReview = question.intent?.kind === 'plan-review' && question.detail !== undefined
+  box.addChild(new Text(bold(planReview ? 'Plan review' : question.header), 0, 0))
+  box.addChild(new Text(question.question, 0, 0))
+  if (planReview) {
+    box.addChild(new Markdown(question.detail!, 0, 0, createMarkdownTheme()))
   }
+
+  const lastRow = question.options.length // trailing "Other" row index
+  for (let index = 0; index <= lastRow; index += 1) {
+    const focused = question.focused === index
+    const marker = focused ? '❯ ' : '  '
+    if (index < question.options.length) {
+      const option = question.options[index]!
+      const check = question.multiSelect
+        ? question.selected.includes(option.label) ? '[x] ' : '[ ] '
+        : ''
+      const description = option.description === undefined
+        ? ''
+        : dim(` — ${option.description}`)
+      box.addChild(new Text(`${marker}${index + 1}. ${check}${option.label}${description}`, 0, 0))
+    } else {
+      box.addChild(new Text(`${marker}Other: ${question.custom}`, 0, 0))
+    }
+  }
+
+  const hint = question.multiSelect
+    ? '↑↓ move · space toggle · enter confirm · esc cancel'
+    : '↑↓ move · enter select · type to answer freely · esc cancel'
+  box.addChild(new Text(dim(hint), 0, 0))
   return box
 }
