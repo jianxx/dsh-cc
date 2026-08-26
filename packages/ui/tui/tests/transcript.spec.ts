@@ -108,4 +108,138 @@ describe('applySessionEvent', () => {
     const state = createInitialState()
     expect(applySessionEvent(state, { type: 'made-up/event', data: {} })).toBe(state)
   })
+
+  describe('tool-call-delta streaming', () => {
+    it('creates a pending tool row from a single tool-call-delta chunk', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'bash', argumentsDelta: '{"command":"ls"}' } },
+      })
+      expect(state.rows).toHaveLength(1)
+      expect(state.rows[0]).toMatchObject({
+        kind: 'tool',
+        callId: 'call-1',
+        name: 'bash',
+        args: '{"command":"ls"}',
+        title: 'bash',
+        running: true,
+      })
+      expect(state.busy).toBe(true)
+    })
+
+    it('accumulates tool-call-delta args in place by callId', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'bash', argumentsDelta: '{"command":' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', argumentsDelta: '"ls -la"}' } },
+      })
+      expect(state.rows).toHaveLength(1)
+      expect(state.rows[0]).toMatchObject({
+        kind: 'tool',
+        callId: 'call-1',
+        name: 'bash',
+        args: '{"command":"ls -la"}',
+        running: true,
+      })
+    })
+
+    it('accumulates interleaved tool-call-deltas independently per callId', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-a', name: 'bash', argumentsDelta: '{"a":' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 1, id: 'call-b', name: 'grep', argumentsDelta: '{"b":' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-a', argumentsDelta: '1}' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 1, id: 'call-b', argumentsDelta: '2}' } },
+      })
+      expect(state.rows).toHaveLength(2)
+      expect(state.rows[0]).toMatchObject({ kind: 'tool', callId: 'call-a', args: '{"a":1}' })
+      expect(state.rows[1]).toMatchObject({ kind: 'tool', callId: 'call-b', args: '{"b":2}' })
+    })
+
+    it('replaces a streamed tool row with the presenter card on durable tool/call', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'Bash', argumentsDelta: '{"command":"ls' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', argumentsDelta: ' -la"}' } },
+      })
+      const presenters = {
+        presentCall: () => ({ card: 'terminal' as const, title: 'ls -la', cwd: '/tmp' }),
+        presentResult: () => ({ card: 'terminal' as const, output: 'ok', exitCode: 0 }),
+      }
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: 'call-1', name: 'Bash', arguments: '{"command":"ls -la"}' },
+      }, presenters)
+      expect(state.rows).toHaveLength(1)
+      expect(state.rows[0]).toMatchObject({
+        kind: 'tool',
+        callId: 'call-1',
+        title: 'ls -la',
+        body: 'cwd /tmp',
+        running: true,
+      })
+    })
+
+    it('finalizes a streamed tool row on durable tool/result', () => {
+      let state = createInitialState()
+      const presenters = {
+        presentCall: () => ({ card: 'terminal' as const, title: 'ls -la', cwd: '/tmp' }),
+        presentResult: () => ({ card: 'terminal' as const, output: 'done', exitCode: 0 }),
+      }
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'Bash', argumentsDelta: '{"command":"ls -la"}' } },
+      })
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: 'call-1', name: 'Bash', arguments: '{"command":"ls -la"}' },
+      }, presenters)
+      state = applySessionEvent(state, {
+        type: 'tool/result',
+        data: { callId: 'call-1', name: 'Bash', text: 'done' },
+      }, presenters)
+      expect(state.rows).toHaveLength(1)
+      expect(state.rows[0]).toMatchObject({ kind: 'tool', callId: 'call-1', running: false, error: false })
+      expect((state.rows[0] as { body?: string }).body).toContain('exit 0')
+    })
+
+    it('ignores a tool-call-delta arriving after the row was finalized by tool/result', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'tool/call',
+        data: { callId: 'call-1', name: 'bash', arguments: '{"command":"ls"}' },
+      })
+      state = applySessionEvent(state, {
+        type: 'tool/result',
+        data: { callId: 'call-1', name: 'bash', text: 'ok' },
+      })
+      const before = state.rows[0]
+      state = applySessionEvent(state, {
+        type: 'assistant/chunk',
+        data: { turn: 1, step: 1, chunk: { type: 'tool-call-delta', index: 0, id: 'call-1', name: 'bash', argumentsDelta: 'garbage' } },
+      })
+      expect(state.rows).toHaveLength(1)
+      expect(state.rows[0]).toBe(before)
+      expect(state.rows[0]).toMatchObject({ kind: 'tool', callId: 'call-1', running: false, result: 'ok' })
+    })
+  })
 })
