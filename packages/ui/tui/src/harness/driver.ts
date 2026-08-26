@@ -50,6 +50,8 @@ export interface DriverConfig {
   cwd?: string
   agentPreset?: string
   sessionId?: string
+  provider?: string
+  model?: string
 }
 
 type PermissionRulesLike = {
@@ -143,15 +145,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   const resume = config.sessionId !== undefined && config.sessionId.length > 0
+  const agentOptions = config.provider !== undefined && config.model !== undefined
+    ? { provider: config.provider, model: config.model }
+    : undefined
   const handle: AgentHandle = resume
     ? await ctx.agents.resume({
       resumeSessionId: sessionId,
       setup: withSelection,
+      ...agentOptions === undefined ? {} : { agentOptions },
     })
     : await ctx.agents.create({
       sessionId,
       meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
       setup: withSelection,
+      ...agentOptions === undefined ? {} : { agentOptions },
     })
 
   const agent = handle.agent

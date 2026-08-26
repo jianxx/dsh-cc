@@ -32,6 +32,12 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     ...config.sessionId === undefined || config.sessionId.length === 0
       ? {}
       : { sessionId: config.sessionId },
+    ...config.provider === undefined || config.provider.length === 0
+      ? {}
+      : { provider: config.provider },
+    ...config.model === undefined || config.model.length === 0
+      ? {}
+      : { model: config.model },
   })
 
   if (process.stdin.isTTY) {

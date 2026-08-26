@@ -81,7 +81,12 @@ function argsOf(data: unknown): string {
 
 function chunkKind(data: unknown): 'assistant' | 'thinking' {
   if (data === null || typeof data !== 'object') return 'assistant'
-  const record = data as Record<string, unknown>
+  let record = data as Record<string, unknown>
+  // The live agent emits assistant/chunk as {turn, step, chunk: <StreamChunk>};
+  // unwrap the envelope so the chunk's own type classifies the row.
+  if (record.chunk !== null && typeof record.chunk === 'object' && !Array.isArray(record.chunk)) {
+    record = record.chunk as Record<string, unknown>
+  }
   const type = typeof record.type === 'string' ? record.type : ''
   if (type.includes('reason') || type.includes('think')) return 'thinking'
   if (record.reasoning === true) return 'thinking'
@@ -90,7 +95,12 @@ function chunkKind(data: unknown): 'assistant' | 'thinking' {
 
 function chunkText(data: unknown): string {
   if (data === null || typeof data !== 'object') return textOf(data)
-  const record = data as Record<string, unknown>
+  let record = data as Record<string, unknown>
+  // The live agent emits assistant/chunk as {turn, step, chunk: <StreamChunk>};
+  // unwrap the envelope so the delta's text reaches the transcript.
+  if (record.chunk !== null && typeof record.chunk === 'object' && !Array.isArray(record.chunk)) {
+    record = record.chunk as Record<string, unknown>
+  }
   if (typeof record.text === 'string') return record.text
   if (typeof record.delta === 'string') return record.delta
   if (record.delta !== null && typeof record.delta === 'object') {

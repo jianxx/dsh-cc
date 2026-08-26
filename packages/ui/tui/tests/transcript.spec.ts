@@ -17,6 +17,14 @@ describe('applySessionEvent', () => {
     expect(state.busy).toBe(false)
   })
 
+  it('unwraps the live {turn, step, chunk} assistant/chunk envelope', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { blockType: 'text', index: 0, type: 'block-start' } } })
+    expect(state.busy).toBe(true)
+    state = applySessionEvent(state, { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { index: 0, text: 'MOCK OK', type: 'text-delta' } } })
+    expect(state.rows).toContainEqual({ kind: 'assistant', text: 'MOCK OK' })
+  })
+
   it('updates a tool row in place from call to result', () => {
     let state = createInitialState()
     state = applySessionEvent(state, {

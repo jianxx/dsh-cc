@@ -57,6 +57,15 @@ describe('cc-tui bundle patch', () => {
     expect(tui?.config?.agentPreset).toBe('cc')
   })
 
+  it('passes provider/model env vars through to the tui config block', () => {
+    const rows = flatten(doc)
+    const tui = rows.find(row => row.id === 'tui')
+    // !!js defers evaluation to the loader; at parse time the marker carries
+    // the unevaluated expression referencing the launcher env vars.
+    expect(tui?.config?.provider).toEqual({ __jsExpr: 'process.env.DSH_CC_PROVIDER' })
+    expect(tui?.config?.model).toEqual({ __jsExpr: 'process.env.DSH_CC_MODEL' })
+  })
+
   it('depends on the TUI runtime package', () => {
     expect(Object.keys(pkgJson.dependencies ?? {})).toContain('@jianxx/dsh-cc-tui')
   })

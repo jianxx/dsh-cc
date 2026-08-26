@@ -13,6 +13,7 @@
     "bundle:client": "pnpm --filter @jianxx/dsh-cc-command-permissions run bundle",
     "typecheck": "tsc -b tsconfig.packages.json",
     "test": "vitest run",
+    "test:e2e": "python3 packages/ui/tui/scripts/e2e/run_core.py",
     "check:exports": "node scripts/check-export-targets.mjs",
     "check:subagent-paste": "node scripts/check-subagent-paste.test.mjs",
     "check:spec-deps": "node scripts/check-spec-deps.mjs",

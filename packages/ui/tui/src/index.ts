@@ -14,6 +14,8 @@ export interface Config {
   cwd?: string
   agentPreset?: string
   sessionId?: string
+  provider?: string
+  model?: string
   allowNoTty?: boolean
 }
 
@@ -21,6 +23,8 @@ export const Config: Schema<Config> = Schema.object({
   cwd: Schema.string(),
   agentPreset: Schema.string(),
   sessionId: Schema.string(),
+  provider: Schema.string(),
+  model: Schema.string(),
   allowNoTty: Schema.boolean(),
 })
 
