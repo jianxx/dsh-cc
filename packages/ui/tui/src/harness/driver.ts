@@ -54,6 +54,7 @@ import {
   setPermissionMode,
   setQuestion,
   setSessionSwitcher,
+  setTodos,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
@@ -63,6 +64,7 @@ import {
   type HudView,
   type SessionEntryView,
   type SubagentRunView,
+  type TodoItemView,
   type TuiState,
 } from '../store.ts'
 
@@ -167,14 +169,25 @@ type SessionProjectionsLike = {
 /**
  * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
  * field name; `inputTokens` is accepted defensively so a shape drift
- * degrades to "no tokens" instead of NaN.
+ * degrades to "no tokens" instead of NaN. Cache fields are optional —
+ * compositions without prompt caching simply omit those lines.
  */
 type TokenUsageStateLike = {
   totals?: {
     uncachedInputTokens?: number
     inputTokens?: number
     outputTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
   }
+}
+
+/** Normalized token totals shared by the HUD and `/cost`. */
+export interface TokenUsageTotals {
+  input: number
+  output: number
+  cacheRead?: number
+  cacheWrite?: number
 }
 
 /** `contextPressure` projection state (subset the HUD reads). */
@@ -205,11 +218,72 @@ export async function gitBranchOf(cwd: string): Promise<string | undefined> {
 }
 
 /** Pull cumulative token totals out of a `tokenUsage` state value. */
-function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; output: number } | undefined {
+function totalsOf(usage: TokenUsageStateLike | undefined): TokenUsageTotals | undefined {
   const totals = usage?.totals
   const input = totals?.uncachedInputTokens ?? totals?.inputTokens
   if (typeof input !== 'number' || typeof totals?.outputTokens !== 'number') return undefined
-  return { input, output: totals.outputTokens }
+  return {
+    input,
+    output: totals.outputTokens,
+    ...typeof totals.cacheReadTokens === 'number' ? { cacheRead: totals.cacheReadTokens } : {},
+    ...typeof totals.cacheWriteTokens === 'number' ? { cacheWrite: totals.cacheWriteTokens } : {},
+  }
+}
+
+/** HUD-shaped subset of {@link totalsOf} (input/output only). */
+function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; output: number } | undefined {
+  const totals = totalsOf(usage)
+  return totals === undefined ? undefined : { input: totals.input, output: totals.output }
+}
+
+/**
+ * `/cost` report: token counts with thousands separators, cache lines only
+ * when non-zero, and an explicit note that no price table is configured —
+ * the harness reports usage only, so no monetary amounts are claimed.
+ */
+export function formatCostReport(totals: TokenUsageTotals | undefined): string {
+  if (totals === undefined) return 'No token usage recorded yet.'
+  const row = (label: string, value: number): string =>
+    `  ${label.padEnd(9)}${value.toLocaleString('en-US').padStart(6)}`
+  const lines = [
+    'Token usage this session:',
+    row('input', totals.input),
+    row('output', totals.output),
+  ]
+  if ((totals.cacheRead ?? 0) > 0) lines.push(row('cache r', totals.cacheRead!))
+  if ((totals.cacheWrite ?? 0) > 0) lines.push(row('cache w', totals.cacheWrite!))
+  lines.push('  Pricing is not configured — costs are not computed.')
+  return lines.join('\n')
+}
+
+/**
+ * Map a `todos` projection value (`TodoItem[] | null`) onto view items.
+ * Non-arrays (including the pre-first-write `null`) map to undefined (no
+ * strip); malformed entries inside an array are dropped defensively so one
+ * bad item degrades to a shorter list instead of a crash.
+ */
+function todosOf(value: unknown): readonly TodoItemView[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const views: TodoItemView[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object') continue
+    const content = (item as { content?: unknown }).content
+    const status = (item as { status?: unknown }).status
+    if (typeof content !== 'string') continue
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
+    views.push({ content, status })
+  }
+  return views
+}
+
+/** Structural equality for two optional todo lists. */
+function sameTodos(
+  a: readonly TodoItemView[] | undefined,
+  b: readonly TodoItemView[] | undefined,
+): boolean {
+  if (a === b) return true
+  if (a === undefined || b === undefined || a.length !== b.length) return false
+  return a.every((item, i) => item.content === b[i]!.content && item.status === b[i]!.status)
 }
 
 /**
@@ -402,7 +476,19 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (patch.contextPercent !== undefined || patch.tokens !== undefined) next = setHud(next, patch)
     if (next !== state) emit(next)
   }
+  // Todos: same seeding contract as the HUD — stateOf at (re)bind, then the
+  // change feed. Absent (`null` before the first write) clears the strip so
+  // no cross-session leak survives a switch.
+  const seedTodos = (): void => {
+    const value = projections === undefined
+      ? undefined
+      : projections.stateOf(current.agent.session, 'todos')
+    const todos = todosOf(value)
+    if (sameTodos(state.todos, todos)) return
+    emit(setTodos(state, todos))
+  }
   seedHud()
+  seedTodos()
   if (projections !== undefined) {
     projections.onChanged((session, key, value) => {
       if (session.id !== current.agent.session.id) return
@@ -412,6 +498,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       } else if (key === 'contextPressure') {
         const percent = percentOf(value as ContextPressureStateLike | undefined)
         if (percent !== undefined) applyHud({ contextPercent: percent })
+      } else if (key === 'todos') {
+        const todos = todosOf(value)
+        if (sameTodos(state.todos, todos)) return
+        emit(setTodos(state, todos))
       }
     })
   }
@@ -753,10 +843,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(foldHistory())
     emit(setPermissionMode(state, liveMode(current.agent, 'default')))
     emit(setBusy(state, current.agent.status === 'running'))
-    // Refresh the HUD and branch for the new session: stateOf may already be
-    // populated (or absent — stale fields must not leak), and the cwd may
-    // point at a different repo.
+    // Refresh the HUD, todos, and branch for the new session: stateOf may
+    // already be populated (or absent — stale fields must not leak), and the
+    // cwd may point at a different repo.
     seedHud()
+    seedTodos()
     refreshBranch()
   }
 
@@ -816,6 +907,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         kind: 'status',
         text: `Model is now ${chosen.provider}/${chosen.model}.`,
       }))
+    }
+    if (name === 'cost') {
+      const totals = projections === undefined
+        ? undefined
+        : totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
+      emit(upsertRow(state, { kind: 'status', text: formatCostReport(totals) }))
+      return
     }
     if (name === 'agents') {
       const runs = state.subagents

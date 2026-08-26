@@ -17,6 +17,7 @@ import {
   setModelPicker,
   setQuestion,
   setSessionSwitcher,
+  setTodos,
   toggleQuestionOption,
   typeQuestionText,
   upsertRow,
@@ -360,6 +361,105 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the todo strip with done/total and the active task above the composer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'first task', status: 'completed' },
+      { content: 'write the tests', status: 'in_progress' },
+      { content: 'ship it', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('☐ 1/3 · write the tests')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('omits the active segment when no todo is in progress', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'done thing', status: 'completed' },
+      { content: 'later thing', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('☐ 1/2')
+    expect(stripped).not.toContain('later thing')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('caps a long active task at ~60 chars with an ellipsis', async () => {
+    const vt = new VirtualTerminal(120, 24)
+    const long = 'x'.repeat(100)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: long, status: 'in_progress' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    const marker = stripped.indexOf('☐')
+    expect(marker).toBeGreaterThanOrEqual(0)
+    // The strip line stays short: the 100-char task must be truncated. The
+    // grid pads rows to the terminal width, so measure the trimmed content.
+    const stripLine = stripped.split('\n').find(l => l.includes('☐'))!
+    expect(stripLine.trimEnd().length).toBeLessThan(80)
+    expect(stripLine).toContain('…')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('clears the todo strip when todos are cleared (collapses to zero height)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'pending' },
+      { content: 'c', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const withStrip = stripAnsi(vt.grid().join('\n'))
+    expect(withStrip).toContain('☐ 1/3')
+    const nonEmptyBefore = withStrip.split('\n').filter(l => l.trim().length > 0).length
+
+    driver.setState(setTodos(driver.state, undefined))
+    await settle()
+
+    const withoutStrip = stripAnsi(vt.grid().join('\n'))
+    expect(withoutStrip).not.toContain('☐')
+    // Exactly one line disappeared — the strip collapsed to zero height.
+    const nonEmptyAfter = withoutStrip.split('\n').filter(l => l.trim().length > 0).length
+    expect(nonEmptyBefore - nonEmptyAfter).toBe(1)
 
     root.tui.stop()
     root.destroy()

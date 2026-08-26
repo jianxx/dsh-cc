@@ -19,6 +19,7 @@ import {
 import type { Driver } from '../state/driver-types.ts'
 import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
+import { todoSummary } from '../store.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
@@ -27,6 +28,13 @@ import { createApprovalBox, createModelPickerBox, createQuestionBox, createSessi
 export interface BuildRootOptions {
   terminal?: Terminal
   onQuit?: () => void
+}
+
+/** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
+const TODO_ACTIVE_CAP = 60
+
+function truncateActive(content: string): string {
+  return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
 }
 
 export interface RootHandle {
@@ -38,9 +46,10 @@ export interface RootHandle {
 /**
  * Build the pi-tui render tree on a TuiMainScreen.
  *
- * Children order: title · transcript · [approval] · [question] · editor ·
- * statusline. The transcript and overlays rebuild on every driver emit; the
- * editor is persistent so it retains focus and cursor state across renders.
+ * Children order: title · transcript · queue chips · todo strip ·
+ * [approval] · [question] · editor · statusline. The transcript and overlays
+ * rebuild on every driver emit; the editor is persistent so it retains focus
+ * and cursor state across renders.
  */
 export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHandle {
   const terminal = opts.terminal ?? new ProcessTerminal()
@@ -56,6 +65,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   // (Text.render returns [] for blank content), so it takes no vertical space.
   const queueLine = new Text('', 0, 0)
   tui.addChild(queueLine)
+
+  // Session todo strip (`☐ done/total · active task`), same persistent-Text
+  // pattern: blank content collapses it to zero lines when no todos exist.
+  const todoLine = new Text('', 0, 0)
+  tui.addChild(todoLine)
 
   // Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
   // every state change so they appear and disappear with the driver state.
@@ -152,6 +166,14 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
         : state.queued.map(text => dim(`⏵ queued: ${text}`)).join('\n'),
     )
     queueLine.invalidate()
+
+    const summary = todoSummary(state)
+    todoLine.setText(
+      summary === undefined
+        ? ''
+        : dim(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
+    )
+    todoLine.invalidate()
 
     overlays.clear()
     if (state.approval !== undefined) {

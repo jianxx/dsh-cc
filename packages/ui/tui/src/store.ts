@@ -132,6 +132,15 @@ export interface HudView {
   tokens?: { input: number; output: number }
 }
 
+/**
+ * One todo from the session's todo list. Mirrors the harness projection's
+ * item shape but lives in the view layer (harness-import-free).
+ */
+export interface TodoItemView {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -150,6 +159,8 @@ export interface TuiState {
   subagents: readonly SubagentRunView[]
   /** Statusline HUD (context %, token totals) from the projections feed. */
   hud?: HudView
+  /** Session todo list (whole-list last-wins; absent before the first write). */
+  todos?: readonly TodoItemView[]
 }
 
 /** Empty composer + idle agent. */
@@ -413,4 +424,35 @@ export function setHud(state: TuiState, patch: Partial<HudView> | undefined): Tu
     ...patch.tokens === undefined ? {} : { tokens: patch.tokens },
   }
   return { ...state, hud: merged }
+}
+
+/**
+ * Replace the session todo list (whole-list last-wins from the projection
+ * feed), or clear it when `todos` is undefined. Returns the same state
+ * reference when the clear finds nothing to drop.
+ */
+export function setTodos(state: TuiState, todos: readonly TodoItemView[] | undefined): TuiState {
+  if (todos === undefined) {
+    if (state.todos === undefined) return state
+    const { todos: _dropped, ...rest } = state
+    return rest
+  }
+  return { ...state, todos }
+}
+
+/**
+ * Condense `state.todos` for the one-line strip: total count, completed
+ * count, and the first in-progress content (`active`, omitted when nothing
+ * is running). Undefined when there are no todos to show.
+ */
+export function todoSummary(state: TuiState): { total: number; done: number; active?: string } | undefined {
+  const todos = state.todos
+  if (todos === undefined || todos.length === 0) return undefined
+  let done = 0
+  let active: string | undefined
+  for (const todo of todos) {
+    if (todo.status === 'completed') done += 1
+    else if (todo.status === 'in_progress' && active === undefined) active = todo.content
+  }
+  return { total: todos.length, done, ...active === undefined ? {} : { active } }
 }

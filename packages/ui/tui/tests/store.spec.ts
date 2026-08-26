@@ -12,6 +12,8 @@ import {
   moveQuestionFocus,
   setModelPicker,
   setQuestion,
+  setTodos,
+  todoSummary,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
@@ -20,6 +22,7 @@ import {
   type ModelPickerView,
   type QuestionView,
   type SubagentRunView,
+  type TodoItemView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -255,6 +258,66 @@ describe('thinkingExpanded', () => {
     expect(state.thinkingExpanded).toBe(false)
     expect(next.thinkingExpanded).toBe(true)
     expect(next).not.toBe(state)
+  })
+})
+
+describe('todos helpers', () => {
+  const todos = (items: readonly Partial<TodoItemView>[]): readonly TodoItemView[] =>
+    items.map(item => ({
+      content: item.content ?? 'task',
+      status: item.status ?? 'pending',
+    }))
+
+  it('setTodos parks the list and drops the field when cleared', () => {
+    const list = todos([{ content: 'a', status: 'pending' }])
+    const state = setTodos(createInitialState(), list)
+    expect(state.todos).toEqual([{ content: 'a', status: 'pending' }])
+    const cleared = setTodos(state, undefined)
+    expect(cleared.todos).toBeUndefined()
+    // Cleared state does not carry the dropped field at all.
+    expect('todos' in cleared).toBe(false)
+  })
+
+  it('setTodos(undefined) on a bare state is a same-reference no-op', () => {
+    const base = createInitialState()
+    expect(setTodos(base, undefined)).toBe(base)
+  })
+
+  it('setTodos does not mutate the original state', () => {
+    const base = createInitialState()
+    const parked = setTodos(base, todos([{ content: 'a' }]))
+    expect(base.todos).toBeUndefined()
+    expect(parked.todos).toHaveLength(1)
+    expect(parked).not.toBe(base)
+  })
+
+  it('todoSummary is undefined without todos', () => {
+    expect(todoSummary(createInitialState())).toBeUndefined()
+    expect(todoSummary(setTodos(createInitialState(), []))).toBeUndefined()
+  })
+
+  it('todoSummary counts all-pending as done 0 with no active', () => {
+    const state = setTodos(createInitialState(), todos([{ content: 'a' }, { content: 'b' }]))
+    expect(todoSummary(state)).toEqual({ total: 2, done: 0 })
+  })
+
+  it('todoSummary reports the first in_progress content as active', () => {
+    const state = setTodos(createInitialState(), todos([
+      { content: 'first', status: 'completed' },
+      { content: 'active one', status: 'in_progress' },
+      { content: 'active two', status: 'in_progress' },
+      { content: 'later' },
+    ]))
+    expect(todoSummary(state)).toEqual({ total: 4, done: 1, active: 'active one' })
+  })
+
+  it('todoSummary on all-done omits active', () => {
+    const state = setTodos(createInitialState(), todos([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'completed' },
+      { content: 'c', status: 'completed' },
+    ]))
+    expect(todoSummary(state)).toEqual({ total: 3, done: 3 })
   })
 })
 
