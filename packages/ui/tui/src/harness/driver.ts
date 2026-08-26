@@ -26,6 +26,7 @@ import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
+import { loadHistory, saveHistory } from '../history.ts'
 import { formatStatusLine } from '../statusline.ts'
 import {
   applySessionEvent,
@@ -55,6 +56,8 @@ export interface DriverConfig {
   sessionId?: string
   provider?: string
   model?: string
+  /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
+  historyDir?: string
 }
 
 type PermissionRulesLike = {
@@ -174,6 +177,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     selection.current = { provider: agent.options.provider, model: agent.options.model }
   }
   writeResumeTarget(String(agent.session.id))
+  // Composer history: load once at boot (oldest→newest); seeded into the
+  // editor by root.ts. New prompts are appended on submit (see submit()).
+  const historyDir = config.historyDir
+  let history = loadHistory(historyDir)
   emit(setPermissionMode(state, liveMode(agent, 'default')))
 
   // Boot banner: one status row greeting. Emitted before the resume fold so it
@@ -453,6 +460,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       await runHarness(parsed.line)
       return
     }
+    // Persist the prompt (not slash commands — they are commands, not
+    // prompts, and would dilute the recall signal). Consecutive duplicates
+    // and the cap are handled inside saveHistory.
+    history = saveHistory([...history, draft], historyDir)
     // Always queue the text; the chip clears when the durable user/message
     // event folds the row into the transcript (near-instant in-process).
     // No optimistic user row — both paths surface it from the durable event.
@@ -488,6 +499,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     get cwd() {
       return cwd
+    },
+    get promptHistory() {
+      return history
     },
     subscribe(listener) {
       listeners.add(listener)

@@ -62,11 +62,17 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   tui.addChild(overlays)
 
   const editor = new Editor(tui, editorTheme)
+  // Seed the editor's ↑/↓ recall from persisted history (oldest first —
+  // addToHistory unshifts, so the last-seeded/newest becomes index 0 and is
+  // recalled on the first ↑ press).
+  for (const entry of driver.promptHistory) editor.addToHistory(entry)
   editor.onChange = (text: string): void => {
     driver.setDraft(text)
   }
   editor.onSubmit = (text: string): void => {
     const parsed = parseSlash(text)
+    // Only prompts join editor recall; slash commands are not prompts.
+    if (parsed.kind === 'none') editor.addToHistory(text)
     void driver.submit(text)
     if (parsed.kind === 'local' && (parsed.name === 'quit' || parsed.name === 'exit')) {
       opts.onQuit?.()

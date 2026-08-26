@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
+import { loadHistory, saveHistory } from '@jianxx/dsh-cc-tui/history.ts'
 
 /**
  * Minimal ctx stub that captures `session/event` and `approval/request`
@@ -136,5 +137,66 @@ describe('createDriver busy input semantics', () => {
     // The boot banner is also a status row; pin the interruption row specifically.
     const interrupted = driver.state.rows.filter(r => r.kind === 'status' && r.text.includes('Interrupted'))
     expect(interrupted).toHaveLength(1)
+  })
+})
+
+describe('createDriver composer history persistence', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-hist-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  it('persists a submitted prompt and surfaces it via promptHistory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-histdrv-'))
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, { historyDir: dir })
+    expect(driver.promptHistory).toEqual([])
+
+    await driver.submit('hello world')
+    expect(driver.promptHistory).toEqual(['hello world'])
+    // Persisted to disk — a fresh load reads it back.
+    expect(loadHistory(dir)).toEqual(['hello world'])
+  })
+
+  it('does not persist slash commands (local or harness)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-histdrv-'))
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, { historyDir: dir })
+
+    await driver.submit('/quit')
+    expect(driver.promptHistory).toEqual([])
+    expect(loadHistory(dir)).toEqual([])
+  })
+
+  it('suppresses a consecutive-duplicate prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-histdrv-'))
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, { historyDir: dir })
+
+    await driver.submit('same')
+    await driver.submit('same')
+    expect(driver.promptHistory).toEqual(['same'])
+    expect(loadHistory(dir)).toEqual(['same'])
+  })
+
+  it('reflects the boot-loaded history file in promptHistory (oldest→newest)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-histdrv-'))
+    saveHistory(['old prompt', 'newer prompt'], dir)
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, { historyDir: dir })
+    expect(driver.promptHistory).toEqual(['old prompt', 'newer prompt'])
   })
 })

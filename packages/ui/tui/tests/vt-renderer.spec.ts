@@ -82,13 +82,17 @@ class VirtualTerminal implements PiTerminal {
  * Minimal Driver fake: holds state, notifies subscribers, and implements the
  * overlay-answer methods so the global input listener can dismiss prompts.
  */
-function fakeDriver(initial: TuiState = createInitialState()): Driver & { setState(next: TuiState): void } {
+function fakeDriver(
+  initial: TuiState = createInitialState(),
+  promptHistory: readonly string[] = [],
+): Driver & { setState(next: TuiState): void } {
   let state = initial
   const listeners = new Set<(s: TuiState) => void>()
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
     get cwd() { return process.cwd() },
+    get promptHistory() { return promptHistory },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -452,6 +456,27 @@ describe('vt-renderer', () => {
     // keeps this resilient to SelectList presentation changes.
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('tui-help')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('seeds editor ↑/↓ history from driver.promptHistory (newest recalled first)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState(), ['older', 'newer'])
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Editor starts empty → ↑ recalls the most recent entry ('newer'), not
+    // 'older' (addToHistory unshifts, so index 0 is the last seeded).
+    vt.sendInput('\x1b[A') // arrow up
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('newer')
+    expect(stripped).not.toContain('older')
 
     root.tui.stop()
     root.destroy()

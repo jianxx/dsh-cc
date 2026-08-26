@@ -12,6 +12,12 @@ export interface Driver {
   readonly statusLine: string
   /** Session working directory, used for `@`-path completion. */
   readonly cwd: string
+  /**
+   * Persisted composer history (oldest→newest) loaded at boot from
+   * `~/.dsh/tui/history.txt`. Seeds the editor's ↑/↓ recall; new prompts are
+   * appended on submit (see {@link Driver.submit}). Read once at mount.
+   */
+  readonly promptHistory: readonly string[]
   subscribe(listener: (state: TuiState) => void): () => void
   setDraft(draft: string): void
   submit(text?: string): Promise<void>
