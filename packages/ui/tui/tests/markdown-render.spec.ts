@@ -27,7 +27,11 @@ describe('markdown transcript rendering', () => {
     // Visible content is present.
     expect(joined).toContain('Heading')
     expect(joined).toContain('bold') // from **bold**
-    expect(joined).toContain('const x = 1')
+    // R2b: fenced ts code now flows through highlightCode, so the `const`
+    // keyword and `1` literal carry SGR styling — assert the styled form and
+    // a stripped-content fallback rather than the bare source substring.
+    expect(joined).toContain('\x1b[33mconst\x1b[0m')
+    expect(joined.replace(/\x1b\[[0-9;]*m/g, '')).toContain('const x = 1')
     expect(joined).toContain('item one')
     expect(joined).toContain('item two')
 
@@ -122,5 +126,30 @@ describe('markdown transcript rendering', () => {
     view.setRows(rows)
     const joined = view.render(80).join('\n')
     expect(joined).toContain('earlier output hidden')
+  })
+
+  it('highlights a fenced ts code block with ANSI-styled keywords via the vendored Markdown', () => {
+    const view = new TranscriptView()
+    const md = ['```ts', 'const x = 1', '```'].join('\n')
+    view.setRows([{ kind: 'assistant', text: md }])
+    const joined = view.render(80).join('\n')
+
+    // The keyword SGR (yellow = 33) wraps `const`; the number SGR (cyan = 36) wraps `1`.
+    expect(joined).toContain('\x1b[33mconst\x1b[0m')
+    expect(joined).toContain('\x1b[36m1\x1b[0m')
+    // Raw source is recoverable by stripping ANSI.
+    expect(joined.replace(/\x1b\[[0-9;]*m/g, '')).toContain('const x = 1')
+  })
+
+  it('renders an unknown-language fence as plain text without keyword SGR', () => {
+    const view = new TranscriptView()
+    const md = ['```frobnicate', 'const x = 1', '```'].join('\n')
+    view.setRows([{ kind: 'assistant', text: md }])
+    const joined = view.render(80).join('\n')
+
+    // Plain source line is present verbatim (no SGR splitting the keyword).
+    expect(joined).toContain('const x = 1')
+    // No keyword SGR was emitted for an unknown language.
+    expect(joined).not.toContain('\x1b[33mconst')
   })
 })

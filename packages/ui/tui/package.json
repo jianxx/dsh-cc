@@ -47,7 +47,8 @@
   "dependencies": {
     "@jianxx/dsh-cc-command-permissions": "workspace:^",
     "@jianxx/dsh-cc-permission-rules": "workspace:^",
-    "@jianxx/dsh-cc-pi-tui": "workspace:^"
+    "@jianxx/dsh-cc-pi-tui": "workspace:^",
+    "highlight.js": "11.12.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
