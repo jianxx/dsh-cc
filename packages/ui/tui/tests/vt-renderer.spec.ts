@@ -8,6 +8,7 @@ import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   createInitialState,
+  enqueue,
   setApproval,
   setBusy,
   setQuestion,
@@ -201,6 +202,42 @@ describe('vt-renderer', () => {
     const joined = g.join('\n')
     expect(joined).toContain('─')
     expect(joined).toContain('test · status')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a queued chip line for each pending steer above the composer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'assistant', text: 'working' })
+    state = setBusy(state, true)
+    state = enqueue(state, 'fix the bug')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('does not render a queue chip when the queue is empty', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'user', text: 'hi' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).not.toContain('⏵ queued:')
 
     root.tui.stop()
     root.destroy()

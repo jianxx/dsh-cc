@@ -11,6 +11,7 @@ import {
   type ToolResultView,
 } from './tool-card.ts'
 import {
+  dequeue,
   setBusy,
   setPermissionMode,
   upsertRow,
@@ -191,11 +192,10 @@ export function applySessionEvent(
   switch (event.type) {
     case 'user/message': {
       const text = textOf(data)
-      // Suppress the duplicate optimistic row the driver appends at submit
-      // time when the real user/message event arrives with the same text.
-      const last = state.rows.at(-1)
-      if (last?.kind === 'user' && last.text === text) return state
-      return upsertRow(state, { kind: 'user', text })
+      // Clear the matching queued chip when its message lands in the trail,
+      // then upsert the user row. (Both paths — followup and steer — enqueue
+      // at submit, so the chip clears here on the durable event.)
+      return upsertRow(dequeue(state, text), { kind: 'user', text })
     }
     case 'assistant/chunk': {
       const chunk = unwrapChunk(data)

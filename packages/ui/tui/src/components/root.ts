@@ -18,7 +18,7 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
 import { parseSlash } from '../slash.ts'
-import { bold, editorTheme } from './theme.ts'
+import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { createApprovalBox, createQuestionBox } from './overlays.ts'
 
@@ -49,6 +49,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
   const transcript = new TranscriptView()
   tui.addChild(transcript)
+
+  // Pending-steer chip line. Collapses to zero lines when the queue is empty
+  // (Text.render returns [] for blank content), so it takes no vertical space.
+  const queueLine = new Text('', 0, 0)
+  tui.addChild(queueLine)
 
   // Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
   // every state change so they appear and disappear with the driver state.
@@ -109,6 +114,13 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   // Rebuild transcript + overlays + statusline on every driver emit.
   const unsubscribe = driver.subscribe((state) => {
     transcript.setRows(state.rows)
+
+    queueLine.setText(
+      state.queued.length === 0
+        ? ''
+        : state.queued.map(text => dim(`⏵ queued: ${text}`)).join('\n'),
+    )
+    queueLine.invalidate()
 
     overlays.clear()
     if (state.approval !== undefined) {

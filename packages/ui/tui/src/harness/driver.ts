@@ -34,8 +34,10 @@ import {
 } from '../transcript.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import {
+  clearQueue,
   clearRows,
   createInitialState,
+  enqueue,
   setApproval,
   setBusy,
   setDraft,
@@ -391,11 +393,22 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       await runHarness(parsed.line)
       return
     }
-    emit(upsertRow(setBusy(state, true), { kind: 'user', text: draft }))
+    // Always queue the text; the chip clears when the durable user/message
+    // event folds the row into the transcript (near-instant in-process).
+    // No optimistic user row — both paths surface it from the durable event.
+    emit(enqueue(state, draft))
+    if (state.busy) {
+      agent.steer(createUserMessage({
+        content: [{ type: 'text', text: draft }],
+        source: { kind: 'user' },
+      }))
+      return
+    }
     agent.followup(createUserMessage({
       content: [{ type: 'text', text: draft }],
       source: { kind: 'user' },
     }))
+    emit(setBusy(state, true))
   }
 
   const statusLineOf = (): string => formatStatusLine({
@@ -426,7 +439,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     submit,
     interrupt() {
       agent.cancel({ kind: 'user' })
-      emit(setBusy(state, false))
+      // cancel discards queued/steering inbox items; mirror that in UI state.
+      emit(upsertRow(clearQueue(setBusy(state, false)), {
+        kind: 'status',
+        text: 'Interrupted by user.',
+      }))
     },
     cyclePermissionMode() {
       const current = liveMode(agent, state.permissionMode)

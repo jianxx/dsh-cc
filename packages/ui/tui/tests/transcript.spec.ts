@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createInitialState } from '@jianxx/dsh-cc-tui/store.ts'
+import { createInitialState, enqueue } from '@jianxx/dsh-cc-tui/store.ts'
 import { applySessionEvent } from '@jianxx/dsh-cc-tui/transcript.ts'
 
 describe('applySessionEvent', () => {
@@ -97,11 +97,22 @@ describe('applySessionEvent', () => {
     expect(state.rows).toEqual([{ kind: 'user', text: 'hello world' }])
   })
 
-  it('does not duplicate a user row when an identical user/message follows', () => {
+  it('removes the matching queued entry when a user/message lands', () => {
     let state = createInitialState()
-    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi' } })
-    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi' } })
-    expect(state.rows).toEqual([{ kind: 'user', text: 'hi' }])
+    state = enqueue(state, 'hello')
+    state = enqueue(state, 'still here')
+    expect(state.queued).toEqual(['hello', 'still here'])
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hello' } })
+    expect(state.queued).toEqual(['still here'])
+    expect(state.rows).toEqual([{ kind: 'user', text: 'hello' }])
+  })
+
+  it('leaves non-matching queued entries untouched on user/message', () => {
+    let state = createInitialState()
+    state = enqueue(state, 'pending')
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'other' } })
+    expect(state.queued).toEqual(['pending'])
+    expect(state.rows).toEqual([{ kind: 'user', text: 'other' }])
   })
 
   it('ignores unknown durable event types', () => {
