@@ -82,6 +82,29 @@ export interface ModelPickerView {
   current?: { provider: string; model: string }
 }
 
+/**
+ * One session entry shown in the `/resume` picker. Mirrors the harness
+ * persistence header but lives in the view layer (harness-import-free).
+ */
+export interface SessionEntryView {
+  id: string
+  cwd?: string
+  createdAt: number
+}
+
+/**
+ * Live view of the `/resume` session-switcher overlay: the session list
+ * (newest-first), the focused index, a `switching` flag that dims input
+ * while a switch is in flight, and the current session id so the renderer
+ * can mark it with `●`.
+ */
+export interface SessionSwitcherView {
+  sessions: readonly SessionEntryView[]
+  focused: number
+  switching: boolean
+  currentId: string
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -91,6 +114,7 @@ export interface TuiState {
   approval?: ApprovalView
   question?: QuestionView
   modelPicker?: ModelPickerView
+  sessionSwitcher?: SessionSwitcherView
   /** Texts submitted while the agent was busy (pending steering). */
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
@@ -180,6 +204,28 @@ export function moveModelPickerFocus(state: TuiState, delta: -1 | 1): TuiState {
   const picker = state.modelPicker
   if (picker === undefined) return state
   return focusModelPicker(state, picker.focused + delta)
+}
+
+/** Park or clear the `/resume` session-switcher overlay. */
+export function setSessionSwitcher(state: TuiState, switcher: SessionSwitcherView | undefined): TuiState {
+  const { sessionSwitcher: _dropped, ...rest } = state
+  return switcher === undefined ? rest : { ...rest, sessionSwitcher: switcher }
+}
+
+/** Focus a session-switcher row by index, clamped to [0, sessions.length-1]. */
+export function focusSessionSwitcher(state: TuiState, index: number): TuiState {
+  const sw = state.sessionSwitcher
+  if (sw === undefined || sw.sessions.length === 0) return state
+  const max = sw.sessions.length - 1
+  const focused = Math.max(0, Math.min(index, max))
+  return setSessionSwitcher(state, { ...sw, focused })
+}
+
+/** Move the session-switcher focus by one row (clamped; no wrap). */
+export function moveSessionSwitcherFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const sw = state.sessionSwitcher
+  if (sw === undefined) return state
+  return focusSessionSwitcher(state, sw.focused + delta)
 }
 
 /** Focus a question row by index, clamped to [0, options.length]. */

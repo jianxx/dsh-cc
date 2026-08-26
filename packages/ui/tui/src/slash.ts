@@ -25,7 +25,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'exit', description: 'Exit the TUI session' },
   { name: 'clear', description: 'Clear the transcript rows' },
   { name: 'tui-help', description: 'Show TUI keyboard and command help' },
-  { name: 'resume', description: 'List or set a resume target session', argumentHint: '<sessionId>' },
+  { name: 'resume', description: 'Switch to a resumed session (picker or /resume <id>)', argumentHint: '<sessionId>' },
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
 ] as const
 

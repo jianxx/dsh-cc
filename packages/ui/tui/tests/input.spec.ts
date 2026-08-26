@@ -6,9 +6,12 @@ import {
   setBusy,
   setModelPicker,
   setQuestion,
+  setSessionSwitcher,
   type CatalogEntryView,
   type ModelPickerView,
   type QuestionView,
+  type SessionEntryView,
+  type SessionSwitcherView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -28,6 +31,12 @@ interface ModelPickerCalls {
   cancelled: number
 }
 
+interface SessionSwitcherCalls {
+  moved: number[]
+  submitted: number
+  cancelled: number
+}
+
 function sink(initial: TuiState = createInitialState()): InputSink & {
   disposed: boolean
   interrupted: boolean
@@ -35,6 +44,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   toggled: boolean
   questionCalls: QuestionCalls
   modelPickerCalls: ModelPickerCalls
+  sessionSwitcherCalls: SessionSwitcherCalls
 } {
   let state = initial
   const questionCalls: QuestionCalls = {
@@ -51,6 +61,11 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     submitted: 0,
     cancelled: 0,
   }
+  const sessionSwitcherCalls: SessionSwitcherCalls = {
+    moved: [],
+    submitted: 0,
+    cancelled: 0,
+  }
   return {
     disposed: false,
     interrupted: false,
@@ -58,6 +73,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     toggled: false,
     questionCalls,
     modelPickerCalls,
+    sessionSwitcherCalls,
     get state() {
       return state
     },
@@ -101,6 +117,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     modelPickerCancel() {
       modelPickerCalls.cancelled += 1
+    },
+    sessionSwitcherMove(delta) {
+      sessionSwitcherCalls.moved.push(delta)
+    },
+    async sessionSwitcherSubmit() {
+      sessionSwitcherCalls.submitted += 1
+    },
+    sessionSwitcherCancel() {
+      sessionSwitcherCalls.cancelled += 1
     },
     async dispose() {
       this.disposed = true
@@ -369,5 +394,90 @@ describe('handleComposerInput global keys', () => {
     expect(driver.toggled).toBe(true)
     expect(driver.state.thinkingExpanded).toBe(true)
     expect(action).toEqual({ kind: 'none' })
+  })
+})
+
+const SESSION_ENTRIES: readonly SessionEntryView[] = [
+  { id: 's-second', createdAt: 2000 },
+  { id: 's-first', createdAt: 1000 },
+]
+
+function switcherState(overrides: Partial<SessionSwitcherView> = {}): TuiState {
+  return setSessionSwitcher(createInitialState(), {
+    sessions: SESSION_ENTRIES,
+    focused: 0,
+    switching: false,
+    currentId: 's-first',
+    ...overrides,
+  })
+}
+
+describe('handleComposerInput session switcher routing', () => {
+  it('arrow up moves focus up (-1)', () => {
+    const driver = sink(switcherState({ focused: 1 }))
+    const action = handleComposerInput(driver, '\x1b[A')
+    expect(driver.sessionSwitcherCalls.moved).toEqual([-1])
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('arrow down moves focus down (+1)', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, '\x1b[B')
+    expect(driver.sessionSwitcherCalls.moved).toEqual([1])
+  })
+
+  it('enter submits the focused session', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, '\r')
+    expect(driver.sessionSwitcherCalls.submitted).toBe(1)
+  })
+
+  it('escape cancels the switcher', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, '\x1b')
+    expect(driver.sessionSwitcherCalls.cancelled).toBe(1)
+  })
+
+  it('all other keys are consumed and never reach the editor (modal)', () => {
+    const driver = sink(switcherState())
+    for (const key of ['h', ' ', '2', '\x7f', 'abc']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    expect(driver.questionCalls.moved).toEqual([])
+    expect(driver.questionCalls.typed).toEqual([])
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('while switching, all keys are consumed without action', () => {
+    const driver = sink(switcherState({ switching: true }))
+    for (const key of ['\x1b[A', '\x1b[B', '\r', '\x1b', 'h']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    expect(driver.sessionSwitcherCalls.moved).toEqual([])
+    expect(driver.sessionSwitcherCalls.submitted).toBe(0)
+    expect(driver.sessionSwitcherCalls.cancelled).toBe(0)
+  })
+
+  it('a model picker outranks the session switcher (precedence: approval > question > modelPicker > sessionSwitcher)', () => {
+    let state = setModelPicker(createInitialState(), { entries: PICKER_ENTRIES, focused: 0 })
+    state = setSessionSwitcher(state, {
+      sessions: SESSION_ENTRIES,
+      focused: 0,
+      switching: false,
+      currentId: 's-first',
+    })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.modelPickerCalls.submitted).toBe(1)
+    expect(driver.sessionSwitcherCalls.submitted).toBe(0)
+  })
+
+  it('does not interrupt on escape while a session switcher is open (cancel wins)', () => {
+    const driver = sink(setBusy(switcherState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.sessionSwitcherCalls.cancelled).toBe(1)
   })
 })

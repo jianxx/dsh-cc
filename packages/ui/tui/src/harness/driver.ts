@@ -42,6 +42,7 @@ import {
   enqueue,
   moveModelPickerFocus,
   moveQuestionFocus,
+  moveSessionSwitcherFocus,
   setApproval,
   setBusy,
   setDraft,
@@ -49,11 +50,13 @@ import {
   setNotice,
   setPermissionMode,
   setQuestion,
+  setSessionSwitcher,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
   upsertRow,
   type CatalogEntryView,
+  type SessionEntryView,
   type TuiState,
 } from '../store.ts'
 
@@ -179,16 +182,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       ...agentOptions === undefined ? {} : { agentOptions },
     })
 
-  const agent = handle.agent
-  if (agent.options.provider !== undefined && agent.options.model !== undefined) {
-    selection.current = { provider: agent.options.provider, model: agent.options.model }
+  // Rebindable holder: switchSession replaces handle/agent in-place so every
+  // event handler and closure reads the LIVE agent at fire time. The session
+  // filter compares against current.agent.session.id; late events from a
+  // disposed session are dropped by the id mismatch.
+  const current: { handle: AgentHandle; agent: Agent } = { handle, agent: handle.agent }
+  if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
+    selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
   }
-  writeResumeTarget(String(agent.session.id))
+  writeResumeTarget(String(current.agent.session.id))
   // Composer history: load once at boot (oldest→newest); seeded into the
   // editor by root.ts. New prompts are appended on submit (see submit()).
   const historyDir = config.historyDir
   let history = loadHistory(historyDir)
-  emit(setPermissionMode(state, liveMode(agent, 'default')))
+  emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
   // Boot banner: one status row greeting. Emitted before the resume fold so it
   // lands as row 0, above replayed history (matching the host's header block).
@@ -203,10 +210,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     ? undefined
     : {
       presentCall(name, args) {
-        return tools.get(name, agent)?.presentCall?.(args)
+        return tools.get(name, current.agent)?.presentCall?.(args)
       },
       presentResult(name, args, result) {
-        return tools.get(name, agent)?.presentResult?.(args, result)
+        return tools.get(name, current.agent)?.presentResult?.(args, result)
       },
     }
 
@@ -214,27 +221,31 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // conversation. Presenters are already built, so tool cards re-run
   // presentCall/presentResult on stored args (pure by contract). One emit for
   // the whole fold — folding is a reduce, not a per-event broadcast.
-  let folded = state
-  for (const event of agent.session.events) {
-    folded = applySessionEvent(folded, event as SessionEventLike, presenters)
+  // Extracted as a closure so switchSession re-runs it for the new session.
+  const foldHistory = (): TuiState => {
+    let folded = state
+    for (const event of current.agent.session.events) {
+      folded = applySessionEvent(folded, event as SessionEventLike, presenters)
+    }
+    return folded
   }
-  emit(folded)
+  emit(foldHistory())
   // A historical log may end mid-turn if the process crashed; sync busy from
   // the ground-truth agent status before live events continue.
-  emit(setBusy(state, agent.status === 'running'))
+  emit(setBusy(state, current.agent.status === 'running'))
 
   ctx.on('session/event', (session, event: SessionEvent) => {
-    if (session.id !== agent.session.id) return
+    if (session.id !== current.agent.session.id) return
     emit(applySessionEvent(state, event as SessionEventLike, presenters))
     const eventType = event.type as string
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
-      emit(setPermissionMode(state, liveMode(agent, state.permissionMode)))
+      emit(setPermissionMode(state, liveMode(current.agent, state.permissionMode)))
     }
   })
 
   let pendingApproval: { resolve: (outcome: ApprovalOutcome) => void } | undefined
   ctx.on('approval/request', async (req: ApprovalRequest, next) => {
-    if (req.agent.id !== agent.id) return next()
+    if (req.agent.id !== current.agent.id) return next()
     const command = commandOf(req)
     emit(setApproval(state, {
       toolName: req.toolName,
@@ -331,18 +342,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         emit(setNotice(state, 'plan mode is not mounted in this composition'))
         return
       }
-      planMode.set(agent, true)
+      planMode.set(current.agent, true)
       emit(setPermissionMode(state, 'plan'))
       return
     }
-    if (foldPlanMode(agent.session.events)) {
-      planMode?.set(agent, false)
+    if (foldPlanMode(current.agent.session.events)) {
+      planMode?.set(current.agent, false)
     }
     if (rules === undefined) {
       emit(setNotice(state, 'The permission-rules engine is not mounted in this composition.'))
       return
     }
-    rules.setMode(agent, mode)
+    rules.setMode(current.agent, mode)
     emit(setPermissionMode(state, mode))
   }
 
@@ -363,7 +374,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       }))
     if (commandsService !== undefined) {
       try {
-        const harnessList = commandsService.list(agent)
+        const harnessList = commandsService.list(current.agent)
         for (const cmd of harnessList) {
           if (localNames.has(cmd.name)) continue // local wins, dedupe
           merged.push({
@@ -409,11 +420,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // The arg path (`/model <n|provider/id>`) stays text-based for scripts.
   const openModelPicker = async (): Promise<void> => {
     const catalog = await loadCatalog()
-    const current = selection.current === undefined
+    const currentRoute = selection.current === undefined
       ? undefined
       : { provider: selection.current.provider, model: selection.current.model }
     if (catalog.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, current) }))
+      emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, currentRoute) }))
       return
     }
     const entries: CatalogEntryView[] = catalog.map(entry => ({
@@ -422,22 +433,135 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       name: entry.name,
     }))
     let focused = 0
-    if (current !== undefined) {
+    if (currentRoute !== undefined) {
       const index = entries.findIndex(
-        entry => entry.provider === current.provider && entry.id === current.model,
+        entry => entry.provider === currentRoute.provider && entry.id === currentRoute.model,
       )
       if (index >= 0) focused = index
     }
     emit(setModelPicker(state, {
       entries,
       focused,
-      ...current === undefined ? {} : { current },
+      ...currentRoute === undefined ? {} : { current: currentRoute },
     }))
+  }
+
+  // --- Session switching: /resume overlay + driver.switchSession ----------
+  // The overlay mirrors the model picker: state field + open/move/submit/cancel.
+  // switchSession is the in-process engine: dispose old, resume new, replay
+  // history through foldHistory (same as boot). Ordering is resume-first-
+  // dispose-after so a failed resume leaves the old session alive.
+
+  const listSessions = async (): Promise<readonly { id: string; cwd?: string; createdAt: number }[]> => {
+    const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
+    if (persistence === undefined) return []
+    return persistence.list()
+  }
+
+  const openSessionSwitcher = async (): Promise<void> => {
+    const sessions = await listSessions()
+    if (sessions.length === 0) {
+      emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
+      return
+    }
+    const sorted = sessions.slice().sort((a, b) => b.createdAt - a.createdAt)
+    const currentId = String(current.agent.session.id)
+    let focused = sorted.findIndex(s => s.id === currentId)
+    if (focused < 0) focused = 0
+    const entries: SessionEntryView[] = sorted.map(s => ({
+      id: s.id,
+      ...s.cwd === undefined ? {} : { cwd: s.cwd },
+      createdAt: s.createdAt,
+    }))
+    emit(setSessionSwitcher(state, {
+      sessions: entries,
+      focused,
+      switching: false,
+      currentId,
+    }))
+  }
+
+  const switchSession = async (id: string): Promise<void> => {
+    // No-op guard: same id → stay.
+    if (id === String(current.agent.session.id)) return
+
+    // Clear pending overlays and queue (mirror the abort paths). The session
+    // switcher overlay itself is managed by the caller (sessionSwitcherSubmit).
+    if (pendingApproval !== undefined) {
+      pendingApproval.resolve('cancelled')
+      pendingApproval = undefined
+    }
+    if (pendingQuestion !== undefined) {
+      pendingQuestion.reject(new UserQuestionError('session switching', 'CANCELLED'))
+      pendingQuestion = undefined
+    }
+    emit(setApproval(state, undefined))
+    emit(setQuestion(state, undefined))
+    emit(setModelPicker(state, undefined))
+    emit(clearQueue(setBusy(state, false)))
+
+    // Resume first: keeps the old session alive if resume throws. The harness
+    // supports multiple concurrent agents (each independently scoped), so a
+    // brief overlap is safe. On the SESSION's stored options — omit
+    // agentOptions unless config.provider/model were explicitly set (same
+    // logic as boot).
+    let newHandle: AgentHandle
+    try {
+      newHandle = await ctx.agents.resume({
+        resumeSessionId: SessionId(id),
+        setup: withSelection,
+        ...agentOptions === undefined ? {} : { agentOptions },
+      })
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error)
+      emit(upsertRow(state, { kind: 'status', text: `Resume failed: ${message}` }))
+      return
+    }
+
+    // Success — dispose old, bind new. dispose() stops the loop, unregisters
+    // the agent, and removes its session from the in-memory store; it does NOT
+    // delete the durable session log.
+    await current.handle.dispose()
+    current.handle = newHandle
+    current.agent = newHandle.agent
+
+    // Refresh the model selection from the new agent's resolved options.
+    if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
+      selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
+    }
+    writeResumeTarget(id)
+
+    // Reset the transcript: clear + boot banner + fold new history + mode/busy.
+    emit(clearRows(state))
+    const modelLabel = selection.current?.model ?? 'default model'
+    emit(upsertRow(state, {
+      kind: 'status',
+      text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
+    }))
+    emit(foldHistory())
+    emit(setPermissionMode(state, liveMode(current.agent, 'default')))
+    emit(setBusy(state, current.agent.status === 'running'))
+  }
+
+  const sessionSwitcherSubmit = async (): Promise<void> => {
+    const sw = state.sessionSwitcher
+    if (sw === undefined || sw.switching) return
+    const session = sw.sessions[sw.focused]
+    if (session === undefined) return
+    // Show the dim 'Switching…' state and block input while the switch is
+    // in flight.
+    emit(setSessionSwitcher(state, { ...sw, switching: true }))
+    try {
+      await switchSession(session.id)
+    } finally {
+      // Close the overlay whether the switch succeeded or failed.
+      emit(setSessionSwitcher(state, undefined))
+    }
   }
 
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
-      await handle.dispose()
+      await current.handle.dispose()
       return
     }
     if (name === 'clear') {
@@ -453,31 +577,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
     if (name === 'resume') {
       if (rawInput.length > 0) {
-        writeResumeTarget(rawInput)
-        emit(upsertRow(state, {
-          kind: 'status',
-          text: `Resume target set to ${rawInput}. Restart with dsh --profile tui --resume ${rawInput}`,
-        }))
+        await switchSession(rawInput)
         return
       }
-      const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
-      if (persistence === undefined) {
-        emit(setNotice(state, 'No session persistence is mounted in this composition.'))
-        return
-      }
-      const headers = await persistence.list()
-      if (headers.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
-        return
-      }
-      const lines = headers
-        .slice()
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map(header => `- ${header.id}${header.cwd === undefined ? '' : ` — cwd: ${header.cwd}`}`)
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: ['Recent sessions:', ...lines, 'To switch: /resume <sessionId> then restart, or dsh --profile tui --resume <id>'].join('\n'),
-      }))
+      await openSessionSwitcher()
       return
     }
     if (name === 'model') {
@@ -505,7 +608,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(setNotice(state, 'No command registry is mounted.'))
       return
     }
-    const execution = await commands.execute(agent, line, [], new AbortController().signal)
+    const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
     const text = execution?.result?.text
     if (text !== undefined && text.length > 0) {
       emit(upsertRow(state, { kind: 'status', text }))
@@ -534,13 +637,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // No optimistic user row — both paths surface it from the durable event.
     emit(enqueue(state, draft))
     if (state.busy) {
-      agent.steer(createUserMessage({
+      current.agent.steer(createUserMessage({
         content: [{ type: 'text', text: draft }],
         source: { kind: 'user' },
       }))
       return
     }
-    agent.followup(createUserMessage({
+    current.agent.followup(createUserMessage({
       content: [{ type: 'text', text: draft }],
       source: { kind: 'user' },
     }))
@@ -548,8 +651,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   const statusLineOf = (): string => formatStatusLine({
-    cwd: agent.session.header.cwd ?? cwd,
-    sessionId: String(agent.session.id),
+    cwd: current.agent.session.header.cwd ?? cwd,
+    sessionId: String(current.agent.session.id),
     permissionMode: state.permissionMode,
     ...selection.current === undefined ? {} : { model: selection.current.model },
     busy: state.busy,
@@ -580,7 +683,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     submit,
     interrupt() {
-      agent.cancel({ kind: 'user' })
+      current.agent.cancel({ kind: 'user' })
       // cancel discards queued/steering inbox items; mirror that in UI state.
       emit(upsertRow(clearQueue(setBusy(state, false)), {
         kind: 'status',
@@ -588,8 +691,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       }))
     },
     cyclePermissionMode() {
-      const current = liveMode(agent, state.permissionMode)
-      const next = nextPermissionMode(current)
+      const live = liveMode(current.agent, state.permissionMode)
+      const next = nextPermissionMode(live)
       if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return
       applyMode(next)
     },
@@ -680,12 +783,30 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     modelPickerCancel() {
       emit(setModelPicker(state, undefined))
     },
+    async openSessionSwitcher() {
+      await openSessionSwitcher()
+    },
+    sessionSwitcherMove(delta) {
+      emit(moveSessionSwitcherFocus(state, delta))
+    },
+    async sessionSwitcherSubmit() {
+      await sessionSwitcherSubmit()
+    },
+    sessionSwitcherCancel() {
+      emit(setSessionSwitcher(state, undefined))
+    },
+    async switchSession(id) {
+      await switchSession(id)
+    },
+    async listSessions() {
+      return listSessions()
+    },
     listCommands() {
       return commandCatalog
     },
     async dispose() {
       questionsDispose?.()
-      await handle.dispose()
+      await current.handle.dispose()
     },
   }
 }

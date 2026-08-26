@@ -16,10 +16,12 @@ import {
   setBusy,
   setModelPicker,
   setQuestion,
+  setSessionSwitcher,
   toggleQuestionOption,
   typeQuestionText,
   upsertRow,
   type CatalogEntryView,
+  type SessionEntryView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -191,6 +193,12 @@ function fakeDriver(
       state = setModelPicker(state, undefined)
       for (const l of listeners) l(state)
     },
+    async openSessionSwitcher() {},
+    sessionSwitcherMove() {},
+    async sessionSwitcherSubmit() {},
+    sessionSwitcherCancel() {},
+    async switchSession() {},
+    async listSessions() { return [] },
     listCommands() {
       return [
         { name: 'quit', description: 'Exit the TUI session' },
@@ -812,6 +820,71 @@ describe('vt-renderer', () => {
     expect(stripped).toContain('Model is now openai/gpt-5.')
     // Overlay dismissed.
     expect(stripped).not.toContain('Select model')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the session switcher with title, rows, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const sessions: SessionEntryView[] = [
+      { id: 's-newest', createdAt: Date.now() - 60_000 },
+      { id: 's-cur', cwd: '/tmp/proj', createdAt: Date.now() - 3_600_000 },
+      { id: 's-old', createdAt: Date.now() - 86_400_000 },
+    ]
+    let state = setSessionSwitcher(createInitialState(), {
+      sessions,
+      focused: 1,
+      switching: false,
+      currentId: 's-cur',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Resume session')
+    // Short id (first 8 chars)
+    expect(stripped).toContain('s-newest')
+    expect(stripped).toContain('s-cur')
+    expect(stripped).toContain('s-old')
+    // Focus marker on index 1 (relative date sits between marker and id)
+    expect(stripped).toContain('❯')
+    expect(stripped).toMatch(/❯.*s-cur/)
+    // Current-session marker (●)
+    expect(stripped).toMatch(/s-cur.*●/)
+    // Footer
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter switch')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders Switching… while a switch is in flight', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const sessions: SessionEntryView[] = [
+      { id: 's-a', createdAt: Date.now() },
+      { id: 's-b', createdAt: Date.now() - 1000 },
+    ]
+    let state = setSessionSwitcher(createInitialState(), {
+      sessions,
+      focused: 0,
+      switching: true,
+      currentId: 's-a',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Switching')
+    expect(stripped).not.toContain('enter switch')
 
     root.tui.stop()
     root.destroy()

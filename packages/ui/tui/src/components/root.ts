@@ -17,12 +17,12 @@ import {
   type TUI,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput, routeModelPickerInput } from '../input.ts'
+import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
-import { createApprovalBox, createModelPickerBox, createQuestionBox } from './overlays.ts'
+import { createApprovalBox, createModelPickerBox, createQuestionBox, createSessionSwitcherBox } from './overlays.ts'
 
 export interface BuildRootOptions {
   terminal?: Terminal
@@ -117,6 +117,13 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       routeModelPickerInput(driver, data)
       return { consume: true }
     }
+    if (live.sessionSwitcher !== undefined) {
+      // Modal session switcher: arrows/enter/esc only, everything else
+      // consumed. While `switching` is true, all keys are consumed without
+      // action.
+      routeSessionSwitcherInput(driver, data)
+      return { consume: true }
+    }
     if (matchesKey(data, 'shift+tab')) {
       driver.cyclePermissionMode()
       return { consume: true }
@@ -155,6 +162,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
     }
     if (state.modelPicker !== undefined) {
       overlays.addChild(createModelPickerBox(state.modelPicker))
+    }
+    if (state.sessionSwitcher !== undefined) {
+      overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
     }
     overlays.invalidate()
 

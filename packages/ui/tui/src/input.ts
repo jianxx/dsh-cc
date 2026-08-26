@@ -25,6 +25,9 @@ export interface InputSink {
   modelPickerMove(delta: -1 | 1): void
   modelPickerSubmit(): void
   modelPickerCancel(): void
+  sessionSwitcherMove(delta: -1 | 1): void
+  sessionSwitcherSubmit(): Promise<void>
+  sessionSwitcherCancel(): void
   dispose(): Promise<void>
 }
 
@@ -112,6 +115,33 @@ export function routeModelPickerInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open session switcher. Only arrows, enter,
+ * and escape are recognized; everything else is dropped — the switcher is
+ * modal and the composer editor must never see keystrokes while it is open.
+ * While `switching` is true, every key is consumed without action.
+ */
+export function routeSessionSwitcherInput(driver: InputSink, data: string): void {
+  if (driver.state.sessionSwitcher?.switching === true) return
+  if (matchesKey(data, Key.escape)) {
+    driver.sessionSwitcherCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.sessionSwitcherMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.sessionSwitcherMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    void driver.sessionSwitcherSubmit()
+    return
+  }
+  // All other keys consumed and ignored (modal).
+}
+
+/**
  * Apply one raw keypress against the live driver. Returns whether the app
  * should exit. Called from the pi-tui global input listener before the editor
  * receives the keystroke.
@@ -135,6 +165,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.modelPicker !== undefined) {
     routeModelPickerInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.sessionSwitcher !== undefined) {
+    routeSessionSwitcherInput(driver, data)
     return { kind: 'none' }
   }
 

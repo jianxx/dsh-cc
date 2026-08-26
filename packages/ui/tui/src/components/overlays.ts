@@ -6,7 +6,7 @@
  */
 
 import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
-import type { ApprovalView, ModelPickerView, QuestionView } from '../store.ts'
+import type { ApprovalView, ModelPickerView, QuestionView, SessionSwitcherView } from '../store.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { bold, dim, yellow } from './theme.ts'
 
@@ -122,5 +122,72 @@ export function createModelPickerBox(picker: ModelPickerView): Container {
   }
 
   box.addChild(new Text(dim('↑↓ move · enter select · esc cancel'), 0, 0))
+  return box
+}
+
+/**
+ * Maximum session-switcher rows rendered at once. Mirrors the model picker
+ * cap so a long session list can never overflow the frame.
+ */
+const SESSION_SWITCHER_VISIBLE_ROWS = 10
+
+/**
+ * Short relative-time label for a session timestamp. Renders as e.g.
+ * "2m ago", "1h ago", "3d ago", or a `M/D` date for older entries.
+ */
+function relativeDate(ts: number): string {
+  const diff = Date.now() - ts
+  const seconds = Math.floor(diff / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  const d = new Date(ts)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+/** First 8 chars of a session id — enough to distinguish in a short list. */
+function shortId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id
+}
+
+/**
+ * Session switcher box: title `Resume session`, rows of relative-date +
+ * short id + dim cwd, a `❯` focus marker, a `●` on the current session,
+ * windowed to {@link SESSION_SWITCHER_VISIBLE_ROWS} rows. A dim `Switching…`
+ * footer replaces the key hint while a switch is in flight (input blocked).
+ */
+export function createSessionSwitcherBox(sw: SessionSwitcherView): Container {
+  const box = new Container()
+  box.addChild(new Text(bold('Resume session'), 0, 0))
+
+  const total = sw.sessions.length
+  const cap = SESSION_SWITCHER_VISIBLE_ROWS
+  let start = 0
+  if (total > cap) {
+    start = Math.max(0, Math.min(sw.focused - Math.floor(cap / 2), total - cap))
+  }
+  const end = Math.min(start + cap, total)
+
+  for (let index = start; index < end; index += 1) {
+    const session = sw.sessions[index]!
+    const focused = sw.focused === index
+    const isCurrent = session.id === sw.currentId
+    const marker = focused ? '❯ ' : '  '
+    const currentMark = isCurrent ? ' ●' : ''
+    const cwdPart = session.cwd === undefined ? '' : dim(` — ${session.cwd}`)
+    box.addChild(new Text(
+      `${marker}${relativeDate(session.createdAt)} ${shortId(session.id)}${cwdPart}${currentMark}`,
+      0, 0,
+    ))
+  }
+
+  box.addChild(new Text(
+    sw.switching ? dim('Switching…') : dim('↑↓ move · enter switch · esc cancel'),
+    0, 0,
+  ))
   return box
 }

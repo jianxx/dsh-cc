@@ -89,6 +89,16 @@ function fakeDriver(initial: TuiState): Driver {
     questionSubmit() {},
     questionCancel() {},
     listCommands() { return [] },
+    async openModelPicker() {},
+    modelPickerMove() {},
+    modelPickerSubmit() {},
+    modelPickerCancel() {},
+    async openSessionSwitcher() {},
+    sessionSwitcherMove() {},
+    async sessionSwitcherSubmit() {},
+    sessionSwitcherCancel() {},
+    async switchSession() {},
+    async listSessions() { return [] },
     async dispose() {},
   }
 }

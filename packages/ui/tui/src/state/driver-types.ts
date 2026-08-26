@@ -69,6 +69,29 @@ export interface Driver {
   /** Close the overlay without changing the selection. */
   modelPickerCancel(): void
   /**
+   * Open the `/resume` session-switcher overlay: loads the session list
+   * (newest-first), parks `sessionSwitcher` state focused on the current
+   * session, or falls back to a status-row notice when no sessions exist.
+   * The arg path (`/resume <id>`) bypasses the overlay and switches directly.
+   */
+  openSessionSwitcher(): Promise<void>
+  /** Move the session-switcher focus by one row (clamped; no wrap). */
+  sessionSwitcherMove(delta: -1 | 1): void
+  /** Switch to the focused session (await {@link Driver.switchSession}) and close the overlay. */
+  sessionSwitcherSubmit(): Promise<void>
+  /** Close the overlay without switching. */
+  sessionSwitcherCancel(): void
+  /**
+   * Switch the live agent to a different persisted session in-process: dispose
+   * the current handle, resume the target, replay its history through the same
+   * fold the boot path uses, and reset the transcript. No-op when `id` matches
+   * the current session. On failure the old session stays bound and a notice
+   * is emitted.
+   */
+  switchSession(id: string): Promise<void>
+  /** List persisted sessions (newest-first absent — the caller sorts). */
+  listSessions(): Promise<readonly { id: string; cwd?: string; createdAt: number }[]>
+  /**
    * Merged slash-command catalog: TUI-local commands first, then harness
    * commands (deduped by name, local wins). The array identity is stable
    * across calls until the catalog changes (so callers can detect a refresh
