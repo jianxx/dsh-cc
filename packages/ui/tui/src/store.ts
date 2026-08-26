@@ -120,6 +120,18 @@ export interface SubagentRunView {
   stopReason?: string
 }
 
+/**
+ * Live statusline HUD fed by the sessionProjections change feed:
+ * context-occupancy percent and cumulative token totals. Both fields are
+ * optional — the footer omits whatever the current composition lacks.
+ */
+export interface HudView {
+  /** Context occupancy, 0-100 integer; absent until a window is known. */
+  contextPercent?: number
+  /** Cumulative provider-reported token totals. */
+  tokens?: { input: number; output: number }
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -136,6 +148,8 @@ export interface TuiState {
   thinkingExpanded: boolean
   /** Observed subagent runs (newest appended; capped at 20). */
   subagents: readonly SubagentRunView[]
+  /** Statusline HUD (context %, token totals) from the projections feed. */
+  hud?: HudView
 }
 
 /** Empty composer + idle agent. */
@@ -379,4 +393,24 @@ export function upsertSubagent(state: TuiState, view: SubagentRunView): TuiState
 /** Count runs still in the `running` state (R5 statusline feed). */
 export function countRunningSubagents(state: TuiState): number {
   return state.subagents.reduce((count, run) => count + (run.status === 'running' ? 1 : 0), 0)
+}
+
+/**
+ * Merge a HUD patch into `state.hud` (fields left undefined keep their
+ * current values), or clear the HUD entirely when `patch` is undefined.
+ * Returns the same state reference when the clear finds nothing to drop.
+ */
+export function setHud(state: TuiState, patch: Partial<HudView> | undefined): TuiState {
+  if (patch === undefined) {
+    if (state.hud === undefined) return state
+    const { hud: _dropped, ...rest } = state
+    return rest
+  }
+  const base = state.hud ?? {}
+  const merged: HudView = {
+    ...base,
+    ...patch.contextPercent === undefined ? {} : { contextPercent: patch.contextPercent },
+    ...patch.tokens === undefined ? {} : { tokens: patch.tokens },
+  }
+  return { ...state, hud: merged }
 }

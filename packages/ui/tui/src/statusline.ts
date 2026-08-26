@@ -10,6 +10,12 @@ export interface StatusLineInput {
   sessionId: string
   permissionMode: string
   model?: string
+  /** Git branch of the session cwd (best-effort boot probe; omitted when unknown). */
+  branch?: string
+  /** Context occupancy percent, 0-100 (rounded here when fractional). */
+  contextPercent?: number
+  /** Cumulative token totals for the session. */
+  tokens?: { input: number; output: number }
   busy: boolean
 }
 
@@ -32,15 +38,44 @@ export function shortenSession(sessionId: string): string {
 }
 
 /**
- * Compact footer: cwd · session · mode · model · hints.
+ * Compact a token count for the footer: exact below 1k, one decimal below
+ * 100k (`12.3k`), integer above (`123k`), and `m` past a million. Negative
+ * and non-finite inputs clamp to `0` — the line stays total on bad data.
+ */
+export function formatTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) return '0'
+  if (tokens < 1000) return String(Math.round(tokens))
+  const scaled = (divisor: number, suffix: string): string => {
+    const value = tokens / divisor
+    const compact = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10
+    return `${compact}${suffix}`
+  }
+  if (tokens < 1_000_000) return scaled(1000, 'k')
+  return scaled(1_000_000, 'm')
+}
+
+/**
+ * Compact footer: `cwd [branch] · session · mode · model · ctx NN% ·
+ * ↑in ↓out tok` plus the busy marker and key hints. Absent optional fields
+ * drop their segments; the function is pure and total on undefined inputs.
  */
 export function formatStatusLine(input: StatusLineInput): string {
+  const left = input.branch === undefined || input.branch.length === 0
+    ? shortenCwd(input.cwd)
+    : `${shortenCwd(input.cwd)} [${input.branch}]`
   const parts = [
-    shortenCwd(input.cwd),
+    left,
     shortenSession(input.sessionId),
     input.permissionMode,
   ]
   if (input.model !== undefined && input.model.length > 0) parts.push(input.model)
+  if (input.contextPercent !== undefined) {
+    const percent = Math.max(0, Math.min(100, Math.round(input.contextPercent)))
+    parts.push(`ctx ${percent}%`)
+  }
+  if (input.tokens !== undefined) {
+    parts.push(`↑${formatTokens(input.tokens.input)} ↓${formatTokens(input.tokens.output)} tok`)
+  }
   if (input.busy) parts.push('working')
   parts.push('shift+tab', '/quit')
   return parts.join(' · ')

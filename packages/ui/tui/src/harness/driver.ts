@@ -5,6 +5,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -46,6 +48,7 @@ import {
   setApproval,
   setBusy,
   setDraft,
+  setHud,
   setModelPicker,
   setNotice,
   setPermissionMode,
@@ -57,6 +60,7 @@ import {
   upsertRow,
   upsertSubagent,
   type CatalogEntryView,
+  type HudView,
   type SessionEntryView,
   type SubagentRunView,
   type TuiState,
@@ -70,6 +74,12 @@ export interface DriverConfig {
   model?: string
   /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
   historyDir?: string
+  /**
+   * Git-branch probe used by the statusline (best-effort, never throws).
+   * Injectable so tests avoid a real child process; defaults to
+   * {@link gitBranchOf}.
+   */
+  branchProbe?: (cwd: string) => Promise<string | undefined>
 }
 
 type PermissionRulesLike = {
@@ -140,6 +150,84 @@ type SubagentRunEndInfoLike = {
   local: boolean
   stopReason?: unknown
   lastAssistantMessage?: unknown
+}
+
+/**
+ * Structural stand-in for the sessionProjections registry
+ * (@deepseek-ai/dsh-session-projection via token-meter's augmentation),
+ * which the tui package doesn't import — same pattern as the other `*Like`
+ * seams. `onChanged` fires once per client-visible unit whose state changed;
+ * `stateOf` is the live read (undefined when the key is not registered).
+ */
+type SessionProjectionsLike = {
+  onChanged(listener: (session: { id: unknown }, key: string, value: unknown, seq: number) => void): () => void
+  stateOf(session: unknown, key: string): unknown
+}
+
+/**
+ * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
+ * field name; `inputTokens` is accepted defensively so a shape drift
+ * degrades to "no tokens" instead of NaN.
+ */
+type TokenUsageStateLike = {
+  totals?: {
+    uncachedInputTokens?: number
+    inputTokens?: number
+    outputTokens?: number
+  }
+}
+
+/** `contextPressure` projection state (subset the HUD reads). */
+type ContextPressureStateLike = {
+  contextWindow?: number
+  pressureTokens?: number
+  surfaceTokens?: number
+  sampledSurfaceTokens?: number
+}
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
+ * with a short timeout. Never throws — errors (no git, no repo, detached
+ * head) resolve to undefined and the statusline simply omits the segment.
+ */
+export async function gitBranchOf(cwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      timeout: 2000,
+    })
+    const branch = stdout.trim()
+    return branch.length > 0 ? branch : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Pull cumulative token totals out of a `tokenUsage` state value. */
+function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; output: number } | undefined {
+  const totals = usage?.totals
+  const input = totals?.uncachedInputTokens ?? totals?.inputTokens
+  if (typeof input !== 'number' || typeof totals?.outputTokens !== 'number') return undefined
+  return { input, output: totals.outputTokens }
+}
+
+/**
+ * Context-occupancy percent (0-100 int) from a `contextPressure` state
+ * value. Uses the projection's own occupancy definition: the latest sample
+ * plus the surface's movement since that sample was taken, falling back to
+ * the bare sample when no anchor exists. Undefined until both numerator and
+ * denominator are known.
+ */
+function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
+  const contextWindow = pressure?.contextWindow
+  const sample = pressure?.pressureTokens
+  if (typeof contextWindow !== 'number' || contextWindow <= 0 || typeof sample !== 'number') return undefined
+  const { surfaceTokens, sampledSurfaceTokens } = pressure ?? {}
+  const occupancy = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
+    ? Math.max(0, sample + surfaceTokens - sampledSurfaceTokens)
+    : sample
+  return Math.max(0, Math.min(100, Math.round((occupancy / contextWindow) * 100)))
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -261,6 +349,72 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // A historical log may end mid-turn if the process crashed; sync busy from
   // the ground-truth agent status before live events continue.
   emit(setBusy(state, current.agent.status === 'running'))
+
+  // --- Statusline HUD: git branch + sessionProjections feed -----------------
+  // Branch: one best-effort probe at boot and after each switchSession (the
+  // cwd may differ per session). Async is fine — a late landing re-emits so
+  // the footer picks it up; a probe superseded by a switch is dropped by the
+  // sequence check. The probe never throws; failures just omit the segment.
+  // No timer, one probe per (re)bind — zero polling.
+  const branchProbe = config.branchProbe ?? gitBranchOf
+  let branch: string | undefined
+  let branchSeq = 0
+  const refreshBranch = (): void => {
+    const seq = ++branchSeq
+    const dir = current.agent.session.header.cwd ?? cwd
+    void Promise.resolve(branchProbe(dir))
+      .catch(() => undefined)
+      .then(next => {
+        if (seq !== branchSeq || next === branch) return
+        branch = next
+        // Same-reference emit: re-notifies subscribers so root re-reads the
+        // statusline getter with the fresh branch.
+        emit(state)
+      })
+  }
+  refreshBranch()
+
+  // Projections: seed once from stateOf (a resumed session may already be
+  // populated), then keep the hud fresh from the change feed — event-driven,
+  // filtered to the live session so late events from a disposed session are
+  // dropped by the id mismatch.
+  const projections = ctx.get('sessionProjections') as SessionProjectionsLike | undefined
+  const applyHud = (patch: Partial<HudView>): void => {
+    const hud = state.hud
+    const percentSame = patch.contextPercent === undefined || hud?.contextPercent === patch.contextPercent
+    const tokens = patch.tokens
+    const tokensSame = tokens === undefined
+      || (hud?.tokens !== undefined && hud.tokens.input === tokens.input && hud.tokens.output === tokens.output)
+    if (percentSame && tokensSame) return // emit only on an actual change
+    emit(setHud(state, patch))
+  }
+  const seedHud = (): void => {
+    const patch: Partial<HudView> = {}
+    if (projections !== undefined) {
+      const tokens = tokensOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
+      if (tokens !== undefined) patch.tokens = tokens
+      const percent = percentOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined)
+      if (percent !== undefined) patch.contextPercent = percent
+    }
+    // Replace wholesale: clear first so stale fields from a previous session
+    // never leak, then apply whatever the new session actually has.
+    let next = setHud(state, undefined)
+    if (patch.contextPercent !== undefined || patch.tokens !== undefined) next = setHud(next, patch)
+    if (next !== state) emit(next)
+  }
+  seedHud()
+  if (projections !== undefined) {
+    projections.onChanged((session, key, value) => {
+      if (session.id !== current.agent.session.id) return
+      if (key === 'tokenUsage') {
+        const tokens = tokensOf(value as TokenUsageStateLike | undefined)
+        if (tokens !== undefined) applyHud({ tokens })
+      } else if (key === 'contextPressure') {
+        const percent = percentOf(value as ContextPressureStateLike | undefined)
+        if (percent !== undefined) applyHud({ contextPercent: percent })
+      }
+    })
+  }
 
   ctx.on('session/event', (session, event: SessionEvent) => {
     if (session.id !== current.agent.session.id) return
@@ -599,6 +753,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(foldHistory())
     emit(setPermissionMode(state, liveMode(current.agent, 'default')))
     emit(setBusy(state, current.agent.status === 'running'))
+    // Refresh the HUD and branch for the new session: stateOf may already be
+    // populated (or absent — stale fields must not leak), and the cwd may
+    // point at a different repo.
+    seedHud()
+    refreshBranch()
   }
 
   const sessionSwitcherSubmit = async (): Promise<void> => {
@@ -728,6 +887,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     sessionId: String(current.agent.session.id),
     permissionMode: state.permissionMode,
     ...selection.current === undefined ? {} : { model: selection.current.model },
+    ...branch === undefined ? {} : { branch },
+    ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
+    ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
     busy: state.busy,
   })
 
