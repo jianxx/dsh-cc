@@ -9,7 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './index.ts'
 import { createDriver } from './harness/driver.ts'
 import { ensurePackagedPreset } from './packaged-preset.ts'
-import { setupGracefulExit } from './terminal.ts'
+import { resetTerminalModes, setupGracefulExit } from './terminal.ts'
 import { App } from './ui.tsx'
 
 /**
@@ -36,11 +36,32 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
       : { sessionId: config.sessionId },
   })
 
-  const instance = render(createElement(App, { driver }))
+  if (process.stdin.isTTY) {
+    process.stdin.setEncoding('utf8')
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+  }
+
+  const instance = render(createElement(App, { driver }), { exitOnCtrlC: false })
+
+  let shuttingDown = false
+  const shutdown = (): void => {
+    if (shuttingDown) return
+    shuttingDown = true
+    try {
+      instance.unmount()
+    } catch {
+      // best-effort
+    }
+    void driver.dispose().finally(() => {
+      resetTerminalModes(process.stdout, false)
+      process.exit(0)
+    })
+  }
+
   const releaseExit = setupGracefulExit({
     onSignal: () => {
-      void driver.dispose()
-      instance.unmount()
+      shutdown()
     },
   })
 
@@ -50,5 +71,9 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     releaseExit()
     instance.unmount()
     void driver.dispose()
+  })
+
+  void instance.waitUntilExit().then(() => {
+    shutdown()
   })
 }

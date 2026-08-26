@@ -337,7 +337,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         ? undefined
         : { provider: selection.current.provider, model: selection.current.model }
       if (rawInput.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, current) }))
+        emit(upsertRow(state, {
+          kind: 'status',
+          text: `${formatModelCatalog(catalog, current)}\nPick with /model <n> or /model provider/id`,
+        }))
         return
       }
       const chosen = parseModelChoice(rawInput, catalog)
