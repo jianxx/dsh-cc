@@ -201,3 +201,133 @@ describe('createDriver agentOptions passthrough', () => {
     unsub()
   })
 })
+
+/**
+ * A ctx stub with a controllable commands service: `list(agent)` returns the
+ * current catalog and the test can fire `commands/change` to simulate
+ * register/unregister. `on` captures the commands/change listener.
+ */
+function makeCommandsCtx(commands: {
+  list(agent: unknown): { name: string; description?: string; input?: { hint?: string } }[]
+}) {
+  const handlers = new Map<string, Set<(...args: unknown[]) => void>>()
+  return {
+    ctx: {
+      get(key: string) {
+        if (key === 'agentPresets') {
+          return {
+            defaultId: 'cc',
+            resolve: async () => ({ id: 'cc' }),
+            mount: async () => ({ id: 'cc' }),
+          }
+        }
+        if (key === 'commands') return commands
+        return undefined
+      },
+      on(event: string, handler: (...args: unknown[]) => void) {
+        let set = handlers.get(event)
+        if (set === undefined) {
+          set = new Set()
+          handlers.set(event, set)
+        }
+        set.add(handler)
+        return () => {
+          handlers.get(event)?.delete(handler)
+        }
+      },
+      agents: {
+        create: async () => ({
+          agent: {
+            options: {},
+            session: { id: 's-test', header: {}, events: [] },
+            id: 'a-test',
+            status: 'idle',
+            followup() {},
+            cancel() {},
+          },
+          dispose: async () => {},
+        }),
+      },
+    },
+    fire(event: string, ...args: unknown[]) {
+      for (const h of handlers.get(event) ?? []) h(...args)
+    },
+  }
+}
+
+describe('createDriver listCommands catalog', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-cmd-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  it('merges local + harness commands, deduped (local wins)', async () => {
+    const { ctx } = makeCommandsCtx({
+      list: () => [
+        { name: 'status', description: 'harness status' },
+        { name: 'model', description: 'SHADOWED — local wins' }, // dedupe: local keeps its own
+        { name: 'permissions', description: 'rules', input: { hint: '<mode>' } },
+      ],
+    })
+    const driver = await createDriver(ctx as never, {})
+    const catalog = driver.listCommands()
+    const names = catalog.map(c => c.name)
+
+    // Local commands come first.
+    expect(names.indexOf('quit')).toBeLessThan(names.indexOf('status'))
+    // Harness entries appear.
+    expect(names).toContain('status')
+    expect(names).toContain('permissions')
+    // argumentHint maps from input.hint.
+    const perm = catalog.find(c => c.name === 'permissions')
+    expect(perm?.argumentHint).toBe('<mode>')
+    // 'model' appears once (local wins, no duplicate harness entry).
+    expect(names.filter(n => n === 'model')).toHaveLength(1)
+    // 'quit' is local-only and present.
+    expect(names).toContain('quit')
+  })
+
+  it('returns local-only catalog when no commands service is mounted', async () => {
+    const driver = await createDriver(makeCtx({}) as never, {})
+    const catalog = driver.listCommands()
+    const names = catalog.map(c => c.name).sort()
+    expect(names).toEqual(['clear', 'exit', 'model', 'quit', 'resume', 'tui-help'])
+  })
+
+  it('refreshes the catalog when commands/change fires', async () => {
+    let catalog = [
+      { name: 'status', description: 'v1' },
+    ]
+    const { ctx, fire } = makeCommandsCtx({
+      list: () => catalog,
+    })
+    const driver = await createDriver(ctx as never, {})
+    expect(driver.listCommands().map(c => c.name)).toContain('status')
+    const before = driver.listCommands()
+
+    // Mutate the harness catalog and fire the change event.
+    catalog = [{ name: 'status', description: 'v2' }, { name: 'fresh', description: 'new' }]
+    fire('commands/change')
+
+    const refreshed = driver.listCommands()
+    expect(refreshed.map(c => c.name)).toContain('fresh')
+    // The returned array identity changes after a refresh (so root.ts can
+    // detect a change by reference and rebuild the provider).
+    expect(refreshed).not.toBe(before)
+  })
+
+  it('exposes the session cwd', async () => {
+    const { ctx } = makeCommandsCtx({ list: () => [] })
+    const driver = await createDriver(ctx as never, { cwd: '/some/dir' })
+    expect(driver.cwd).toBe('/some/dir')
+  })
+})

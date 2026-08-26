@@ -18,6 +18,7 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
 import { parseSlash } from '../slash.ts'
+import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { createApprovalBox, createQuestionBox } from './overlays.ts'
@@ -71,6 +72,14 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       opts.onQuit?.()
     }
   }
+
+  // Slash-command + @-file autocomplete. The provider is rebuilt only when the
+  // driver's command catalog changes identity (driver.listCommands() returns a
+  // stable reference until commands/change fires) — cheap reference compare on
+  // every state emit, rebuild only when the catalog actually moved.
+  let lastCatalog = driver.listCommands()
+  let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd)
+  editor.setAutocompleteProvider(autocompleteProvider)
   tui.addChild(editor)
 
   const statusline = new Text(driver.statusLine, 0, 0)
@@ -134,6 +143,17 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       overlays.addChild(createQuestionBox(state.question))
     }
     overlays.invalidate()
+
+    // Refresh the autocomplete provider when the command catalog moves
+    // (reference equality with the last-seen array). The driver keeps the
+    // cached array stable across state emits until commands/change fires, so
+    // this is a cheap guard that rebuilds only on an actual catalog change.
+    const latestCatalog = driver.listCommands()
+    if (latestCatalog !== lastCatalog) {
+      lastCatalog = latestCatalog
+      autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd)
+      editor.setAutocompleteProvider(autocompleteProvider)
+    }
 
     statusline.setText(driver.statusLine)
     tui.requestRender()

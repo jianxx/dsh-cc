@@ -88,6 +88,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    get cwd() { return process.cwd() },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -119,6 +120,12 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     answerQuestion(_selected: string) {
       state = setQuestion(state, undefined)
       for (const l of listeners) l(state)
+    },
+    listCommands() {
+      return [
+        { name: 'quit', description: 'Exit the TUI session' },
+        { name: 'tui-help', description: 'Show TUI keyboard and command help' },
+      ]
     },
     async dispose() {},
     setState(next: TuiState) {
@@ -421,6 +428,30 @@ describe('vt-renderer', () => {
     stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('hidden thought')
     expect(driver.state.thinkingExpanded).toBe(true)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('surfaces slash-command autocomplete when the user types /t', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Type "/t" — the editor auto-triggers autocomplete via
+    // isInSlashCommandContext on the alphanumeric 't'.
+    vt.sendInput('/')
+    vt.sendInput('t')
+    await settle()
+
+    // The fakeDriver catalog exposes 'tui-help'; it must appear in the rendered
+    // grid as a suggestion entry. Asserting the name (not the overlay layout)
+    // keeps this resilient to SelectList presentation changes.
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('tui-help')
 
     root.tui.stop()
     root.destroy()

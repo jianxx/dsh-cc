@@ -23,7 +23,7 @@ import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
-import { parseSlash } from '../slash.ts'
+import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
 import { formatStatusLine } from '../statusline.ts'
@@ -72,6 +72,11 @@ type PlanModeLike = {
 }
 
 type CommandsLike = {
+  list(agent: Agent): readonly {
+    name: string
+    description?: string
+    input?: { hint?: string }
+  }[]
   execute(
     agent: Agent,
     line: string,
@@ -293,6 +298,52 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setPermissionMode(state, mode))
   }
 
+  // --- Slash-command catalog: merge local commands with the harness registry.
+  // The catalog is rebuilt at boot and whenever the harness fires
+  // `commands/change` (register/unregister). The cached array identity stays
+  // stable between refreshes so root.ts can detect a change by reference
+  // equality and rebuild the autocomplete provider only when needed.
+  const commandsService = ctx.get('commands') as CommandsLike | undefined
+  let commandCatalog: readonly { name: string; description?: string; argumentHint?: string }[] = []
+  const refreshCommandCatalog = (): void => {
+    const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
+    const merged: { name: string; description?: string; argumentHint?: string }[] =
+      LOCAL_COMMANDS.map(c => ({
+        name: c.name,
+        description: c.description,
+        ...c.argumentHint === undefined ? {} : { argumentHint: c.argumentHint },
+      }))
+    if (commandsService !== undefined) {
+      try {
+        const harnessList = commandsService.list(agent)
+        for (const cmd of harnessList) {
+          if (localNames.has(cmd.name)) continue // local wins, dedupe
+          merged.push({
+            name: cmd.name,
+            ...cmd.description === undefined ? {} : { description: cmd.description },
+            ...cmd.input?.hint === undefined ? {} : { argumentHint: cmd.input.hint },
+          })
+        }
+      } catch {
+        // A failing list() degrades to local-only; don't poison the catalog.
+      }
+    }
+    commandCatalog = merged
+  }
+  refreshCommandCatalog()
+  if (commandsService !== undefined) {
+    // `commands/change` is declared via module augmentation in
+    // @deepseek-ai/dsh-commands, but the tui package doesn't import that
+    // package directly, so the augmentation isn't in tsc's view here. The
+    // event exists at runtime (the commands service dispatches it on
+    // register/unregister); cast through the Events map to subscribe without
+    // pulling a new dep into the type graph.
+    const changeEvent = 'commands/change' as Parameters<typeof ctx.on>[0]
+    ctx.on(changeEvent, () => {
+      refreshCommandCatalog()
+    })
+  }
+
   const loadCatalog = async (): Promise<CatalogEntry[]> => {
     const llm = ctx.get('llm') as LlmLike | undefined
     if (llm === undefined) return []
@@ -435,6 +486,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     get statusLine() {
       return statusLineOf()
     },
+    get cwd() {
+      return cwd
+    },
     subscribe(listener) {
       listeners.add(listener)
       listener(state)
@@ -472,6 +526,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       pendingQuestion?.resolve({ answers: [{ id: '', selected: [selected] }] })
       pendingQuestion = undefined
       emit(setQuestion(state, undefined))
+    },
+    listCommands() {
+      return commandCatalog
     },
     async dispose() {
       questionsDispose?.()
