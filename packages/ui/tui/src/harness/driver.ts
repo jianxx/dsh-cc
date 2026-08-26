@@ -180,6 +180,19 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       },
     }
 
+  // Replay the durable event log so a resumed session shows its prior
+  // conversation. Presenters are already built, so tool cards re-run
+  // presentCall/presentResult on stored args (pure by contract). One emit for
+  // the whole fold — folding is a reduce, not a per-event broadcast.
+  let folded = state
+  for (const event of agent.session.events) {
+    folded = applySessionEvent(folded, event as SessionEventLike, presenters)
+  }
+  emit(folded)
+  // A historical log may end mid-turn if the process crashed; sync busy from
+  // the ground-truth agent status before live events continue.
+  emit(setBusy(state, agent.status === 'running'))
+
   ctx.on('session/event', (session, event: SessionEvent) => {
     if (session.id !== agent.session.id) return
     emit(applySessionEvent(state, event as SessionEventLike, presenters))

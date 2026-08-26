@@ -10,7 +10,12 @@ import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
  * degrade without extra wiring. `agents.create`/`resume` are spies that
  * capture the options and return a no-op handle.
  */
-function makeCtx(capture: { create?: unknown; resume?: unknown }): Record<string, unknown> {
+function makeCtx(capture: {
+  create?: unknown
+  resume?: unknown
+  resumeEvents?: unknown[]
+  resumeStatus?: string
+}): Record<string, unknown> {
   return {
     get(key: string) {
       if (key === 'agentPresets') {
@@ -31,6 +36,7 @@ function makeCtx(capture: { create?: unknown; resume?: unknown }): Record<string
             options: {},
             session: { id: 's-test', header: {}, events: [] },
             id: 'a-test',
+            status: 'idle',
             followup() {},
             cancel() {},
           },
@@ -42,8 +48,9 @@ function makeCtx(capture: { create?: unknown; resume?: unknown }): Record<string
         return {
           agent: {
             options: {},
-            session: { id: 's-test', header: {}, events: [] },
+            session: { id: 's-test', header: {}, events: capture.resumeEvents ?? [] },
             id: 'a-test',
+            status: capture.resumeStatus ?? 'idle',
             followup() {},
             cancel() {},
           },
@@ -98,5 +105,37 @@ describe('createDriver agentOptions passthrough', () => {
     const capture: { create?: { agentOptions?: unknown } } = {}
     await createDriver(makeCtx(capture) as never, { provider: 'mock' })
     expect(capture.create?.agentOptions).toBeUndefined()
+  })
+
+  it('replays session.events on resume so prior rows appear in state', async () => {
+    const resumeEvents = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'remember this' }], source: { kind: 'user' } } },
+      { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'ack' } } },
+      // No turn/end: the process crashed mid-turn.
+    ]
+    const capture: { resumeEvents?: unknown[]; resumeStatus?: string } = {
+      resumeEvents,
+      resumeStatus: 'running',
+    }
+    const driver = await createDriver(makeCtx(capture) as never, { sessionId: 'prior-session' })
+    expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'remember this' })
+    expect(driver.state.rows).toContainEqual({ kind: 'assistant', text: 'ack' })
+    // busy synced from the ground-truth status after the fold.
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('syncs busy to idle when agent.status is idle after resume', async () => {
+    const resumeEvents = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } } },
+      { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'hi' } } },
+    ]
+    const capture: { resumeEvents?: unknown[]; resumeStatus?: string } = {
+      resumeEvents,
+      resumeStatus: 'idle',
+    }
+    const driver = await createDriver(makeCtx(capture) as never, { sessionId: 'prior-session' })
+    expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'hello' })
+    // The chunk set busy=true during the fold, but agent.status=idle overrides it.
+    expect(driver.state.busy).toBe(false)
   })
 })

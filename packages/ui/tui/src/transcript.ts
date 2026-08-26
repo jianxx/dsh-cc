@@ -46,6 +46,17 @@ function textOf(data: unknown): string {
   if (typeof record.text === 'string') return record.text
   if (typeof record.message === 'string') return record.message
   if (typeof record.content === 'string') return record.content
+  // UserMessage carries content as an array of typed blocks; concatenate the
+  // text of every text block (ignore images and other non-text blocks).
+  if (Array.isArray(record.content)) {
+    return record.content
+      .filter((block): block is { type: 'text'; text: string } =>
+        block !== null && typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string')
+      .map(block => block.text)
+      .join('')
+  }
   return ''
 }
 
@@ -123,8 +134,14 @@ export function applySessionEvent(
 ): TuiState {
   const data = event.data
   switch (event.type) {
-    case 'user/message':
-      return upsertRow(state, { kind: 'user', text: textOf(data) })
+    case 'user/message': {
+      const text = textOf(data)
+      // Suppress the duplicate optimistic row the driver appends at submit
+      // time when the real user/message event arrives with the same text.
+      const last = state.rows.at(-1)
+      if (last?.kind === 'user' && last.text === text) return state
+      return upsertRow(state, { kind: 'user', text })
+    }
     case 'assistant/chunk': {
       const text = chunkText(data)
       if (text.length === 0) return setBusy(state, true)

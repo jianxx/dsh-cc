@@ -72,6 +72,38 @@ describe('applySessionEvent', () => {
     expect(state.permissionMode).toBe('plan')
   })
 
+  it('extracts text from a UserMessage content-block array', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, {
+      type: 'user/message',
+      data: { content: [{ type: 'text', text: 'hi there' }], source: { kind: 'user' } },
+    })
+    expect(state.rows).toEqual([{ kind: 'user', text: 'hi there' }])
+  })
+
+  it('concatenates only text blocks from mixed UserMessage content', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, {
+      type: 'user/message',
+      data: {
+        content: [
+          { type: 'text', text: 'hello' },
+          { type: 'image', attachment: {} as never },
+          { type: 'text', text: ' world' },
+        ],
+        source: { kind: 'user' },
+      },
+    })
+    expect(state.rows).toEqual([{ kind: 'user', text: 'hello world' }])
+  })
+
+  it('does not duplicate a user row when an identical user/message follows', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi' } })
+    state = applySessionEvent(state, { type: 'user/message', data: { text: 'hi' } })
+    expect(state.rows).toEqual([{ kind: 'user', text: 'hi' }])
+  })
+
   it('ignores unknown durable event types', () => {
     const state = createInitialState()
     expect(applySessionEvent(state, { type: 'made-up/event', data: {} })).toBe(state)
