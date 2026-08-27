@@ -61,6 +61,21 @@ function defaultPluginDirs(): string[] {
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const results: string[] = []
 
+  // The registry must outlive any single mcp-client instance: when an instance with
+  // failOnStartupError fails at startup, cordis rolls that fiber back and would
+  // dispose a lazily instance-provided registry with it. Provide it from a dedicated
+  // child fiber that is ACTIVE before any instance mounts (a direct
+  // `new McpConnectionsService(ctx)` here would stay invisible: this fiber is LOADING
+  // and ctx.get is strict).
+  if (ctx.get('mcpConnections') === undefined) {
+    await ctx.plugin({
+      name: 'cc-mcp-connections',
+      apply(c: Context) {
+        new CcMcpClient.McpConnectionsService(c)
+      },
+    })
+  }
+
   // The spawn-time model resolver is provided by the `@jianxx/dsh-cc-model-aliases`
   // routes service (`ccModelRoutes`). Query it lazily on every spawn so mount
   // order doesn't matter and an unmounted routes service degrades to inherit.
@@ -91,8 +106,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const body = JSON.parse(readFileSync(file, 'utf8')) as McpConfigFile
       const registrations = buildRegistrations(body, { env: process.env })
       for (const server of registrations) {
-        await ctx.plugin(CcMcpClient, server)
-        results.push(`mcp server ${server.serverName} mounted from ${file}`)
+        try {
+          await ctx.plugin(CcMcpClient, server)
+          results.push(`mcp server ${server.serverName} mounted from ${file}`)
+        } catch (error) {
+          ctx.logger.warn(`cc-shell-glue: failed to mount MCP server ${server.serverName} from ${file}: ${String(error)}`)
+        }
       }
     } catch (error) {
       ctx.logger.warn(`cc-shell-glue: failed to mount MCP config ${file}: ${String(error)}`)
