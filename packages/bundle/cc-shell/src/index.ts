@@ -36,10 +36,12 @@ export const Config: z<Config> = z.object({
 /** Cordis plugin id. */
 export const name = 'cc-shell-glue'
 
-/** Default `.mcp.json` locations: project, then user-home Claude space. */
+/** Default `.mcp.json` locations: project, the dsh home, then user-home Claude space. */
 function defaultMcpFiles(): string[] {
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
   return [
     join(process.cwd(), '.mcp.json'),
+    join(dshHome, '.mcp.json'),
     join(homedir(), '.claude', '.mcp.json'),
     join(homedir(), '.claude.json'),
   ]
