@@ -277,7 +277,36 @@ export function applySessionEvent(
     }
     case 'turn/start':
       return setBusy(state, true)
-    case 'turn/end':
+    case 'turn/end': {
+      // A turn always clears busy. Beyond that, fold the reason into a visible
+      // status row so a backend failure never ends the turn silently: error
+      // reasons paint red, blocked/max-tokens paint dim, and
+      // completed/aborted/absent add nothing (abort already shows
+      // "Interrupted by user." from interrupt()).
+      const reason = data !== null && typeof data === 'object'
+        ? (data as { reason?: unknown }).reason
+        : undefined
+      const kind = reason !== null && typeof reason === 'object'
+        ? (reason as { kind?: unknown }).kind
+        : undefined
+      if (kind === 'error') {
+        const err = (reason as { error?: unknown }).error
+        const message = err !== null && typeof err === 'object'
+          ? (err as { message?: unknown }).message
+          : undefined
+        const text = typeof message === 'string' && message.length > 0
+          ? `⚠ Turn failed: ${message}`
+          : '⚠ Turn failed'
+        return setBusy(upsertRow(state, { kind: 'status', text, error: true }), false)
+      }
+      if (kind === 'blocked') {
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Turn blocked' }), false)
+      }
+      if (kind === 'max-tokens') {
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Reached the token ceiling' }), false)
+      }
+      return setBusy(state, false)
+    }
     case 'agent/status': {
       const status = data !== null && typeof data === 'object'
         ? (data as { status?: string }).status

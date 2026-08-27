@@ -23,7 +23,15 @@ export type TranscriptRow =
     /** Structured file diffs from a presenter's diff-card view; rendered as hunks. */
     diffs?: readonly FileDiff[]
   }
-  | { kind: 'status'; text: string }
+  | {
+    kind: 'status'
+    text: string
+    /**
+     * Marks this status row as an error so the renderer paints it red instead
+     * of dim. Set by `turn/end` error folding; plain status notices stay dim.
+     */
+    error?: boolean
+  }
 
 export interface ApprovalView {
   toolName: string

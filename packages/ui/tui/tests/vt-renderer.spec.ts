@@ -5,6 +5,7 @@ import {
   type Terminal as PiTerminal,
 } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
+import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
@@ -985,6 +986,86 @@ describe('vt-renderer', () => {
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('Switching')
     expect(stripped).not.toContain('enter switch')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders an error status row with red SGR (not dim)', () => {
+    const row = { kind: 'status' as const, text: '⚠ Turn failed: boom', error: true }
+    const rendered = renderRowText(row)
+    // Red SGR (\x1b[31m) wraps the text — error rows are never dim.
+    expect(rendered).toContain('\x1b[31m')
+    expect(rendered).not.toContain('\x1b[2m')
+    expect(rendered).toContain('⚠ Turn failed: boom')
+  })
+
+  it('renders a plain status row dim with no red', () => {
+    const row = { kind: 'status' as const, text: 'done' }
+    const rendered = renderRowText(row)
+    expect(rendered).toContain('\x1b[2m')
+    expect(rendered).not.toContain('\x1b[31m')
+  })
+
+  it('clears the editor text after submitting on Enter (regression — ff49148)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver()
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    for (const ch of 'hi') vt.sendInput(ch)
+    await settle()
+    expect(root.editor.getText()).toBe('hi')
+
+    vt.sendInput('\r')
+    await settle()
+
+    // The editor's own submitValue() clears its text. The ff49148 bypass
+    // consumed \r before the editor, so the editor never cleared — this
+    // guard catches that reintroduction.
+    expect(root.editor.getText()).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('Ctrl+C (\\x03) when busy calls interrupt and does not quit', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setBusy(createInitialState(), true)
+    const driver = fakeDriver(state)
+    let interrupted = 0
+    driver.interrupt = () => { interrupted++ }
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+
+    expect(interrupted).toBe(1)
+    expect(quitCalled).toBe(false)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('Ctrl+C (\\x03) when idle calls onQuit and does not interrupt', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+    let interrupted = 0
+    driver.interrupt = () => { interrupted++ }
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+
+    expect(quitCalled).toBe(true)
+    expect(interrupted).toBe(0)
 
     root.tui.stop()
     root.destroy()

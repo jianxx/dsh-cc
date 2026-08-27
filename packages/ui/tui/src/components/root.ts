@@ -115,6 +115,22 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   // does not consume falls through to the focused editor.
   const removeInputListener = tui.addInputListener((data: string) => {
     const live = driver.state
+    // Ctrl+C arrives as a raw \x03 byte in raw mode (never a SIGINT). Treat it
+    // as an escape hatch: interrupt when busy, quit when idle. When an overlay
+    // is open and the agent is idle, fall through so the overlay's own key
+    // handling (esc to dismiss, etc.) owns it.
+    if (data === '\x03') {
+      if (live.busy) {
+        driver.interrupt()
+        return { consume: true }
+      }
+      if (live.approval !== undefined || live.question !== undefined ||
+          live.modelPicker !== undefined || live.sessionSwitcher !== undefined) {
+        return undefined
+      }
+      opts.onQuit?.()
+      return { consume: true }
+    }
     if (live.approval !== undefined) {
       if (data === '1' || data === 'y' || data === 'Y') driver.answerApproval(true)
       else if (data === '2' || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) driver.answerApproval(false)

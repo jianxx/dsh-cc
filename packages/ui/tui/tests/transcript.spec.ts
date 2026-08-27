@@ -474,4 +474,87 @@ describe('applySessionEvent', () => {
       expect(state.rows[0]).toMatchObject({ kind: 'tool', callId: 'call-1', running: false, result: 'ok' })
     })
   })
+
+  describe('turn/end reason folding', () => {
+    it('completed reason clears busy and adds no status row (regression)', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/start' })
+      state = applySessionEvent(state, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+      expect(state.busy).toBe(false)
+      // No status row appended on a clean completion.
+      expect(state.rows.filter(r => r.kind === 'status')).toHaveLength(0)
+    })
+
+    it('error reason clears busy and upserts a red-flagged status row with the verbatim message', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/start' })
+      state = applySessionEvent(state, {
+        type: 'turn/end',
+        data: {
+          reason: {
+            kind: 'error',
+            error: { message: 'prompt variable "{{model}}" has no value for this assembly' },
+          },
+        },
+      })
+      expect(state.busy).toBe(false)
+      const statusRows = state.rows.filter(r => r.kind === 'status')
+      expect(statusRows).toHaveLength(1)
+      const row = statusRows[0] as { kind: 'status'; text: string; error?: boolean }
+      expect(row.error).toBe(true)
+      expect(row.text).toContain('{{model}}" has no value for this assembly')
+      expect(row.text).toMatch(/^⚠ Turn failed:/)
+    })
+
+    it('blocked reason upserts a dim status row', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/end', data: { reason: { kind: 'blocked' } } })
+      expect(state.busy).toBe(false)
+      const row = state.rows.at(-1)
+      expect(row?.kind).toBe('status')
+      expect((row as { text: string }).text).toBe('⚠ Turn blocked')
+      expect((row as { error?: boolean }).error).toBeFalsy()
+    })
+
+    it('max-tokens reason upserts a dim status row', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } })
+      expect(state.busy).toBe(false)
+      const row = state.rows.at(-1)
+      expect(row?.kind).toBe('status')
+      expect((row as { text: string }).text).toBe('⚠ Reached the token ceiling')
+      expect((row as { error?: boolean }).error).toBeFalsy()
+    })
+
+    it('error reason without a message falls back to a generic row', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/end', data: { reason: { kind: 'error' } } })
+      expect(state.busy).toBe(false)
+      const row = state.rows.at(-1)
+      expect(row?.kind).toBe('status')
+      expect((row as { text: string }).text).toBe('⚠ Turn failed')
+      expect((row as { error?: boolean }).error).toBe(true)
+    })
+
+    it('error reason with a non-string message falls back to a generic row', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, {
+        type: 'turn/end',
+        data: { reason: { kind: 'error', error: { message: 42 } } },
+      })
+      expect(state.busy).toBe(false)
+      const row = state.rows.at(-1)
+      expect(row?.kind).toBe('status')
+      expect((row as { text: string }).text).toBe('⚠ Turn failed')
+      expect((row as { error?: boolean }).error).toBe(true)
+    })
+
+    it('absent reason clears busy and adds no status row', () => {
+      let state = createInitialState()
+      state = applySessionEvent(state, { type: 'turn/start' })
+      state = applySessionEvent(state, { type: 'turn/end' })
+      expect(state.busy).toBe(false)
+      expect(state.rows.filter(r => r.kind === 'status')).toHaveLength(0)
+    })
+  })
 })

@@ -182,8 +182,9 @@ describe('createDriver agentOptions passthrough', () => {
     const driver = await createDriver(makeCtx(capture) as never, { sessionId: 'prior-session' })
     expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
     expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
-    // Replayed history follows the banner.
-    expect(driver.state.rows[1]).toMatchObject({ kind: 'user', text: 'remember this' })
+    // A no-model-configured session also emits the boot notice (row 1); the
+    // replayed history follows both.
+    expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'remember this' })
   })
 
   it('toggleThinking flips thinkingExpanded and notifies subscribers', async () => {
