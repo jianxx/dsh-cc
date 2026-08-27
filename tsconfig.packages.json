@@ -132,6 +132,12 @@
     },
     {
       "path": "./packages/bundle/cc-shell"
+    },
+    {
+      "path": "./packages/ui/tui"
+    },
+    {
+      "path": "./packages/ui/pi-tui"
     }
   ]
 }

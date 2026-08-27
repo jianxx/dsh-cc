@@ -31,6 +31,14 @@ import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_COMMAND_MODES } from './modes.ts'
 import { renderPermissions } from './permissions.ts'
 
+export {
+  BYPASS_MODE,
+  PERMISSION_COMMAND_MODES,
+  PERMISSION_MODE_OPTIONS,
+  type PermissionCommandMode,
+  type PermissionModeOption,
+} from './modes.ts'
+
 export const name = 'command-permissions'
 /**
  * `commands` is required; the `permissionRules` engine and `planMode` are read

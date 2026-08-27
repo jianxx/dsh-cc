@@ -67,6 +67,19 @@ for dest_dir in "$dest"/*/; do
   [ "$found" = false ] && { rm -rf "$dest_dir"; echo "pruned stale $short"; }
 done
 
+# The vendored pi-tui renderer has RUNTIME npm deps (marked,
+# get-east-asian-width) that must resolve inside the profile copy. The main
+# loop above excluded node_modules for every package (other packages' nm
+# symlink into the sibling deepseek-harness via link: devDeps — materializing
+# those would duplicate cordis). pi-tui's deps are plain npm tarballs, so
+# re-copy it once WITH dereferenced node_modules, then drop nested junk.
+pi_tui_src="$repo_root/packages/ui/pi-tui"
+if [ -d "$pi_tui_src" ]; then
+  rsync -aL --delete "$pi_tui_src/" "$dest/dsh-cc-pi-tui/"
+  rm -rf "$dest/dsh-cc-pi-tui/node_modules/.bin" "$dest/dsh-cc-pi-tui/node_modules/@deepseek-ai"
+  echo "synced dsh-cc-pi-tui runtime deps (dereferenced)"
+fi
+
 echo "synced ${#synced[@]} packages into $dest"
 [ "$missing_lib" -eq 0 ] || exit 1
 

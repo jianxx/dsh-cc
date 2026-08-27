@@ -226,6 +226,15 @@
       ],
       "@jianxx/dsh-cc-command-init/init": [
         "./packages/interaction/command-init/src/init.ts"
+      ],
+      "@jianxx/dsh-cc-tui": [
+        "./packages/ui/tui/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-tui/*": [
+        "./packages/ui/tui/src/*"
+      ],
+      "@jianxx/dsh-cc-pi-tui": [
+        "./packages/ui/pi-tui/src/index.ts"
       ]
     },
     "rewriteRelativeImportExtensions": true

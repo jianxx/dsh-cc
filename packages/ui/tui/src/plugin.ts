@@ -1,0 +1,80 @@
+/**
+ * Boot wiring: packaged CC preset, TTY lease, driver, pi-tui mount.
+ * @module @jianxx/dsh-cc-tui/plugin
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import type { Config } from './index.ts'
+import { createDriver } from './harness/driver.ts'
+import { ensurePackagedPreset } from './packaged-preset.ts'
+import { acquireTerminal } from './terminal/lease.ts'
+import { buildRoot } from './components/root.ts'
+
+/**
+ * Start the TUI inside a dsh process.
+ */
+export async function mountTui(ctx: Context, config: Config): Promise<void> {
+  const packaged = ensurePackagedPreset()
+  if (packaged.status === 'conflict') {
+    ctx.logger.warn(
+      'dsh-cc-tui: ~/.dsh/.agent-presets/cc exists and is not managed by this package; leaving it in place',
+    )
+  } else if (packaged.status === 'missing-source') {
+    ctx.logger.warn(
+      'dsh-cc-tui: packaged CC preset files were not found next to the plugin; '
+      + 'ensure ~/.dsh/.agent-presets/cc exists (dsh-cc or scripts/sync-cc-preset.sh)',
+    )
+  }
+
+  const driver = await createDriver(ctx, {
+    ...config.cwd === undefined ? {} : { cwd: config.cwd },
+    ...config.agentPreset === undefined ? {} : { agentPreset: config.agentPreset },
+    ...config.sessionId === undefined || config.sessionId.length === 0
+      ? {}
+      : { sessionId: config.sessionId },
+    ...config.provider === undefined || config.provider.length === 0
+      ? {}
+      : { provider: config.provider },
+    ...config.model === undefined || config.model.length === 0
+      ? {}
+      : { model: config.model },
+  })
+
+  if (process.stdin.isTTY) {
+    process.stdin.setEncoding('utf8')
+    process.stdin.resume()
+  }
+
+  let shuttingDown = false
+
+  const shutdown = (): void => {
+    if (shuttingDown) return
+    shuttingDown = true
+    try {
+      root.destroy()
+      root.tui.stop()
+    } catch {
+      // best-effort
+    }
+    void driver.dispose().finally(() => {
+      lease.release()
+      process.exit(0)
+    })
+  }
+
+  const lease = acquireTerminal({
+    onSignal: () => {
+      shutdown()
+    },
+  })
+
+  const root = buildRoot(driver, { onQuit: shutdown })
+
+  root.tui.start()
+
+  ctx.effect(() => () => {
+    lease.release()
+    root.destroy()
+    void driver.dispose()
+  })
+}

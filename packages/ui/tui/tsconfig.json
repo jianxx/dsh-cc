@@ -1,0 +1,22 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib",
+    "types": ["node"]
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../interaction/command-permissions"
+    },
+    {
+      "path": "../../interaction/permission-rules"
+    },
+    {
+      "path": "../pi-tui"
+    }
+  ]
+}

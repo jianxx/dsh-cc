@@ -1,0 +1,37 @@
+{
+  "name": "@jianxx/dsh-cc-pi-tui",
+  "version": "0.1.0",
+  "description": "Vendored upstream pi-tui renderer (earendil-works/pi packages/tui) — see PORTING.md",
+  "type": "module",
+  "module": "lib/index.js",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "lib",
+    "LICENSE",
+    "PORTING.md",
+    "README.md"
+  ],
+  "dependencies": {
+    "marked": "18.0.5",
+    "get-east-asian-width": "1.6.0"
+  },
+  "devDependencies": {
+    "@xterm/headless": "5.5.0"
+  }
+}
