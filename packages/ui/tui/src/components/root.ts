@@ -17,15 +17,24 @@ import {
   type TUI,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
+import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
+import { todoSummary } from '../store.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
-import { createApprovalBox, createQuestionBox } from './overlays.ts'
+import { createApprovalBox, createModelPickerBox, createQuestionBox, createSessionSwitcherBox } from './overlays.ts'
 
 export interface BuildRootOptions {
   terminal?: Terminal
   onQuit?: () => void
+}
+
+/** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
+const TODO_ACTIVE_CAP = 60
+
+function truncateActive(content: string): string {
+  return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
 }
 
 export interface RootHandle {
@@ -37,9 +46,10 @@ export interface RootHandle {
 /**
  * Build the pi-tui render tree on a TuiMainScreen.
  *
- * Children order: title · transcript · [approval] · [question] · editor ·
- * statusline. The transcript and overlays rebuild on every driver emit; the
- * editor is persistent so it retains focus and cursor state across renders.
+ * Children order: title · transcript · queue chips · todo strip ·
+ * [approval] · [question] · editor · statusline. The transcript and overlays
+ * rebuild on every driver emit; the editor is persistent so it retains focus
+ * and cursor state across renders.
  */
 export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHandle {
   const terminal = opts.terminal ?? new ProcessTerminal()
@@ -56,17 +66,28 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   const queueLine = new Text('', 0, 0)
   tui.addChild(queueLine)
 
+  // Session todo strip (`☐ done/total · active task`), same persistent-Text
+  // pattern: blank content collapses it to zero lines when no todos exist.
+  const todoLine = new Text('', 0, 0)
+  tui.addChild(todoLine)
+
   // Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
   // every state change so they appear and disappear with the driver state.
   const overlays = new Container()
   tui.addChild(overlays)
 
   const editor = new Editor(tui, editorTheme)
+  // Seed the editor's ↑/↓ recall from persisted history (oldest first —
+  // addToHistory unshifts, so the last-seeded/newest becomes index 0 and is
+  // recalled on the first ↑ press).
+  for (const entry of driver.promptHistory) editor.addToHistory(entry)
   editor.onChange = (text: string): void => {
     driver.setDraft(text)
   }
   editor.onSubmit = (text: string): void => {
     const parsed = parseSlash(text)
+    // Only prompts join editor recall; slash commands are not prompts.
+    if (parsed.kind === 'none') editor.addToHistory(text)
     void driver.submit(text)
     if (parsed.kind === 'local' && (parsed.name === 'quit' || parsed.name === 'exit')) {
       opts.onQuit?.()
@@ -100,10 +121,21 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       return { consume: true }
     }
     if (live.question !== undefined) {
-      const index = Number.parseInt(data, 10)
-      const option = live.question.options[index - 1]
-      if (option !== undefined) driver.answerQuestion(option)
-      else if (matchesKey(data, Key.escape)) driver.answerQuestion(live.question.options[0] ?? '')
+      // While a question is open every key belongs to the overlay — routed and
+      // consumed here so the editor never sees typing, arrows, or enter.
+      routeQuestionInput(driver, data)
+      return { consume: true }
+    }
+    if (live.modelPicker !== undefined) {
+      // Modal model picker: arrows/enter/esc only, everything else consumed.
+      routeModelPickerInput(driver, data)
+      return { consume: true }
+    }
+    if (live.sessionSwitcher !== undefined) {
+      // Modal session switcher: arrows/enter/esc only, everything else
+      // consumed. While `switching` is true, all keys are consumed without
+      // action.
+      routeSessionSwitcherInput(driver, data)
       return { consume: true }
     }
     if (matchesKey(data, 'shift+tab')) {
@@ -135,12 +167,26 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
     )
     queueLine.invalidate()
 
+    const summary = todoSummary(state)
+    todoLine.setText(
+      summary === undefined
+        ? ''
+        : dim(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
+    )
+    todoLine.invalidate()
+
     overlays.clear()
     if (state.approval !== undefined) {
       overlays.addChild(createApprovalBox(state.approval))
     }
     if (state.question !== undefined) {
       overlays.addChild(createQuestionBox(state.question))
+    }
+    if (state.modelPicker !== undefined) {
+      overlays.addChild(createModelPickerBox(state.modelPicker))
+    }
+    if (state.sessionSwitcher !== undefined) {
+      overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
     }
     overlays.invalidate()
 

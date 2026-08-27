@@ -6,7 +6,7 @@
  * @module @jianxx/dsh-cc-tui/input
  */
 
-import { Key, matchesKey } from '@jianxx/dsh-cc-pi-tui'
+import { Key, decodeKittyPrintable, matchesKey } from '@jianxx/dsh-cc-pi-tui'
 import type { TuiState } from './store.ts'
 
 export interface InputSink {
@@ -15,13 +15,131 @@ export interface InputSink {
   cyclePermissionMode(): void
   toggleThinking(): void
   answerApproval(allowed: boolean): void
-  answerQuestion(selected: string): void
+  questionMove(delta: -1 | 1): void
+  questionToggle(): void
+  questionPick(index: number): void
+  questionType(text: string): void
+  questionBackspace(): void
+  questionSubmit(): void
+  questionCancel(): void
+  modelPickerMove(delta: -1 | 1): void
+  modelPickerSubmit(): void
+  modelPickerCancel(): void
+  sessionSwitcherMove(delta: -1 | 1): void
+  sessionSwitcherSubmit(): Promise<void>
+  sessionSwitcherCancel(): void
   dispose(): Promise<void>
 }
 
 export type InputAction =
   | { kind: 'none' }
   | { kind: 'quit' }
+
+/**
+ * Decode a raw keypress into the printable character it types, if any. Kitty
+ * CSI-u / modifyOtherKeys sequences decode via the vendored helper; legacy
+ * input arrives as the character itself.
+ */
+function printableOf(data: string): string | undefined {
+  const decoded = decodeKittyPrintable(data)
+  if (decoded !== undefined) return decoded
+  if (data.length === 1) {
+    const code = data.charCodeAt(0)
+    if (code >= 32 && code !== 127) return data
+  }
+  return undefined
+}
+
+/**
+ * Route one raw keypress into the open question overlay. Every recognized
+ * key is handled and every other input is dropped — the composer editor must
+ * never see keystrokes while a question is open.
+ */
+export function routeQuestionInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.questionCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.questionMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.questionMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    driver.questionSubmit()
+    return
+  }
+  if (matchesKey(data, Key.backspace)) {
+    driver.questionBackspace()
+    return
+  }
+  if (matchesKey(data, Key.space)) {
+    driver.questionToggle()
+    return
+  }
+  if (data.length === 1 && data >= '1' && data <= '9') {
+    // Digit quick-pick: the driver bounds-checks against the option list.
+    driver.questionPick(Number.parseInt(data, 10) - 1)
+    return
+  }
+  const printable = printableOf(data)
+  if (printable !== undefined) driver.questionType(printable)
+}
+
+/**
+ * Route one raw keypress into the open model picker. Only arrows, enter, and
+ * escape are recognized; everything else is dropped — the picker is modal and
+ * the composer editor must never see keystrokes while it is open.
+ */
+export function routeModelPickerInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.modelPickerCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.modelPickerMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.modelPickerMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    driver.modelPickerSubmit()
+    return
+  }
+  // All other keys are consumed and ignored (modal).
+}
+
+/**
+ * Route one raw keypress into the open session switcher. Only arrows, enter,
+ * and escape are recognized; everything else is dropped — the switcher is
+ * modal and the composer editor must never see keystrokes while it is open.
+ * While `switching` is true, every key is consumed without action.
+ */
+export function routeSessionSwitcherInput(driver: InputSink, data: string): void {
+  if (driver.state.sessionSwitcher?.switching === true) return
+  if (matchesKey(data, Key.escape)) {
+    driver.sessionSwitcherCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.sessionSwitcherMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.sessionSwitcherMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    void driver.sessionSwitcherSubmit()
+    return
+  }
+  // All other keys consumed and ignored (modal).
+}
 
 /**
  * Apply one raw keypress against the live driver. Returns whether the app
@@ -41,13 +159,17 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
   }
 
   if (live.question !== undefined) {
-    const index = Number.parseInt(data, 10)
-    const option = live.question.options[index - 1]
-    if (option !== undefined) {
-      driver.answerQuestion(option)
-    } else if (matchesKey(data, Key.escape)) {
-      driver.answerQuestion(live.question.options[0] ?? '')
-    }
+    routeQuestionInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.modelPicker !== undefined) {
+    routeModelPickerInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.sessionSwitcher !== undefined) {
+    routeSessionSwitcherInput(driver, data)
     return { kind: 'none' }
   }
 

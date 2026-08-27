@@ -4,7 +4,7 @@ import { LOCAL_COMMANDS, parseSlash } from '@jianxx/dsh-cc-tui/slash.ts'
 describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
-    expect(names).toEqual(['clear', 'exit', 'model', 'quit', 'resume', 'tui-help'])
+    expect(names).toEqual(['agents', 'clear', 'cost', 'exit', 'model', 'quit', 'resume', 'tui-help'])
   })
 
   it('every entry has a non-empty description', () => {
@@ -17,6 +17,18 @@ describe('LOCAL_COMMANDS', () => {
     const resume = LOCAL_COMMANDS.find(c => c.name === 'resume')
     expect(resume?.argumentHint).toBeDefined()
     expect(resume!.argumentHint!.length).toBeGreaterThan(0)
+  })
+
+  it('agents is listed with a subagent-activity description', () => {
+    const agents = LOCAL_COMMANDS.find(c => c.name === 'agents')
+    expect(agents).toBeDefined()
+    expect(agents!.description.toLowerCase()).toContain('subagent')
+  })
+
+  it('cost is listed with a token-usage description', () => {
+    const cost = LOCAL_COMMANDS.find(c => c.name === 'cost')
+    expect(cost).toBeDefined()
+    expect(cost!.description.toLowerCase()).toContain('token usage')
   })
 })
 
@@ -31,6 +43,8 @@ describe('parseSlash', () => {
     expect(parseSlash('/clear')).toEqual({ kind: 'local', name: 'clear', rawInput: '' })
     expect(parseSlash('/resume sess-1')).toEqual({ kind: 'local', name: 'resume', rawInput: 'sess-1' })
     expect(parseSlash('/model 2')).toEqual({ kind: 'local', name: 'model', rawInput: '2' })
+    expect(parseSlash('/agents')).toEqual({ kind: 'local', name: 'agents', rawInput: '' })
+    expect(parseSlash('/cost')).toEqual({ kind: 'local', name: 'cost', rawInput: '' })
   })
 
   it('forwards unknown names to the harness catalog', () => {

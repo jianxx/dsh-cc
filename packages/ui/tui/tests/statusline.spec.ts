@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { formatStatusLine } from '@jianxx/dsh-cc-tui/statusline.ts'
+import { formatStatusLine, formatTokens } from '@jianxx/dsh-cc-tui/statusline.ts'
 
 describe('formatStatusLine', () => {
   it('joins cwd, short session id, mode, and model', () => {
@@ -33,5 +33,99 @@ describe('formatStatusLine', () => {
       permissionMode: 'plan',
       busy: false,
     })).toBe('/tmp · x · plan · shift+tab · /quit')
+  })
+
+  it('renders the git branch bracketed right after cwd', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      branch: 'feat/tui-profile',
+      busy: false,
+    })).toBe('/tmp [feat/tui-profile] · x · default · shift+tab · /quit')
+  })
+
+  it('renders context percent between model and tokens', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      model: 'm1',
+      contextPercent: 42,
+      busy: false,
+    })).toBe('/tmp · x · default · m1 · ctx 42% · shift+tab · /quit')
+  })
+
+  it('rounds a fractional context percent to an integer', () => {
+    const line = formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      contextPercent: 41.5,
+      busy: false,
+    })
+    expect(line).toContain('ctx 42%')
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      contextPercent: 41.4,
+      busy: false,
+    })).toContain('ctx 41%')
+  })
+
+  it('renders compact token totals with arrows', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      tokens: { input: 12_349, output: 345 },
+      busy: false,
+    })).toBe('/tmp · x · default · ↑12.3k ↓345 tok · shift+tab · /quit')
+  })
+
+  it('renders the full v2 layout with every segment present', () => {
+    const cwd = join(homedir(), 'proj')
+    expect(formatStatusLine({
+      cwd,
+      sessionId: 'tui-56b37bee-41fd-4feb-b270-5988abcd',
+      permissionMode: 'acceptEdits',
+      model: 'deepseek-v4-flash',
+      branch: 'main',
+      contextPercent: 7,
+      tokens: { input: 1000, output: 2500 },
+      busy: true,
+    })).toBe(
+      '~/proj [main] · tui-56b37bee · acceptEdits · deepseek-v4-flash'
+      + ' · ctx 7% · ↑1k ↓2.5k tok · working · shift+tab · /quit',
+    )
+  })
+})
+
+describe('formatTokens', () => {
+  it('renders small counts exactly', () => {
+    expect(formatTokens(0)).toBe('0')
+    expect(formatTokens(7)).toBe('7')
+    expect(formatTokens(999)).toBe('999')
+  })
+
+  it('renders thousands with one decimal below 100k and integers above', () => {
+    expect(formatTokens(1000)).toBe('1k')
+    expect(formatTokens(1234)).toBe('1.2k')
+    expect(formatTokens(12_349)).toBe('12.3k')
+    expect(formatTokens(99_999)).toBe('100k')
+    expect(formatTokens(123_456)).toBe('123k')
+  })
+
+  it('renders millions compactly', () => {
+    expect(formatTokens(1_234_567)).toBe('1.2m')
+    expect(formatTokens(12_345_678)).toBe('12.3m')
+    expect(formatTokens(123_456_789)).toBe('123m')
+  })
+
+  it('clamps invalid input to 0', () => {
+    expect(formatTokens(-5)).toBe('0')
+    expect(formatTokens(Number.NaN)).toBe('0')
+    expect(formatTokens(Number.POSITIVE_INFINITY)).toBe('0')
   })
 })

@@ -7,12 +7,22 @@ import {
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
+  backspaceQuestionText,
   createInitialState,
   enqueue,
+  moveModelPickerFocus,
+  moveQuestionFocus,
   setApproval,
   setBusy,
+  setModelPicker,
   setQuestion,
+  setSessionSwitcher,
+  setTodos,
+  toggleQuestionOption,
+  typeQuestionText,
   upsertRow,
+  type CatalogEntryView,
+  type SessionEntryView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -82,13 +92,17 @@ class VirtualTerminal implements PiTerminal {
  * Minimal Driver fake: holds state, notifies subscribers, and implements the
  * overlay-answer methods so the global input listener can dismiss prompts.
  */
-function fakeDriver(initial: TuiState = createInitialState()): Driver & { setState(next: TuiState): void } {
+function fakeDriver(
+  initial: TuiState = createInitialState(),
+  promptHistory: readonly string[] = [],
+): Driver & { setState(next: TuiState): void } {
   let state = initial
   const listeners = new Set<(s: TuiState) => void>()
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
     get cwd() { return process.cwd() },
+    get promptHistory() { return promptHistory },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -117,10 +131,75 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
     },
-    answerQuestion(_selected: string) {
+    questionMove(delta) {
+      state = moveQuestionFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    questionToggle() {
+      const q = state.question
+      if (q === undefined) return
+      if (q.focused >= q.options.length) {
+        state = typeQuestionText(state, ' ')
+      } else if (q.multiSelect) {
+        state = toggleQuestionOption(state, q.focused)
+      } else {
+        state = setQuestion(state, undefined)
+      }
+      for (const l of listeners) l(state)
+    },
+    questionPick(index) {
+      const q = state.question
+      if (q === undefined || index < 0 || index >= q.options.length) return
+      if (q.multiSelect) {
+        state = toggleQuestionOption(state, index)
+      } else {
+        state = setQuestion(state, undefined)
+      }
+      for (const l of listeners) l(state)
+    },
+    questionType(text) {
+      state = typeQuestionText(state, text)
+      for (const l of listeners) l(state)
+    },
+    questionBackspace() {
+      state = backspaceQuestionText(state)
+      for (const l of listeners) l(state)
+    },
+    questionSubmit() {
       state = setQuestion(state, undefined)
       for (const l of listeners) l(state)
     },
+    questionCancel() {
+      state = setQuestion(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    modelPickerMove(delta) {
+      state = moveModelPickerFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    modelPickerSubmit() {
+      const picker = state.modelPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      state = setModelPicker(state, undefined)
+      if (entry !== undefined) {
+        state = upsertRow(state, {
+          kind: 'status',
+          text: `Model is now ${entry.provider}/${entry.id}.`,
+        })
+      }
+      for (const l of listeners) l(state)
+    },
+    modelPickerCancel() {
+      state = setModelPicker(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    async openSessionSwitcher() {},
+    sessionSwitcherMove() {},
+    async sessionSwitcherSubmit() {},
+    sessionSwitcherCancel() {},
+    async switchSession() {},
+    async listSessions() { return [] },
     listCommands() {
       return [
         { name: 'quit', description: 'Exit the TUI session' },
@@ -175,26 +254,71 @@ describe('vt-renderer', () => {
     root.destroy()
   })
 
-  it('shows an approval overlay and dismisses it on 1', async () => {
+  it('approval box renders tool name, reason, capped command preview, and explicit choices', async () => {
     const vt = new VirtualTerminal(80, 24)
     let state = createInitialState()
-    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /' })
+    state = setApproval(state, {
+      toolName: 'Bash',
+      reason: 'destructive git operation',
+      command: 'set -e\necho one\necho two\necho three',
+    })
     const driver = fakeDriver(state)
 
     const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
     root.tui.start()
     await settle()
 
-    let g = vt.grid()
-    expect(g.join('\n')).toContain('Approve Bash')
-    expect(g.join('\n')).toContain('1 yes')
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('Approve Bash')
+    expect(joined).toContain('destructive git operation')
+    // First three command lines render; the fourth is cut with a … trailer.
+    expect(joined).toContain('set -e')
+    expect(joined).toContain('echo one')
+    expect(joined).toContain('echo two')
+    expect(joined).toContain('…')
+    expect(joined).not.toContain('echo three')
+    // Explicit key → outcome mapping, not a bare yes/no.
+    expect(joined).toContain('1 Yes, allow once')
+    expect(joined).toContain('2 No, reject')
 
-    // Answer "yes" by pressing 1.
-    vt.sendInput('1')
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 1 resolves allow, 2 resolves reject, other keys never reach the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /tmp/x' })
+    const driver = fakeDriver(state)
+    const answers: boolean[] = []
+    const baseAnswer = driver.answerApproval.bind(driver)
+    driver.answerApproval = (allowed: boolean) => {
+      answers.push(allowed)
+      baseAnswer(allowed)
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
     await settle()
 
-    g = vt.grid()
-    expect(g.join('\n')).not.toContain('Approve Bash')
+    // A non-answer key is consumed by the overlay: the editor draft stays
+    // untouched while the approval box is open.
+    vt.sendInput('x')
+    await settle()
+    expect(root.editor.getText()).toBe('')
+
+    vt.sendInput('1')
+    await settle()
+    expect(answers).toEqual([true])
+    expect(vt.grid().join('\n')).not.toContain('Approve Bash')
+
+    // Reopen and reject with 2.
+    driver.setState(setApproval(driver.state, { toolName: 'Bash', command: 'rm -rf /tmp/x' }))
+    await settle()
+    vt.sendInput('2')
+    await settle()
+    expect(answers).toEqual([true, false])
+    expect(root.editor.getText()).toBe('')
 
     root.tui.stop()
     root.destroy()
@@ -237,6 +361,105 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the todo strip with done/total and the active task above the composer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'first task', status: 'completed' },
+      { content: 'write the tests', status: 'in_progress' },
+      { content: 'ship it', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('☐ 1/3 · write the tests')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('omits the active segment when no todo is in progress', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'done thing', status: 'completed' },
+      { content: 'later thing', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('☐ 1/2')
+    expect(stripped).not.toContain('later thing')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('caps a long active task at ~60 chars with an ellipsis', async () => {
+    const vt = new VirtualTerminal(120, 24)
+    const long = 'x'.repeat(100)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: long, status: 'in_progress' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    const marker = stripped.indexOf('☐')
+    expect(marker).toBeGreaterThanOrEqual(0)
+    // The strip line stays short: the 100-char task must be truncated. The
+    // grid pads rows to the terminal width, so measure the trimmed content.
+    const stripLine = stripped.split('\n').find(l => l.includes('☐'))!
+    expect(stripLine.trimEnd().length).toBeLessThan(80)
+    expect(stripLine).toContain('…')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('clears the todo strip when todos are cleared (collapses to zero height)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'pending' },
+      { content: 'c', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const withStrip = stripAnsi(vt.grid().join('\n'))
+    expect(withStrip).toContain('☐ 1/3')
+    const nonEmptyBefore = withStrip.split('\n').filter(l => l.trim().length > 0).length
+
+    driver.setState(setTodos(driver.state, undefined))
+    await settle()
+
+    const withoutStrip = stripAnsi(vt.grid().join('\n'))
+    expect(withoutStrip).not.toContain('☐')
+    // Exactly one line disappeared — the strip collapsed to zero height.
+    const nonEmptyAfter = withoutStrip.split('\n').filter(l => l.trim().length > 0).length
+    expect(nonEmptyBefore - nonEmptyAfter).toBe(1)
 
     root.tui.stop()
     root.destroy()
@@ -452,6 +675,316 @@ describe('vt-renderer', () => {
     // keeps this resilient to SelectList presentation changes.
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('tui-help')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('seeds editor ↑/↓ history from driver.promptHistory (newest recalled first)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState(), ['older', 'newer'])
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Editor starts empty → ↑ recalls the most recent entry ('newer'), not
+    // 'older' (addToHistory unshifts, so index 0 is the last seeded).
+    vt.sendInput('\x1b[A') // arrow up
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('newer')
+    expect(stripped).not.toContain('older')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the question overlay with options, focus marker, Other row, and hint', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Decision',
+      question: 'Which flavor?',
+      options: [{ label: 'vanilla' }, { label: 'chocolate' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Which flavor?')
+    expect(stripped).toContain('vanilla')
+    expect(stripped).toContain('chocolate')
+    // Focus marker sits on the focused (first) option.
+    expect(stripped).toContain('❯ 1. vanilla')
+    // Free-text escape hatch row is always present.
+    expect(stripped).toContain('Other:')
+    // Single-select footer hint.
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a plan-review question with the Plan review title and plan markdown', async () => {
+    const vt = new VirtualTerminal(80, 30)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Decision',
+      question: 'Approve this plan?',
+      detail: '## The plan\n\n- refactor the store\n- add tests',
+      options: [{ label: 'Ship it' }, { label: 'Keep iterating' }],
+      multiSelect: false,
+      intent: { kind: 'plan-review', approve: 'Ship it' },
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Plan review')
+    expect(stripped).toContain('Approve this plan?')
+    // Plan markdown body renders (heading text + list items via Markdown).
+    expect(stripped).toContain('The plan')
+    expect(stripped).toContain('refactor the store')
+    expect(stripped).toContain('add tests')
+    // Options still follow the plan.
+    expect(stripped).toContain('Ship it')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('multi-select shows [ ] before unselected options and [x] after a space toggle', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Pick',
+      question: 'Which areas?',
+      options: [{ label: 'ui' }, { label: 'api' }],
+      multiSelect: true,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ 1. [ ] ui')
+    expect(stripped).toContain('2. [ ] api')
+    expect(stripped).toContain('space toggle')
+
+    // Space toggles the focused option ('ui') — [x] appears.
+    vt.sendInput(' ')
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('1. [x] ui')
+    expect(stripped).toContain('2. [ ] api')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('typing while a question is open feeds the Other row, not the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setQuestion(state, {
+      header: 'Pick',
+      question: 'Name it',
+      options: [{ label: 'alpha' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    for (const ch of 'zed') vt.sendInput(ch)
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Other: zed')
+    // The editor draft stays empty — printable keys never reached it.
+    expect(driver.state.draft).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the model picker with entries, focus marker, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const entries: CatalogEntryView[] = [
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+      { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+    ]
+    let state = setModelPicker(createInitialState(), {
+      entries,
+      focused: 1,
+      current: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Select model')
+    expect(stripped).toContain('deepseek-official/deepseek-v4-flash — DeepSeek V4 Flash')
+    expect(stripped).toContain('deepseek-official/deepseek-v4-pro — DeepSeek V4 Pro')
+    expect(stripped).toContain('openai/gpt-5 — GPT-5')
+    // Focus marker sits on the focused (index 1) entry.
+    expect(stripped).toContain('❯ deepseek-official/deepseek-v4-pro')
+    // Current-model marker on the active route.
+    expect(stripped).toMatch(/deepseek-v4-pro.*\*/)
+    // Footer hint.
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('never renders more rows than the visible-window cap for a long catalog', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    // 25 entries — well past the cap.
+    const entries: CatalogEntryView[] = Array.from({ length: 25 }, (_, i) => ({
+      provider: 'p',
+      id: `m${i + 1}`,
+      name: `Model ${i + 1}`,
+    }))
+    let state = setModelPicker(createInitialState(), {
+      entries,
+      focused: 0,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    // The first and last catalog entries cannot both be visible when the
+    // window caps at MODEL_PICKER_VISIBLE_ROWS (10).
+    expect(stripped).toContain('p/m1 — Model 1')
+    expect(stripped).not.toContain('p/m25 — Model 25')
+    // Count rendered entry rows (lines containing "p/m") — must not exceed the cap.
+    const entryLines = stripped.split('\n').filter(l => l.includes('p/m'))
+    expect(entryLines.length).toBeLessThanOrEqual(10)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('enter on the focused model picker entry selects it and emits the status row', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const entries: CatalogEntryView[] = [
+      { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'Flash' },
+      { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+    ]
+    let state = setModelPicker(createInitialState(), { entries, focused: 1 })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\r')
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Model is now openai/gpt-5.')
+    // Overlay dismissed.
+    expect(stripped).not.toContain('Select model')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the session switcher with title, rows, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const sessions: SessionEntryView[] = [
+      { id: 's-newest', createdAt: Date.now() - 60_000 },
+      { id: 's-cur', cwd: '/tmp/proj', createdAt: Date.now() - 3_600_000 },
+      { id: 's-old', createdAt: Date.now() - 86_400_000 },
+    ]
+    let state = setSessionSwitcher(createInitialState(), {
+      sessions,
+      focused: 1,
+      switching: false,
+      currentId: 's-cur',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Resume session')
+    // Short id (first 8 chars)
+    expect(stripped).toContain('s-newest')
+    expect(stripped).toContain('s-cur')
+    expect(stripped).toContain('s-old')
+    // Focus marker on index 1 (relative date sits between marker and id)
+    expect(stripped).toContain('❯')
+    expect(stripped).toMatch(/❯.*s-cur/)
+    // Current-session marker (●)
+    expect(stripped).toMatch(/s-cur.*●/)
+    // Footer
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter switch')
+    expect(stripped).toContain('esc cancel')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders Switching… while a switch is in flight', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const sessions: SessionEntryView[] = [
+      { id: 's-a', createdAt: Date.now() },
+      { id: 's-b', createdAt: Date.now() - 1000 },
+    ]
+    let state = setSessionSwitcher(createInitialState(), {
+      sessions,
+      focused: 0,
+      switching: true,
+      currentId: 's-a',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Switching')
+    expect(stripped).not.toContain('enter switch')
 
     root.tui.stop()
     root.destroy()

@@ -81,6 +81,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     get state() { return state },
     get statusLine() { return 'test · status' },
     get cwd() { return process.cwd() },
+    get promptHistory() { return [] },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -91,7 +92,13 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     interrupt() {},
     cyclePermissionMode() {},
     answerApproval() {},
-    answerQuestion() {},
+    questionMove() {},
+    questionToggle() {},
+    questionPick() {},
+    questionType() {},
+    questionBackspace() {},
+    questionSubmit() {},
+    questionCancel() {},
     listCommands() { return [] },
     async dispose() {},
     setState(next: TuiState) {
