@@ -13,6 +13,11 @@
  * `chore(release): v<version>`, and tags `v<version>`. It NEVER pushes —
  * it prints the exact manual push command to run.
  *
+ * The ROOT package.json is always written even though it is private:
+ * check-release-version.mjs asserts the root version equals the tag, so a
+ * private root left at the old version fails the publish gate (v0.1.1
+ * incident). Private *packages* under packages/ are still skipped.
+ *
  * --dry-run prints validations + planned version writes with NO mutation,
  * commit, or tag.
  */
@@ -101,11 +106,16 @@ function walkPkgJsonPaths(dir) {
   return out;
 }
 
-const toUpdate = [join(ROOT, "package.json"), ...walkPkgJsonPaths(ROOT)];
+const ROOT_MANIFEST = join(ROOT, "package.json");
+const toUpdate = [ROOT_MANIFEST, ...walkPkgJsonPaths(ROOT)];
 const planned = [];
 for (const path of toUpdate) {
   const json = JSON.parse(readFileSync(path, "utf8"));
-  if (json.private === true) continue;
+  // Private packages are never published, so their version is meaningless —
+  // skip them. The ROOT manifest is the exception: it stays in lockstep with
+  // the release because check-release-version.mjs asserts it against the tag.
+  const isRoot = path === ROOT_MANIFEST;
+  if (json.private === true && !isRoot) continue;
   if (json.version === argVersion) continue;
   planned.push({ path, name: json.name, from: json.version, to: argVersion });
 }

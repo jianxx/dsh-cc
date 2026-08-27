@@ -7,7 +7,10 @@
  * packages/<group>/<pkg>/package.json) it asserts:
  *   1. publishConfig.access === "public"
  *   2. no dependency value starts with "link:"
- *   3. (only when a sibling checkout <repoRoot>/../deepseek-harness exists)
+ *   3. repository.url, normalized, names this repo — npm's sigstore
+ *      provenance check rejects any publish whose manifest does not
+ *      declare the repo it was built from (v0.1.1 pi-tui incident).
+ *   4. (only when a sibling checkout <repoRoot>/../deepseek-harness exists)
  *      every dependency/devDependency/peerDependency key matching
  *      /^@deepseek-ai\/dsh-/ carries a range that the harness version
  *      satisfies. Skipped silently (with a note line) when the sibling
@@ -189,6 +192,40 @@ function harnessVersion(root) {
   }
 }
 
+/* ---- repository provenance gate ---- */
+
+/** The repo every publishable package must declare as its provenance. */
+export const EXPECTED_REPOSITORY = "jianxx/dsh-cc-plugins";
+
+/**
+ * Normalize a repository declaration to the bare `owner/repo` slug so the
+ * equivalent spellings compare equal. Accepts the object form
+ * ({ type, url, directory }) and the shorthand string form; strips the
+ * `git+` prefix and a trailing `.git`. Returns null when the declaration is
+ * absent or not a non-empty string after extraction.
+ */
+export function normalizeRepoSlug(repository) {
+  if (repository == null) return null;
+  const url =
+    typeof repository === "string"
+      ? repository
+      : typeof repository.url === "string"
+        ? repository.url
+        : null;
+  if (!url) return null;
+  return url
+    .replace(/^git\+/, "")
+    .replace(/\.git$/, "")
+    .replace(/^https?:\/\/(www\.)?github\.com\//, "")
+    .replace(/^git@github\.com:/, "")
+    .replace(/\/$/, "");
+}
+
+/** True when `repository` names the expected provenance repo. */
+export function repositoryMatchesExpected(repository) {
+  return normalizeRepoSlug(repository) === EXPECTED_REPOSITORY;
+}
+
 /** Returns [{ pkg, reason }] — all invariant violations across the repo. */
 export function findManifestViolations(root = ROOT) {
   const problems = [];
@@ -215,6 +252,14 @@ export function findManifestViolations(root = ROOT) {
       if (typeof value === "string" && value.startsWith("link:")) {
         problems.push({ pkg: pkgName, reason: `dependency '${key}' is a link: value` });
       }
+    }
+    if (!repositoryMatchesExpected(json.repository)) {
+      problems.push({
+        pkg: pkgName,
+        reason:
+          `repository.url '${json.repository?.url ?? "<missing>"}' does not name ` +
+          `${EXPECTED_REPOSITORY} — npm sigstore provenance will reject the publish`,
+      });
     }
     if (hasHarness) {
       const hv = harnessVersion(root);
