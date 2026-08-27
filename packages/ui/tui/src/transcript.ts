@@ -11,6 +11,7 @@ import {
   type ToolResultView,
 } from './tool-card.ts'
 import {
+  dequeue,
   setBusy,
   setPermissionMode,
   upsertRow,
@@ -46,6 +47,17 @@ function textOf(data: unknown): string {
   if (typeof record.text === 'string') return record.text
   if (typeof record.message === 'string') return record.message
   if (typeof record.content === 'string') return record.content
+  // UserMessage carries content as an array of typed blocks; concatenate the
+  // text of every text block (ignore images and other non-text blocks).
+  if (Array.isArray(record.content)) {
+    return record.content
+      .filter((block): block is { type: 'text'; text: string } =>
+        block !== null && typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string')
+      .map(block => block.text)
+      .join('')
+  }
   return ''
 }
 
@@ -79,14 +91,36 @@ function argsOf(data: unknown): string {
   return ''
 }
 
-function chunkKind(data: unknown): 'assistant' | 'thinking' {
-  if (data === null || typeof data !== 'object') return 'assistant'
-  let record = data as Record<string, unknown>
-  // The live agent emits assistant/chunk as {turn, step, chunk: <StreamChunk>};
-  // unwrap the envelope so the chunk's own type classifies the row.
+/** Unwrap the live {turn, step, chunk} envelope to the inner StreamChunk. */
+function unwrapChunk(data: unknown): unknown {
+  if (data === null || typeof data !== 'object') return data
+  const record = data as Record<string, unknown>
   if (record.chunk !== null && typeof record.chunk === 'object' && !Array.isArray(record.chunk)) {
-    record = record.chunk as Record<string, unknown>
+    return record.chunk
   }
+  return data
+}
+
+interface ToolCallDeltaChunk {
+  readonly type: 'tool-call-delta'
+  readonly id: string | number
+  readonly name?: string
+  readonly argumentsDelta: string
+}
+
+/** Structural check for a tool-call-delta stream chunk. */
+function isToolCallDelta(chunk: unknown): chunk is ToolCallDeltaChunk {
+  if (chunk === null || typeof chunk !== 'object') return false
+  const record = chunk as Record<string, unknown>
+  return record.type === 'tool-call-delta'
+    && (typeof record.id === 'string' || typeof record.id === 'number')
+    && typeof record.argumentsDelta === 'string'
+}
+
+function chunkKind(data: unknown): 'assistant' | 'thinking' {
+  const chunk = unwrapChunk(data)
+  if (chunk === null || typeof chunk !== 'object') return 'assistant'
+  const record = chunk as Record<string, unknown>
   const type = typeof record.type === 'string' ? record.type : ''
   if (type.includes('reason') || type.includes('think')) return 'thinking'
   if (record.reasoning === true) return 'thinking'
@@ -95,12 +129,7 @@ function chunkKind(data: unknown): 'assistant' | 'thinking' {
 
 function chunkText(data: unknown): string {
   if (data === null || typeof data !== 'object') return textOf(data)
-  let record = data as Record<string, unknown>
-  // The live agent emits assistant/chunk as {turn, step, chunk: <StreamChunk>};
-  // unwrap the envelope so the delta's text reaches the transcript.
-  if (record.chunk !== null && typeof record.chunk === 'object' && !Array.isArray(record.chunk)) {
-    record = record.chunk as Record<string, unknown>
-  }
+  const record = unwrapChunk(data) as Record<string, unknown>
   if (typeof record.text === 'string') return record.text
   if (typeof record.delta === 'string') return record.delta
   if (record.delta !== null && typeof record.delta === 'object') {
@@ -108,6 +137,44 @@ function chunkText(data: unknown): string {
     if (typeof delta.text === 'string') return delta.text
   }
   return textOf(data)
+}
+
+/**
+ * Fold a tool-call-delta chunk into the pending tool row, accumulating
+ * `argumentsDelta` per callId. Presenters are NOT invoked on partial JSON;
+ * the durable tool/call finalizes the card through the existing callId
+ * upsert. A delta arriving after the row was finalized (running:false with
+ * a result) is ignored — durable order normally prevents this.
+ */
+function foldToolCallDelta(state: TuiState, chunk: ToolCallDeltaChunk): TuiState {
+  const callId = String(chunk.id)
+  const carriedName = typeof chunk.name === 'string' && chunk.name.length > 0 ? chunk.name : undefined
+  const existing = state.rows.find(row => row.kind === 'tool' && row.callId === callId)
+  if (existing !== undefined && existing.kind === 'tool') {
+    if (existing.running === false && existing.result !== undefined) return state
+    const name = carriedName !== undefined && existing.name === 'tool' ? carriedName : existing.name
+    const title = carriedName !== undefined && existing.title === 'tool' ? carriedName : existing.title
+    return setBusy(upsertRow(state, {
+      kind: 'tool',
+      callId,
+      name,
+      args: existing.args + chunk.argumentsDelta,
+      title,
+      ...existing.body !== undefined ? { body: existing.body } : {},
+      ...existing.result !== undefined ? { result: existing.result } : {},
+      ...existing.error !== undefined ? { error: existing.error } : {},
+      running: true,
+    }), true)
+  }
+  const initialName = carriedName ?? 'tool'
+  return setBusy(upsertRow(state, {
+    kind: 'tool',
+    callId,
+    name: initialName,
+    args: chunk.argumentsDelta,
+    title: initialName,
+    running: true,
+  }), true)
 }
 
 /**
@@ -123,9 +190,16 @@ export function applySessionEvent(
 ): TuiState {
   const data = event.data
   switch (event.type) {
-    case 'user/message':
-      return upsertRow(state, { kind: 'user', text: textOf(data) })
+    case 'user/message': {
+      const text = textOf(data)
+      // Clear the matching queued chip when its message lands in the trail,
+      // then upsert the user row. (Both paths — followup and steer — enqueue
+      // at submit, so the chip clears here on the durable event.)
+      return upsertRow(dequeue(state, text), { kind: 'user', text })
+    }
     case 'assistant/chunk': {
+      const chunk = unwrapChunk(data)
+      if (isToolCallDelta(chunk)) return foldToolCallDelta(state, chunk)
       const text = chunkText(data)
       if (text.length === 0) return setBusy(state, true)
       return setBusy(upsertRow(state, { kind: chunkKind(data), text }), true)
@@ -137,6 +211,7 @@ export function applySessionEvent(
       const args = argsOf(data)
       const view = presenters?.presentCall?.(name, parseArgs(args))
       const card = formatCallCard(view, { name, args })
+      const diffs = view !== undefined && view.card === 'diff' ? view.diffs : undefined
       return upsertRow(state, {
         kind: 'tool',
         callId: callIdOf(data),
@@ -144,6 +219,7 @@ export function applySessionEvent(
         args,
         title: card.title,
         ...card.body === undefined ? {} : { body: card.body },
+        ...diffs !== undefined ? { diffs } : {},
         running: true,
       })
     }
@@ -160,6 +236,7 @@ export function applySessionEvent(
         isError,
       })
       const card = formatResultCard(view, { pendingTitle, fallback, error: isError })
+      const diffs = view !== undefined && view.card === 'diff' ? view.diffs : undefined
       return upsertRow(state, {
         kind: 'tool',
         callId,
@@ -167,6 +244,7 @@ export function applySessionEvent(
         args: pendingArgs,
         title: card.title,
         ...card.body === undefined ? {} : { body: card.body, result: card.body },
+        ...diffs !== undefined ? { diffs } : {},
         error: card.error,
         running: false,
       })

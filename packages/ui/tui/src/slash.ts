@@ -9,6 +9,26 @@ export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help', 'resume', 'mode
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
 
+export interface LocalCommand {
+  readonly name: string
+  readonly description: string
+  readonly argumentHint?: string
+}
+
+/**
+ * Catalog of TUI-owned slash commands, surfaced via {@link Driver.listCommands}
+ * and the composer autocomplete. Descriptions mirror runLocal's behavior so
+ * the suggestion list matches what each command actually does.
+ */
+export const LOCAL_COMMANDS: readonly LocalCommand[] = [
+  { name: 'quit', description: 'Exit the TUI session' },
+  { name: 'exit', description: 'Exit the TUI session' },
+  { name: 'clear', description: 'Clear the transcript rows' },
+  { name: 'tui-help', description: 'Show TUI keyboard and command help' },
+  { name: 'resume', description: 'List or set a resume target session', argumentHint: '<sessionId>' },
+  { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
+] as const
+
 export type ParsedSlash =
   | { kind: 'local'; name: LocalSlashName; rawInput: string }
   | { kind: 'harness'; line: string }

@@ -80,6 +80,36 @@ if [ -d "$pi_tui_src" ]; then
   echo "synced dsh-cc-pi-tui runtime deps (dereferenced)"
 fi
 
+# The tui package also has plain-npm RUNTIME deps (highlight.js) that must
+# resolve from the synced profile copy. Unlike pi-tui, tui's devDependencies
+# are link: refs into the sibling deepseek-harness — re-copying tui WITH
+# dereferenced node_modules would materialize a second cordis. So instead sync
+# only each plain-npm `dependencies` entry (dereferenced) into the profile
+# root node_modules, where Node's upward resolution finds it for every @jianxx
+# package. Workspace/link/@deepseek-ai entries are skipped (they resolve via
+# the installer-maintained ~/.dsh fallback like the published bundles do).
+tui_src="$repo_root/packages/ui/tui"
+profile_nm="$(dirname "$dest")"  # .../$profile/node_modules
+if [ -f "$tui_src/package.json" ] && [ -d "$tui_src/node_modules" ]; then
+  node -e "
+    const fs = require('fs');
+    const cp = require('child_process');
+    const deps = Object.entries(require('$tui_src/package.json').dependencies || {});
+    let synced = 0;
+    for (const [name, range] of deps) {
+      if (range.startsWith('workspace:') || range.startsWith('link:')) continue;
+      const src = '$tui_src/node_modules/' + name;
+      if (!fs.existsSync(src)) { console.error('tui runtime dep ' + name + ' missing from node_modules'); process.exit(1); }
+      const dest = '$profile_nm/' + name;
+      fs.rmSync(dest, { recursive: true, force: true });
+      cp.execFileSync('rsync', ['-aL', '--delete', src + '/', dest + '/']);
+      fs.rmSync(dest + '/.bin', { recursive: true, force: true });
+      synced++;
+    }
+    if (synced) console.log('synced @jianxx/dsh-cc-tui runtime deps (dereferenced): ' + synced);
+  "
+fi
+
 echo "synced ${#synced[@]} packages into $dest"
 [ "$missing_lib" -eq 0 ] || exit 1
 

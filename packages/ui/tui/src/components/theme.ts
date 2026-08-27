@@ -16,9 +16,12 @@ export const sgr =
 export const bold = sgr('1')
 export const dim = sgr('2')
 export const italic = sgr('3')
+export const underline = sgr('4')
+export const strikethrough = sgr('9')
 export const cyan = sgr('36')
 export const yellow = sgr('33')
 export const red = sgr('31')
+export const green = sgr('32')
 export const magenta = sgr('35')
 
 /** Default editor theme: cyan border, dim descriptions. */

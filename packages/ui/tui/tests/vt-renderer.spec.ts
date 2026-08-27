@@ -8,6 +8,7 @@ import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   createInitialState,
+  enqueue,
   setApproval,
   setBusy,
   setQuestion,
@@ -87,6 +88,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    get cwd() { return process.cwd() },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -107,6 +109,10 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
       for (const l of listeners) l(state)
     },
     cyclePermissionMode() {},
+    toggleThinking() {
+      state = { ...state, thinkingExpanded: !state.thinkingExpanded }
+      for (const l of listeners) l(state)
+    },
     answerApproval(_allowed: boolean) {
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
@@ -115,12 +121,23 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
       state = setQuestion(state, undefined)
       for (const l of listeners) l(state)
     },
+    listCommands() {
+      return [
+        { name: 'quit', description: 'Exit the TUI session' },
+        { name: 'tui-help', description: 'Show TUI keyboard and command help' },
+      ]
+    },
     async dispose() {},
     setState(next: TuiState) {
       state = next
       for (const l of listeners) l(state)
     },
   }
+}
+
+/** Strip SGR sequences for structural assertions. */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, '')
 }
 
 /** Wait for the throttled async render to settle. */
@@ -201,6 +218,240 @@ describe('vt-renderer', () => {
     const joined = g.join('\n')
     expect(joined).toContain('─')
     expect(joined).toContain('test · status')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a queued chip line for each pending steer above the composer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'assistant', text: 'working' })
+    state = setBusy(state, true)
+    state = enqueue(state, 'fix the bug')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders diff hunks beneath a tool row head when diffs are present', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    // Head line with the title.
+    expect(joined).toContain('Edit foo.ts')
+    // Path header and hunk lines visible on screen.
+    expect(joined).toContain('foo.ts')
+    expect(stripAnsi(joined)).toContain('- old line')
+    expect(stripAnsi(joined)).toContain('+ new line')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('does not render a queue chip when the queue is empty', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'user', text: 'hi' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).not.toContain('⏵ queued:')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a running tool row with a present-tense verb before the title', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'r1',
+      name: 'bash',
+      args: '{"command":"ls"}',
+      title: 'bash',
+      running: true,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Running')
+    expect(stripped).toContain('bash')
+    expect(stripped).toContain('…')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a completed tool row with a checkmark and no verb', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'ok',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('ls -la')
+    expect(stripped).toContain('✓')
+    expect(stripped).not.toContain('Running')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders a thinking row collapsed to a one-line hint by default (body hidden)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'let me reason\nabout this\nnow' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('thinking (3 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('▸')
+    // Collapsed: the body text must NOT leak into the grid.
+    expect(stripped).not.toContain('let me reason')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the thinking body with a ▾ marker when thinkingExpanded is true', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'let me reason\nabout this' })
+    state = { ...state, thinkingExpanded: true }
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('▾')
+    expect(stripped).toContain('let me reason')
+    expect(stripped).not.toContain('Ctrl+O to expand')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('re-renders a thinking row on a flag flip despite unchanged row identity', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'secret reasoning' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('thinking (1 lines — Ctrl+O to expand)')
+    expect(stripped).not.toContain('secret reasoning')
+
+    // Flip the flag WITHOUT touching the rows array reference — the cached
+    // thinking row must still rebuild so the body appears.
+    driver.setState({ ...state, thinkingExpanded: true })
+    await settle()
+
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('secret reasoning')
+    expect(stripped).not.toContain('Ctrl+O to expand')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('toggles thinking on ctrl+o and re-renders the transcript', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, { kind: 'thinking', text: 'hidden thought' })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('hidden thought')
+
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('hidden thought')
+    expect(driver.state.thinkingExpanded).toBe(true)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('surfaces slash-command autocomplete when the user types /t', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Type "/t" — the editor auto-triggers autocomplete via
+    // isInSlashCommandContext on the alphanumeric 't'.
+    vt.sendInput('/')
+    vt.sendInput('t')
+    await settle()
+
+    // The fakeDriver catalog exposes 'tui-help'; it must appear in the rendered
+    // grid as a suggestion entry. Asserting the name (not the overlay layout)
+    // keeps this resilient to SelectList presentation changes.
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('tui-help')
 
     root.tui.stop()
     root.destroy()

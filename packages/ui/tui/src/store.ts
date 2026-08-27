@@ -4,6 +4,8 @@
  * @module @jianxx/dsh-cc-tui/store
  */
 
+import type { FileDiff } from './tool-card.ts'
+
 export type TranscriptRow =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string }
@@ -18,6 +20,8 @@ export type TranscriptRow =
     result?: string
     error?: boolean
     running: boolean
+    /** Structured file diffs from a presenter's diff-card view; rendered as hunks. */
+    diffs?: readonly FileDiff[]
   }
   | { kind: 'status'; text: string }
 
@@ -40,6 +44,10 @@ export interface TuiState {
   notice?: string
   approval?: ApprovalView
   question?: QuestionView
+  /** Texts submitted while the agent was busy (pending steering). */
+  queued: readonly string[]
+  /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
+  thinkingExpanded: boolean
 }
 
 /** Empty composer + idle agent. */
@@ -49,6 +57,8 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     draft: '',
     busy: false,
     permissionMode,
+    queued: [],
+    thinkingExpanded: false,
   }
 }
 
@@ -113,4 +123,32 @@ export function clearRows(state: TuiState): TuiState {
 export function setNotice(state: TuiState, notice: string | undefined): TuiState {
   const { notice: _dropped, ...rest } = state
   return notice === undefined ? rest : { ...rest, notice }
+}
+
+/** Park a submitted text as pending steering while the agent is busy. */
+export function enqueue(state: TuiState, text: string): TuiState {
+  return { ...state, queued: [...state.queued, text] }
+}
+
+/**
+ * Remove the FIRST queued entry strictly equal to `text`. No-op (returns the
+ * same reference) when the text is absent — so the matching chip clears the
+ * instant its durable `user/message` lands in the transcript.
+ */
+export function dequeue(state: TuiState, text: string): TuiState {
+  const index = state.queued.findIndex(entry => entry === text)
+  if (index < 0) return state
+  const queued = state.queued.slice(0, index).concat(state.queued.slice(index + 1))
+  return { ...state, queued }
+}
+
+/** Drop every queued chip (e.g. on interrupt — matches cancel's inbox clear). */
+export function clearQueue(state: TuiState): TuiState {
+  if (state.queued.length === 0) return state
+  return { ...state, queued: [] }
+}
+
+/** Flip the thinking-accordion expansion flag (Ctrl+O). */
+export function toggleThinking(state: TuiState): TuiState {
+  return { ...state, thinkingExpanded: !state.thinkingExpanded }
 }

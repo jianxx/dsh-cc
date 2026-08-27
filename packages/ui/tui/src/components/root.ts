@@ -18,7 +18,8 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
 import { parseSlash } from '../slash.ts'
-import { bold, editorTheme } from './theme.ts'
+import { TuiAutocompleteProvider } from './completion.ts'
+import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { createApprovalBox, createQuestionBox } from './overlays.ts'
 
@@ -50,6 +51,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   const transcript = new TranscriptView()
   tui.addChild(transcript)
 
+  // Pending-steer chip line. Collapses to zero lines when the queue is empty
+  // (Text.render returns [] for blank content), so it takes no vertical space.
+  const queueLine = new Text('', 0, 0)
+  tui.addChild(queueLine)
+
   // Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
   // every state change so they appear and disappear with the driver state.
   const overlays = new Container()
@@ -66,6 +72,14 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       opts.onQuit?.()
     }
   }
+
+  // Slash-command + @-file autocomplete. The provider is rebuilt only when the
+  // driver's command catalog changes identity (driver.listCommands() returns a
+  // stable reference until commands/change fires) — cheap reference compare on
+  // every state emit, rebuild only when the catalog actually moved.
+  let lastCatalog = driver.listCommands()
+  let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd)
+  editor.setAutocompleteProvider(autocompleteProvider)
   tui.addChild(editor)
 
   const statusline = new Text(driver.statusLine, 0, 0)
@@ -96,6 +110,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       driver.cyclePermissionMode()
       return { consume: true }
     }
+    if (matchesKey(data, Key.ctrl('o'))) {
+      driver.toggleThinking()
+      return { consume: true }
+    }
     if (matchesKey(data, Key.escape)) {
       if (live.busy) {
         driver.interrupt()
@@ -108,7 +126,14 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
   // Rebuild transcript + overlays + statusline on every driver emit.
   const unsubscribe = driver.subscribe((state) => {
-    transcript.setRows(state.rows)
+    transcript.setRows(state.rows, { thinkingExpanded: state.thinkingExpanded })
+
+    queueLine.setText(
+      state.queued.length === 0
+        ? ''
+        : state.queued.map(text => dim(`⏵ queued: ${text}`)).join('\n'),
+    )
+    queueLine.invalidate()
 
     overlays.clear()
     if (state.approval !== undefined) {
@@ -118,6 +143,17 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
       overlays.addChild(createQuestionBox(state.question))
     }
     overlays.invalidate()
+
+    // Refresh the autocomplete provider when the command catalog moves
+    // (reference equality with the last-seen array). The driver keeps the
+    // cached array stable across state emits until commands/change fires, so
+    // this is a cheap guard that rebuilds only on an actual catalog change.
+    const latestCatalog = driver.listCommands()
+    if (latestCatalog !== lastCatalog) {
+      lastCatalog = latestCatalog
+      autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd)
+      editor.setAutocompleteProvider(autocompleteProvider)
+    }
 
     statusline.setText(driver.statusLine)
     tui.requestRender()

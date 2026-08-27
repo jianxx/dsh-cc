@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { parseSlash } from '@jianxx/dsh-cc-tui/slash.ts'
+import { LOCAL_COMMANDS, parseSlash } from '@jianxx/dsh-cc-tui/slash.ts'
+
+describe('LOCAL_COMMANDS', () => {
+  it('has an entry for every TUI-owned slash name', () => {
+    const names = LOCAL_COMMANDS.map(c => c.name).sort()
+    expect(names).toEqual(['clear', 'exit', 'model', 'quit', 'resume', 'tui-help'])
+  })
+
+  it('every entry has a non-empty description', () => {
+    for (const cmd of LOCAL_COMMANDS) {
+      expect(cmd.description.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('resume carries an argument hint', () => {
+    const resume = LOCAL_COMMANDS.find(c => c.name === 'resume')
+    expect(resume?.argumentHint).toBeDefined()
+    expect(resume!.argumentHint!.length).toBeGreaterThan(0)
+  })
+})
 
 describe('parseSlash', () => {
   it('treats a non-slash line as none', () => {
