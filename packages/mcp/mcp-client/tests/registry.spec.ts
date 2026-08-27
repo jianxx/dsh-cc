@@ -148,4 +148,27 @@ describe('McpConnectionsService / mcpConnections registry', () => {
     // teardown removes the service (and its entries) entirely.
     expect(ctx.get('mcpConnections')).toBeUndefined()
   })
+
+  it('a registry provided by a parent plugin survives an instance rollback', async () => {
+    // Mirror the glue topology: parent mounts a registry child fiber first, then a
+    // failing instance (failOnStartupError), then a healthy one.
+    const parent = {
+      name: 'parent',
+      inject: ['tools'],
+      async apply(pctx: Context) {
+        await pctx.plugin({ name: 'registry', apply(c: Context) { new McpConnectionsService(c) } })
+        mockConnect.mockRejectedValueOnce(new Error('boom'))
+        await expect(
+          pctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, { ...stdioConfig('bad'), failOnStartupError: true }),
+        ).rejects.toThrow(/initial connection or tool synchronization failed/)
+        await pctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, stdioConfig('good'))
+      },
+    }
+    await ctx.plugin(parent)
+    const registry = ctx.get('mcpConnections')
+    expect(registry).toBeDefined()
+    const names = registry!.entries().map(e => `${e.name}:${e.state}`)
+    expect(names).toContain('good:ready')
+    expect(names).not.toContain('bad:connecting')
+  })
 })
