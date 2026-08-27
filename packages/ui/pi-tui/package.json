@@ -18,6 +18,11 @@
     "access": "public"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "directory": "packages/ui/pi-tui"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
