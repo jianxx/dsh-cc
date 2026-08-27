@@ -41,7 +41,7 @@ export interface RowRenderOptions {
   thinkingExpanded?: boolean
 }
 
-function renderRowText(row: TranscriptRow, options?: RowRenderOptions): string {
+export function renderRowText(row: TranscriptRow, options?: RowRenderOptions): string {
   switch (row.kind) {
     case 'user':
       return cyan(`> ${row.text}`)
@@ -78,7 +78,9 @@ function renderRowText(row: TranscriptRow, options?: RowRenderOptions): string {
       return headLine
     }
     case 'status':
-      return dim(row.text)
+      // Error status rows (turn/end failures) render red; plain status notices
+      // stay dim.
+      return row.error === true ? red(row.text) : dim(row.text)
   }
 }
 

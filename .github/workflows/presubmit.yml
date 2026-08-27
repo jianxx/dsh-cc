@@ -79,6 +79,17 @@ jobs:
         working-directory: dsh-cc-plugins
         run: node scripts/check-publish-manifests.mjs
 
+      # 另两道纯静态门禁:vendored pi-tui 纯净性(白名单外的 bare import)+
+      # TUI harness 边界(@deepseek-ai/* 只准出现在 harness/ 与插件面)。趁
+      # 静态阶段拦截,别等 vendor 树污染扩散到消费方才暴露。
+      - name: TUI boundary (check:tui-boundary)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-tui-boundary.mjs
+
+      - name: Vendored pi-tui purity (check:vendor-purity)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-vendor-purity.mjs
+
       - name: Cache harness build outputs (restore)
         id: cache-harness
         uses: actions/cache/restore@v4

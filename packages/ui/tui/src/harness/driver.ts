@@ -129,6 +129,18 @@ type ToolsLike = {
 }
 
 /**
+ * Structural stand-in for the deployment's `agentDefaultModel` service
+ * (settings.yaml's `agent-default-model`), which the headless bundle seeds
+ * agents from. `currentSelection()` returns the resolved default or undefined
+ * when no default is configured. `reasoningEffort` is intentionally ignored on
+ * the read path: undefined means the provider's default effort applies, which
+ * is the correct behavior for the TUI's seed.
+ */
+type AgentDefaultModelLike = {
+  currentSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined
+}
+
+/**
  * `subagent/start` snapshot. The real `SubagentRunInfo` is declared in
  * @deepseek-ai/subagent (via cordis module augmentation), which the tui
  * package doesn't import — so a structural local type stands in. Fields are
@@ -380,6 +392,35 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
     selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
   }
+  // Deployment default-model service (settings.yaml's agent-default-model).
+  // The headless bundle seeds agents from this; the TUI driver reads it here
+  // so a fresh profile with no explicit provider/model still resolves a
+  // selection. reasoningEffort is ignored on the read path (undefined = the
+  // provider's default effort).
+  const agentDefaultModel = ctx.get('agentDefaultModel') as AgentDefaultModelLike | undefined
+  /**
+   * Seed `selection.current` from the deployment default when no explicit
+   * provider/model is configured. Explicit config (DriverConfig) and resolved
+   * agent options always win — the service only fills the gap the headless
+   * bundle would otherwise fill. Called at boot and after switchSession rebinds
+   * the agent. `reset` clears a stale selection first (switchSession) so a
+   * previous session's model never leaks across a switch.
+   */
+  const seedDefaultModel = (reset = false): void => {
+    if (reset) selection.current = undefined
+    if (selection.current !== undefined) return
+    if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
+      selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
+      return
+    }
+    if (agentOptions === undefined) {
+      const dep = agentDefaultModel?.currentSelection()
+      if (dep !== undefined) {
+        selection.current = { provider: dep.provider, model: dep.model }
+      }
+    }
+  }
+  seedDefaultModel()
   writeResumeTarget(String(current.agent.session.id))
   // Composer history: load once at boot (oldest→newest); seeded into the
   // editor by root.ts. New prompts are appended on submit (see submit()).
@@ -394,6 +435,16 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     kind: 'status',
     text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
   }))
+  // If no model could be resolved at all (no explicit config, no resolved agent
+  // options, no deployment default), surface a one-time boot notice so the
+  // previously-silent failure is impossible to miss — F2 (/model) picks one.
+  // Fires only at driver create, never on per-event emits.
+  if (selection.current === undefined) {
+    emit(upsertRow(state, {
+      kind: 'status',
+      text: 'No model configured. Pick one with /model.',
+    }))
+  }
 
   const tools = ctx.get('tools') as ToolsLike | undefined
   const presenters: ToolPresenters | undefined = tools === undefined
@@ -827,10 +878,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     current.handle = newHandle
     current.agent = newHandle.agent
 
-    // Refresh the model selection from the new agent's resolved options.
-    if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
-      selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
-    }
+    // Refresh the model selection from the new agent's resolved options,
+    // falling back to the deployment default. Reset first so a stale selection
+    // from the previous session never leaks across a switch.
+    seedDefaultModel(true)
     writeResumeTarget(id)
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.

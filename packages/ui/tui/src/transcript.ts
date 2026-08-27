@@ -191,11 +191,37 @@ export function applySessionEvent(
   const data = event.data
   switch (event.type) {
     case 'user/message': {
+      // Route on UserMessage.source.kind: only human input renders as a user
+      // row. Injected context (kind 'plugin') is model-facing — a notice form
+      // surfaces as a one-line dim status per its contract, every other form
+      // (instructions/catalog/snapshot/relay/recall) stays hidden. Tool and
+      // unknown/absent kinds fold to nothing: never dump unrecognized
+      // injected content as if the user typed it.
+      const source = data !== null && typeof data === 'object'
+        ? (data as { source?: unknown }).source
+        : undefined
+      const kind = source !== null && typeof source === 'object'
+        && typeof (source as { kind?: unknown }).kind === 'string'
+        ? (source as { kind: string }).kind
+        : undefined
+      if (kind !== 'user') {
+        if (kind === 'plugin') {
+          const plugin = source as { form?: unknown; summary?: unknown }
+          if (plugin.form === 'notice' && typeof plugin.summary === 'string') {
+            return upsertRow(state, { kind: 'status', text: plugin.summary })
+          }
+        }
+        return state
+      }
       const text = textOf(data)
       // Clear the matching queued chip when its message lands in the trail,
       // then upsert the user row. (Both paths — followup and steer — enqueue
-      // at submit, so the chip clears here on the durable event.)
-      return upsertRow(dequeue(state, text), { kind: 'user', text })
+      // at submit, so the chip clears here on the durable event.) Empty or
+      // whitespace-only text adds no row (no blank `> ` lines) but still
+      // dequeues so the queue stays consistent.
+      const dequeued = dequeue(state, text)
+      if (text.trim().length === 0) return dequeued
+      return upsertRow(dequeued, { kind: 'user', text })
     }
     case 'assistant/chunk': {
       const chunk = unwrapChunk(data)
@@ -251,7 +277,36 @@ export function applySessionEvent(
     }
     case 'turn/start':
       return setBusy(state, true)
-    case 'turn/end':
+    case 'turn/end': {
+      // A turn always clears busy. Beyond that, fold the reason into a visible
+      // status row so a backend failure never ends the turn silently: error
+      // reasons paint red, blocked/max-tokens paint dim, and
+      // completed/aborted/absent add nothing (abort already shows
+      // "Interrupted by user." from interrupt()).
+      const reason = data !== null && typeof data === 'object'
+        ? (data as { reason?: unknown }).reason
+        : undefined
+      const kind = reason !== null && typeof reason === 'object'
+        ? (reason as { kind?: unknown }).kind
+        : undefined
+      if (kind === 'error') {
+        const err = (reason as { error?: unknown }).error
+        const message = err !== null && typeof err === 'object'
+          ? (err as { message?: unknown }).message
+          : undefined
+        const text = typeof message === 'string' && message.length > 0
+          ? `⚠ Turn failed: ${message}`
+          : '⚠ Turn failed'
+        return setBusy(upsertRow(state, { kind: 'status', text, error: true }), false)
+      }
+      if (kind === 'blocked') {
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Turn blocked' }), false)
+      }
+      if (kind === 'max-tokens') {
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Reached the token ceiling' }), false)
+      }
+      return setBusy(state, false)
+    }
     case 'agent/status': {
       const status = data !== null && typeof data === 'object'
         ? (data as { status?: string }).status

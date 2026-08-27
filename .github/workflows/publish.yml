@@ -97,6 +97,15 @@ jobs:
         working-directory: dsh-cc-plugins
         run: node scripts/check-publish-manifests.mjs
 
+      # 与 presubmit 保持一致:纯静态扫描,挡 vendor 污染与 harness 边界突破
+      - name: TUI boundary (check:tui-boundary)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-tui-boundary.mjs
+
+      - name: Vendored pi-tui purity (check:vendor-purity)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-vendor-purity.mjs
+
       # harness lib 缓存只 restore 不 save:缓存在 presubmit 侧生产,发布只消费
       - name: Cache harness build outputs (restore only)
         id: cache-harness
