@@ -1,0 +1,92 @@
+/**
+ * Regression test for the cc-shell glue's MCP registry ownership: the
+ * `mcpConnections` registry must survive a first-server startup failure.
+ * A `.mcp.json` whose FIRST server is broken (and, per the mcp-config loader,
+ * hardcodes failOnStartupError=true) used to roll back the mcp-client fiber —
+ * disposing the lazily instance-provided registry with it AND aborting the
+ * remaining servers in the same file. The glue must own the registry from a
+ * dedicated fiber and isolate per-server mount failures: the healthy server
+ * still mounts ready and the registry stays observable for `/mcp`.
+ */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@jianxx/dsh-cc-tools'
+import { apply } from '../src/index.ts'
+
+/** A ZERO-dependency MCP stdio server: newline-delimited JSON-RPC on stdio. */
+const FIXTURE_SERVER = `
+import { createInterface } from 'node:readline'
+
+const respond = (id, result) => {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+createInterface({ input: process.stdin }).on('line', (line) => {
+  let message
+  try {
+    message = JSON.parse(line)
+  } catch {
+    return
+  }
+  // Notifications carry no id; ignore them (e.g. notifications/initialized).
+  if (message.id === undefined || message.id === null) return
+  switch (message.method) {
+    case 'initialize':
+      respond(message.id, {
+        protocolVersion: '2025-03-26',
+        capabilities: { tools: { listChanged: true } },
+        serverInfo: { name: 'fixture', version: '1.0.0' },
+      })
+      break
+    case 'tools/list':
+      respond(message.id, {
+        tools: [{ name: 'ping', description: 'pong', inputSchema: { type: 'object', properties: {} } }],
+      })
+      break
+    default:
+      break
+  }
+})
+`
+
+let tmp: string
+
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), 'cc-shell-mcp-registry-'))
+})
+
+afterEach(() => {
+  rmSync(tmp, { recursive: true, force: true })
+})
+
+describe('cc-shell glue MCP registry ownership', () => {
+  it('keeps the registry and mounts later servers when an earlier server fails at startup', async () => {
+    const fixturePath = join(tmp, 'fixture-server.mjs')
+    writeFileSync(fixturePath, FIXTURE_SERVER, 'utf8')
+    // Object key order matters: the failing server MUST come first so the
+    // rollback lands before the healthy instance would mount.
+    const mcpJsonPath = join(tmp, '.mcp.json')
+    writeFileSync(mcpJsonPath, JSON.stringify({
+      mcpServers: {
+        'bad-first': { type: 'stdio', command: 'definitely-not-a-real-binary-dsh-cc', args: [] },
+        'good-second': { type: 'stdio', command: process.execPath, args: [fixturePath] },
+      },
+    }), 'utf8')
+
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+
+    await apply(ctx, { pluginDirs: [], mcpConfigFiles: [mcpJsonPath] })
+
+    const registry = ctx.get('mcpConnections')
+    expect(registry).toBeDefined()
+    const entries = registry!.entries()
+    expect(entries.find(e => e.name === 'good-second')).toMatchObject({ name: 'good-second', state: 'ready' })
+    expect(entries.some(e => e.name === 'bad-first')).toBe(false)
+  }, 30_000)
+})
