@@ -115,6 +115,19 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
   // does not consume falls through to the focused editor.
   const removeInputListener = tui.addInputListener((data: string) => {
     const live = driver.state
+    // Explicit Enter handling — ensures submission works regardless of
+    // keyboard protocol mode (Kitty/modifyOtherKeys) or terminal quirks.
+    // The vendored pi-tui Editor treats \n (and \x1b\r) as Shift+Enter
+    // (new line) when Kitty keyboard protocol is active, so plain Enter
+    // would insert a newline instead of submitting on some terminals.
+    if (data === '\r' || data === '\n' || data === '\x1bOM') {
+      // Don't submit when overlays are open — they handle their own Enter.
+      if (live.approval === undefined && live.question === undefined &&
+          live.modelPicker === undefined && live.sessionSwitcher === undefined) {
+        void driver.submit()
+        return { consume: true }
+      }
+    }
     if (live.approval !== undefined) {
       if (data === '1' || data === 'y' || data === 'Y') driver.answerApproval(true)
       else if (data === '2' || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) driver.answerApproval(false)
