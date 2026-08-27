@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-compaction-micro",
   "description": "Replay-safe model-free microcompaction of stale tool-result surface nodes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
