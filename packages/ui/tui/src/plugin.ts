@@ -52,7 +52,7 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     shuttingDown = true
     try {
       root.destroy()
-      root.tui.stop()
+      root.stopForExit()
     } catch {
       // best-effort
     }
@@ -68,7 +68,11 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     },
   })
 
-  const root = buildRoot(driver, { onQuit: shutdown })
+  const root = buildRoot(driver, {
+    onQuit: shutdown,
+    ...(config.uiMode === undefined ? {} : { uiMode: config.uiMode }),
+    ...(config.mouse === undefined ? {} : { mouse: config.mouse }),
+  })
 
   root.tui.start()
 

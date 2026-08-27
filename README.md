@@ -48,13 +48,15 @@ packages/
   session/command-cost|export|stats  /cost /export /stats
   bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
   bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts `dsh-tool-ask-user` AskUserQuestion over the base-owned `dsh-user-questions` seam and `dsh-schedule`)
-  bundle/cc-tui                    terminal surface over dsh-base (profile `tui`, CC preset default)
-  ui/tui                           Ink protocol driver for the tui profile
+  bundle/cc-tui                    terminal surface over dsh-base (profile `tui`, CC preset default, fullscreen on entry)
+  ui/tui                            pi-tui renderer + protocol driver for the tui profile
   launcher/tui                     optional `dsh-cc` bin → `dsh --profile tui`
   test-support/agent-loop-mock     vendored test fixture (not a plugin)
 ```
 
 ## Install (half a minute)
+
+All plugins are published on npm under the `@jianxx` scope — `dsh plugin add` resolves them straight from the registry, no local checkout needed.
 
 Prereq: a dsh CLI installation (`dsh` on PATH, version ≥ 0.1.0-rc.5).
 
@@ -141,6 +143,8 @@ preset list is re-scanned at the next boot.
 
 On the **tui** profile the same preset is the default (`dsh --profile tui` / `dsh-cc`); the plugin copies it into `~/.dsh/.agent-presets/cc` on boot.
 
+The **tui** profile launches in **fullscreen** (alternate-screen) mode by default: the transcript scrolls inside a primary viewport while the dock (queue, todos, overlays, editor, statusline) stays pinned at the bottom, and exit replays the transcript into native scrollback. Opt out per-launch with `DSH_CCTUI_UI_MODE=regular`, or pin the mode in plugin config (`uiMode: 'regular' | 'fullscreen'`, default `regular` at the plugin level).
+
 Select the preset either through the web UI's preset selector, or by setting
 `agent-presets.default="cc"` in settings. To uninstall, delete the
 `~/.dsh/.agent-presets/cc` directory.
@@ -217,8 +221,10 @@ pnpm test                         # vitest
 ```
 
 Upstream types resolve through `link:` devDeps into a sibling dsh checkout at
-`../deepseek-harness` (built once with `pnpm run build` there). To publish for real,
-replace link: devDeps with released version ranges and publish the vendored set under the @jianxx scope.
+`../deepseek-harness` (built once with `pnpm run build` there) — this keeps the
+contributor tree offline-friendly. The packages themselves are published to npm
+under the `@jianxx` scope (see `scripts/release.mjs`); `link:` devDeps only
+affect this repo, never the published artifacts.
 
 > Working on `pnpm-lock.yaml` or dependency declarations on a
 > network-restricted host: see `docs/dev.md` for what the frozen-lockfile
