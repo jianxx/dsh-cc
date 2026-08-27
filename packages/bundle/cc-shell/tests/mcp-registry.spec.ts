@@ -15,7 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@jianxx/dsh-cc-tools'
-import { apply } from '../src/index.ts'
+import { apply, Config as GlueConfig } from '../src/index.ts'
+import * as GlueModule from '../src/index.ts'
 
 /** A ZERO-dependency MCP stdio server: newline-delimited JSON-RPC on stdio. */
 const FIXTURE_SERVER = `
@@ -53,6 +54,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `
 
+/** Write the zero-dep fixture stdio server into the temp dir; returns its path. */
+function writeFixtureServer(): string {
+  const fixturePath = join(tmp, 'fixture-server.mjs')
+  writeFileSync(fixturePath, FIXTURE_SERVER, 'utf8')
+  return fixturePath
+}
+
 let tmp: string
 
 beforeEach(() => {
@@ -65,8 +73,7 @@ afterEach(() => {
 
 describe('cc-shell glue MCP registry ownership', () => {
   it('keeps the registry and mounts later servers when an earlier server fails at startup', async () => {
-    const fixturePath = join(tmp, 'fixture-server.mjs')
-    writeFileSync(fixturePath, FIXTURE_SERVER, 'utf8')
+    const fixturePath = writeFixtureServer()
     // Object key order matters: the failing server MUST come first so the
     // rollback lands before the healthy instance would mount.
     const mcpJsonPath = join(tmp, '.mcp.json')
@@ -88,5 +95,44 @@ describe('cc-shell glue MCP registry ownership', () => {
     const entries = registry!.entries()
     expect(entries.find(e => e.name === 'good-second')).toMatchObject({ name: 'good-second', state: 'ready' })
     expect(entries.some(e => e.name === 'bad-first')).toBe(false)
+  }, 30_000)
+
+  it('Config({}) keeps absent fields undefined so discovery fallbacks fire', () => {
+    const validated = GlueConfig({})
+    expect(validated.mcpConfigFiles).toBeUndefined()
+    expect(validated.pluginDirs).toBeUndefined()
+    expect(GlueConfig({ mcpConfigFiles: [] }).mcpConfigFiles).toEqual([])
+  })
+
+  it('discovers $DSH_HOME/.mcp.json when mounted without config (loader schema path)', async () => {
+    const fixturePath = writeFixtureServer()
+    writeFileSync(join(tmp, '.mcp.json'), JSON.stringify({
+      mcpServers: {
+        'tdd-discovery-fixture': { type: 'stdio', command: process.execPath, args: [fixturePath] },
+      },
+    }), 'utf8')
+
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+
+    const savedDshHome = process.env.DSH_HOME
+    try {
+      process.env.DSH_HOME = tmp
+      // Mount EXACTLY like the loader does: no config object, so cordis
+      // validates the absent config through the module's Config schema.
+      await ctx.plugin(GlueModule)
+    } finally {
+      if (savedDshHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = savedDshHome
+    }
+
+    const registry = ctx.get('mcpConnections')
+    expect(registry).toBeDefined()
+    // Presence only: cwd/.mcp.json and ~/.claude(.json) defaults may add more
+    // entries on a given machine; the fixture server must simply be among them.
+    const entries = registry!.entries()
+    expect(entries.find(e => e.name === 'tdd-discovery-fixture'))
+      .toMatchObject({ name: 'tdd-discovery-fixture', state: 'ready' })
   }, 30_000)
 })
