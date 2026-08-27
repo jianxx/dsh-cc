@@ -21,16 +21,18 @@ import { CcPluginsService } from './ccPlugins.ts'
 
 /** Plugin config: which on-disk CC surfaces to mount. */
 export interface Config {
-  /** Directories that each carry a plugin.json (Claude Code plugins). */
-  pluginDirs?: string[]
-  /** `.mcp.json` documents whose accepted servers become mcp-client instances. */
-  mcpConfigFiles?: string[]
+  /** Directories that each carry a plugin.json. Absent → discovery defaults; explicit [] or null disables. */
+  pluginDirs?: string[] | null
+  /** `.mcp.json` documents whose accepted servers become mcp-client instances. Absent → discovery defaults; explicit [] or null disables. */
+  mcpConfigFiles?: string[] | null
 }
 
 /** Runtime config schema (all fields optional; discovery prefers explicit lists). */
 export const Config: z<Config> = z.object({
-  pluginDirs: z.array(z.string()),
-  mcpConfigFiles: z.array(z.string()),
+  // union with null: bare z.array() gets an implicit [] default from schemastery,
+  // which would defeat the absent → discovery-fallback semantics below.
+  pluginDirs: z.union([z.array(z.string()), z.const(null)]),
+  mcpConfigFiles: z.union([z.array(z.string()), z.const(null)]),
 })
 
 /** Cordis plugin id. */
