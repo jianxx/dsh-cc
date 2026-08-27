@@ -206,3 +206,54 @@ describe('parseMcpServers / buildRegistrations', () => {
       .toThrow(/url/i)
   })
 })
+
+describe('buildRegistrations serverName normalization', () => {
+  it('normalizes invalid characters in a server name to a single dash', () => {
+    const regs = buildRegistrations(
+      { mcpServers: { 'pxpipe docs': { type: 'http', url: 'https://example.com/mcp' } } },
+      { env: ENV },
+    )
+    expect(regs).toHaveLength(1)
+    expect(regs[0]?.serverName).toBe('pxpipe-docs')
+    expect(regs[0]?.serverName).toMatch(/^[A-Za-z0-9_-]{1,32}$/)
+  })
+
+  it('passes already-valid server names through unchanged', () => {
+    const regs = buildRegistrations(
+      { mcpServers: { context7: { type: 'stdio', command: 'npx', args: [] } } },
+      { env: ENV },
+    )
+    expect(regs).toHaveLength(1)
+    expect(regs[0]?.serverName).toBe('context7')
+  })
+
+  it('gives policy hooks the original unnormalized name', () => {
+    const seen: string[] = []
+    buildRegistrations(
+      { mcpServers: { 'pxpipe docs': { type: 'http', url: 'https://example.com/mcp' } } },
+      {
+        env: ENV,
+        policy: {
+          allow: (name) => {
+            seen.push(name)
+            return true
+          },
+        },
+      },
+    )
+    expect(seen).toEqual(['pxpipe docs'])
+  })
+
+  it('truncates overlong server names to the 32-char tool-prefix limit', () => {
+    const long = `${'a'.repeat(20)} ${'b'.repeat(19)}`
+    const regs = buildRegistrations(
+      { mcpServers: { [long]: { type: 'http', url: 'https://example.com/mcp' } } },
+      { env: ENV },
+    )
+    expect(regs).toHaveLength(1)
+    const name = regs[0]?.serverName ?? ''
+    expect(name.length).toBeGreaterThan(0)
+    expect(name.length).toBeLessThanOrEqual(32)
+    expect(name).toMatch(/^[A-Za-z0-9_-]{1,32}$/)
+  })
+})
