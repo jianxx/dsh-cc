@@ -23,6 +23,9 @@ import {
   compareVersions,
   rangeSatisfiedBy,
   findManifestViolations,
+  normalizeRepoSlug,
+  repositoryMatchesExpected,
+  EXPECTED_REPOSITORY,
 } from "./check-publish-manifests.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -107,6 +110,46 @@ check("malformed >= floor throws", () => {
   assert.throws(() => rangeSatisfiedBy(">=not-a-version", "0.1.0"), /malformed '>=' range/);
 });
 
+/* ---- repository provenance normalization ---- */
+
+const GOOD_REPO = {
+  type: "git",
+  url: "git+https://github.com/jianxx/dsh-cc-plugins.git",
+  directory: "packages/a/public-pkg",
+};
+check("normalizeRepoSlug: git+https + .git + directory", () => {
+  assert.equal(normalizeRepoSlug(GOOD_REPO), EXPECTED_REPOSITORY);
+});
+check("normalizeRepoSlug: plain https url, no .git", () => {
+  assert.equal(
+    normalizeRepoSlug({ url: "https://github.com/jianxx/dsh-cc-plugins" }),
+    EXPECTED_REPOSITORY,
+  );
+});
+check("normalizeRepoSlug: ssh scp-like form", () => {
+  assert.equal(
+    normalizeRepoSlug({ url: "git@github.com:jianxx/dsh-cc-plugins.git" }),
+    EXPECTED_REPOSITORY,
+  );
+});
+check("normalizeRepoSlug: shorthand string", () => {
+  assert.equal(normalizeRepoSlug("jianxx/dsh-cc-plugins"), EXPECTED_REPOSITORY);
+});
+check("normalizeRepoSlug: missing / empty / wrong repo", () => {
+  assert.equal(normalizeRepoSlug(undefined), null);
+  assert.equal(normalizeRepoSlug({}), null);
+  assert.equal(normalizeRepoSlug({ url: "" }), null);
+  assert.notEqual(
+    normalizeRepoSlug({ url: "git+https://github.com/other/repo.git" }),
+    EXPECTED_REPOSITORY,
+  );
+});
+check("repositoryMatchesExpected: the pi-tui incident shape", () => {
+  assert.equal(repositoryMatchesExpected(GOOD_REPO), true);
+  assert.equal(repositoryMatchesExpected(undefined), false); // the v0.1.1 bug
+  assert.equal(repositoryMatchesExpected({ url: "" }), false);
+});
+
 /* ---- fixture: happy path ---- */
 
 function makeFixture(files) {
@@ -124,6 +167,36 @@ const GOOD_PUBLIC = {
       name: "@jianxx/dsh-cc-public-pkg",
       version: "0.1.0",
       publishConfig: { access: "public" },
+      repository: {
+        type: "git",
+        url: "git+https://github.com/jianxx/dsh-cc-plugins.git",
+        directory: "packages/a/public-pkg",
+      },
+      dependencies: {},
+    },
+    null,
+    2,
+  ),
+};
+const BAD_NO_REPO = {
+  "packages/a/norepo-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-norepo-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      dependencies: {},
+    },
+    null,
+    2,
+  ),
+};
+const BAD_WRONG_REPO = {
+  "packages/a/wrongrepo-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-wrongrepo-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      repository: { type: "git", url: "git+https://github.com/other/repo.git" },
       dependencies: {},
     },
     null,
@@ -204,6 +277,29 @@ const GOOD_PRIVATE = {
   }
 }
 
+/* ---- repository provenance gate: fixtures ---- */
+{
+  const dir = makeFixture({ ...GOOD_PUBLIC, ...BAD_NO_REPO, ...BAD_WRONG_REPO });
+  try {
+    check("repository gate: missing + wrong repo flagged, exit 1", () => {
+      const { status, stderr } = runScript([], dir);
+      assert.equal(status, 1, `expected exit 1, got ${status}`);
+      assert.ok(stderr.includes("norepo-pkg"), "missing-repo pkg flagged");
+      assert.ok(stderr.includes("wrongrepo-pkg"), "wrong-repo pkg flagged");
+      assert.ok(stderr.includes("sigstore provenance"), "reason mentions provenance");
+      assert.ok(!stderr.includes("public-pkg\n"), "good pkg NOT flagged");
+    });
+    check("repository gate: in-process reasons", () => {
+      const problems = findManifestViolations(dir);
+      const repoProblems = problems.filter((p) => /provenance/.test(p.reason));
+      assert.equal(repoProblems.length, 2, `expected 2 repo violations, got ${repoProblems.length}`);
+      assert.ok(repoProblems.every((p) => p.reason.includes(EXPECTED_REPOSITORY)));
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /* ---- smoke: real repo MUST pass publishConfig + no-link rules ---- */
 // NOTE: this only passes once the parallel manifest remediation lands. If
 // it fails here because remediation is pending, it is a known-failure, not
@@ -220,6 +316,16 @@ const GOOD_PRIVATE = {
       `expected zero publishConfig/no-link violations, got ${
         linkAccess.length
       }: ${linkAccess.map((p) => `${p.pkg} (${p.reason})`).join("; ")}`,
+    );
+  });
+  check("REAL repo: every publishable package declares provenance repository", () => {
+    const problems = findManifestViolations(ROOT).filter((p) => /provenance/.test(p.reason));
+    assert.equal(
+      problems.length,
+      0,
+      `expected zero repository-provenance violations, got: ${problems
+        .map((p) => `${p.pkg} (${p.reason})`)
+        .join("; ")}`,
     );
   });
 }
