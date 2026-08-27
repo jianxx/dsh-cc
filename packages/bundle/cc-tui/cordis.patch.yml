@@ -97,3 +97,8 @@
         sessionId: !!js process.env.DSH_CC_RESUME_SESSION
         provider: !!js process.env.DSH_CC_PROVIDER
         model: !!js process.env.DSH_CC_MODEL
+        # Fullscreen on entry: the transcript scrolls inside a primary
+        # ScrollView while the dock (queue/todos/overlays/editor/statusline)
+        # stays pinned at the bottom. Opt out per-launch with
+        # DSH_CCTUI_UI_MODE=regular.
+        uiMode: fullscreen
