@@ -249,6 +249,15 @@ function findOriginal(name: string, body: McpConfigFile): McpServerEntry | undef
 }
 
 /**
+ * Collapse a Claude Code server name into the mcp-client `[A-Za-z0-9_-]{1,32}` tool-prefix contract.
+ */
+export function normalizeServerName(name: string): string {
+  const normalized = name.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+  // An all-invalid-char name would collapse to '' — fall back to a dash so the pattern still matches.
+  return normalized === '' ? '-' : normalized
+}
+
+/**
  * Full pipeline: parse, validate, expand environment, dedupe, apply policy,
  * and translate to mcp-client registrations. Malformed or unknown input throws
  * at load; policy rejects are dropped silently in stable config order.
@@ -267,7 +276,9 @@ export function buildRegistrations(
     if (options.policy?.deny?.(name, original) === true) continue
     if (options.policy?.allow !== undefined && !options.policy.allow(name, original)) continue
     const expanded = expandConfig(raw, env)
-    configs.push({ ...expanded, serverName: name })
+    // Policy hooks and findOriginal above see the ORIGINAL name; only the
+    // emitted mcp-client `serverName` (the tool-name prefix) is normalized.
+    configs.push({ ...expanded, serverName: normalizeServerName(name) })
   }
   return configs
 }
