@@ -22,8 +22,7 @@ import {
   type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
-import { ruleString } from '@jianxx/dsh-cc-permission-rules/src/parser.ts'
+import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
 import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'

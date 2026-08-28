@@ -58,6 +58,11 @@ export {
   type PermissionMode,
   type SwitchablePermissionMode,
 } from './types.ts'
+export {
+  parseRuleString,
+  ruleString,
+  contentMatches,
+} from './parser.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
