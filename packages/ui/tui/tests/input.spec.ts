@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { handleComposerInput, type InputSink } from '@jianxx/dsh-cc-tui/input.ts'
 import {
+  closeUsagePanel,
   createInitialState,
   openTodoPanel,
+  openUsagePanel,
   setApproval,
   setBusy,
   setModelPicker,
@@ -45,6 +47,10 @@ interface TodoPanelCalls {
   toggled: number
 }
 
+interface UsagePanelCalls {
+  closed: number
+}
+
 function sink(initial: TuiState = createInitialState()): InputSink & {
   disposed: boolean
   interrupted: boolean
@@ -54,6 +60,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   modelPickerCalls: ModelPickerCalls
   sessionSwitcherCalls: SessionSwitcherCalls
   todoPanelCalls: TodoPanelCalls
+  usagePanelCalls: UsagePanelCalls
 } {
   let state = initial
   const questionCalls: QuestionCalls = {
@@ -80,6 +87,9 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     closed: 0,
     toggled: 0,
   }
+  const usagePanelCalls: UsagePanelCalls = {
+    closed: 0,
+  }
   return {
     disposed: false,
     interrupted: false,
@@ -89,6 +99,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     modelPickerCalls,
     sessionSwitcherCalls,
     todoPanelCalls,
+    usagePanelCalls,
     get state() {
       return state
     },
@@ -151,6 +162,9 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     todoPanelClose() {
       todoPanelCalls.closed += 1
     },
+    usagePanelClose() {
+      usagePanelCalls.closed += 1
+    },
     async dispose() {
       this.disposed = true
     },
@@ -171,28 +185,43 @@ function questionState(overrides: Partial<QuestionView> = {}): TuiState {
 }
 
 describe('handleComposerInput', () => {
-  it('answers an approval overlay with yes on 1 or y/Y', () => {
-    let allowed: boolean | undefined
+  it('answers an approval overlay with once on 1 or y/Y', () => {
+    const answers: string[] = []
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     for (const key of ['1', 'y', 'Y']) {
       handleComposerInput(driver, key)
-      expect(allowed).toBe(true)
+      expect(answers.at(-1)).toBe('once')
     }
+    expect(answers).toHaveLength(3)
   })
 
-  it('answers an approval overlay with no on 2, n/N, or escape', () => {
-    let allowed: boolean | undefined
+  it('answers an approval overlay with reject on 2, n/N, or escape', () => {
+    const answers: string[] = []
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     for (const key of ['2', 'n', 'N', '\x1b']) {
       handleComposerInput(driver, key)
-      expect(allowed).toBe(false)
+      expect(answers.at(-1)).toBe('reject')
     }
+    expect(answers).toHaveLength(4)
+  })
+
+  it('answers an approval overlay with always on 3 or a/A', () => {
+    const answers: string[] = []
+    const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
+    driver.answerApproval = kind => {
+      answers.push(kind)
+    }
+    for (const key of ['3', 'a', 'A']) {
+      handleComposerInput(driver, key)
+      expect(answers.at(-1)).toBe('always')
+    }
+    expect(answers).toHaveLength(3)
   })
 
   it('does not toggle thinking while an approval overlay is open (overlay wins)', () => {
@@ -202,7 +231,7 @@ describe('handleComposerInput', () => {
   })
 
   it('an approval overlay outranks an open question (input goes to the approval)', () => {
-    let allowed: boolean | undefined
+    const answers: string[] = []
     let state = setApproval(createInitialState(), { toolName: 'Bash' })
     state = setQuestion(state, {
       header: 'Pick',
@@ -214,11 +243,11 @@ describe('handleComposerInput', () => {
       custom: '',
     })
     const driver = sink(state)
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     handleComposerInput(driver, '1')
-    expect(allowed).toBe(true)
+    expect(answers).toEqual(['once'])
     expect(driver.questionCalls.submitted).toBe(0)
     expect(driver.questionCalls.picked).toEqual([])
   })
@@ -576,5 +605,51 @@ describe('handleComposerInput todo panel routing', () => {
     handleComposerInput(driver, '\r')
     expect(driver.sessionSwitcherCalls.submitted).toBe(1)
     expect(driver.todoPanelCalls.closed).toBe(0)
+  })
+})
+
+describe('usage panel routing', () => {
+  function usagePanelState(): TuiState {
+    return openUsagePanel(createInitialState())
+  }
+
+  it('esc closes the usage panel while it is open', () => {
+    const driver = sink(usagePanelState())
+    const action = handleComposerInput(driver, '\x1b')
+    expect(driver.usagePanelCalls.closed).toBe(1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('the usage panel is modal: every other key is consumed without action', () => {
+    const driver = sink(usagePanelState())
+    for (const key of ['h', ' ', '2', '\x7f', '\x1b[A', '\x1b[B', '\x1b[Z', '\x14']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    // No navigation, no toggle side effects — Esc (tested above) is the only
+    // action the panel recognizes.
+    expect(driver.usagePanelCalls.closed).toBe(0)
+    expect(driver.todoPanelCalls.toggled).toBe(0)
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('does not interrupt on escape while the panel is open and the agent is busy (close wins)', () => {
+    const driver = sink(setBusy(usagePanelState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.usagePanelCalls.closed).toBe(1)
+  })
+
+  it('esc with the usage panel closed falls through to the generic escape path', () => {
+    const driver = sink(setBusy(createInitialState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(true)
+    expect(driver.usagePanelCalls.closed).toBe(0)
+  })
+
+  it('closeUsagePanel drops the field entirely (store round-trip)', () => {
+    const state = closeUsagePanel(usagePanelState())
+    expect(state.usagePanel).toBeUndefined()
   })
 })

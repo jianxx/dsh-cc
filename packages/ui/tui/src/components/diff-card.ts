@@ -13,7 +13,7 @@
 
 import type { FileDiff } from '../tool-card.ts'
 import { computeHunks, splitLines, type DiffHunk } from './diff-hunks.ts'
-import { bold, dim, green, red } from './theme.ts'
+import { defaultTheme, type Theme } from './theme.ts'
 
 /** Default cap on emitted lines for a single tool row's diffs. */
 export const DEFAULT_DIFF_LINE_CAP = 60
@@ -55,45 +55,45 @@ function gutterWidth(oldCount: number, newCount: number): number {
   return String(Math.max(oldCount, newCount, 1)).length
 }
 
-function headerFor(diff: FileDiff): string {
+function headerFor(diff: FileDiff, theme: Theme): string {
   const tag = diff.oldText === null
     ? ' (new file)'
     : diff.newText === ''
       ? ' (deleted)'
       : ''
-  return `  ${bold(diff.path)}${tag.length > 0 ? dim(tag) : ''}`
+  return `  ${theme.bold(diff.path)}${tag.length > 0 ? theme.muted(tag) : ''}`
 }
 
-function removalLine(num: number, width: number, line: string): string {
-  return `  ${String(num).padStart(width)} ${red(`- ${line}`)}`
+function removalLine(num: number, width: number, line: string, theme: Theme): string {
+  return `  ${String(num).padStart(width)} ${theme.error(`- ${line}`)}`
 }
 
-function additionLine(num: number, width: number, line: string): string {
-  return `  ${String(num).padStart(width)} ${green(`+ ${line}`)}`
+function additionLine(num: number, width: number, line: string, theme: Theme): string {
+  return `  ${String(num).padStart(width)} ${theme.success(`+ ${line}`)}`
 }
 
-function contextLine(line: string): string {
-  return dim(`    ${line}`)
+function contextLine(line: string, theme: Theme): string {
+  return theme.muted(`    ${line}`)
 }
 
-function unchangedMarker(count: number): string {
-  return dim(`    … ${count} unchanged line${count === 1 ? '' : 's'} …`)
+function unchangedMarker(count: number, theme: Theme): string {
+  return theme.muted(`    … ${count} unchanged line${count === 1 ? '' : 's'} …`)
 }
 
-function contextAtom(line: string): Atom {
-  return { lines: [contextLine(line)], splittable: false }
+function contextAtom(line: string, theme: Theme): Atom {
+  return { lines: [contextLine(line, theme)], splittable: false }
 }
 
 /** Atoms for an in-place edit: per-hunk blocks with context and collapse markers. */
-function buildEditAtoms(diff: FileDiff, maxLines: number): Atom[] {
+function buildEditAtoms(diff: FileDiff, maxLines: number, theme: Theme): Atom[] {
   const oldLines = splitLines(diff.oldText ?? '')
   const newLines = splitLines(diff.newText)
   const width = gutterWidth(oldLines.length, newLines.length)
   const hunks = hunksFor(diff)
-  const atoms: Atom[] = [{ lines: [headerFor(diff)], splittable: false }]
+  const atoms: Atom[] = [{ lines: [headerFor(diff, theme)], splittable: false }]
 
   if (hunks.length === 0) {
-    atoms.push({ lines: [dim('    (no changes)')], splittable: false })
+    atoms.push({ lines: [theme.muted('    (no changes)')], splittable: false })
     return atoms
   }
 
@@ -104,39 +104,39 @@ function buildEditAtoms(diff: FileDiff, maxLines: number): Atom[] {
     if (i === 0) {
       // Leading context: at most DIFF_CONTEXT_LINES lines before the first hunk.
       for (const line of gap.slice(Math.max(0, gap.length - DIFF_CONTEXT_LINES))) {
-        atoms.push(contextAtom(line))
+        atoms.push(contextAtom(line, theme))
       }
     } else if (gap.length <= HUNK_MERGE_GAP) {
       // Adjacent hunks: show the small unchanged run so the two changes read
       // as one cluster instead of earning a collapse marker.
-      for (const line of gap) atoms.push(contextAtom(line))
+      for (const line of gap) atoms.push(contextAtom(line, theme))
     } else {
-      atoms.push({ lines: [unchangedMarker(gap.length)], splittable: false })
+      atoms.push({ lines: [unchangedMarker(gap.length, theme)], splittable: false })
     }
 
     const lines: string[] = []
-    hunk.removed.forEach((line, k) => lines.push(removalLine(hunk.oldStart + k, width, line)))
-    hunk.added.forEach((line, k) => lines.push(additionLine(hunk.newStart + k, width, line)))
+    hunk.removed.forEach((line, k) => lines.push(removalLine(hunk.oldStart + k, width, line, theme)))
+    hunk.added.forEach((line, k) => lines.push(additionLine(hunk.newStart + k, width, line, theme)))
     atoms.push({ lines, splittable: lines.length > maxLines })
     prevEnd = hunk.oldStart - 1 + hunk.removed.length
   })
 
   // Trailing context: at most DIFF_CONTEXT_LINES lines after the last hunk.
   for (const line of oldLines.slice(prevEnd, prevEnd + DIFF_CONTEXT_LINES)) {
-    atoms.push(contextAtom(line))
+    atoms.push(contextAtom(line, theme))
   }
   return atoms
 }
 
 /** Atoms for a whole-file addition (new file) or removal (deleted file). */
-function buildWholesaleAtoms(diff: FileDiff, maxLines: number, isAddition: boolean): Atom[] {
+function buildWholesaleAtoms(diff: FileDiff, maxLines: number, isAddition: boolean, theme: Theme): Atom[] {
   const lines = splitLines(isAddition ? diff.newText : diff.oldText ?? '')
   const width = gutterWidth(isAddition ? 0 : lines.length, isAddition ? lines.length : 0)
   const body = lines.map((line, i) =>
-    isAddition ? additionLine(i + 1, width, line) : removalLine(i + 1, width, line)
+    isAddition ? additionLine(i + 1, width, line, theme) : removalLine(i + 1, width, line, theme)
   )
   return [
-    { lines: [headerFor(diff)], splittable: false },
+    { lines: [headerFor(diff, theme)], splittable: false },
     { lines: body, splittable: body.length > maxLines },
   ]
 }
@@ -147,7 +147,7 @@ function buildWholesaleAtoms(diff: FileDiff, maxLines: number, isAddition: boole
  * hunks are never cut mid-way — except for oversized atoms, which stream to
  * fill the budget. The trailer reports how many lines were left out.
  */
-function flushAtoms(atoms: readonly Atom[], maxLines: number): string[] {
+function flushAtoms(atoms: readonly Atom[], maxLines: number, theme: Theme): string[] {
   const total = atoms.reduce((sum, atom) => sum + atom.lines.length, 0)
   if (total <= maxLines) {
     const all: string[] = []
@@ -168,34 +168,36 @@ function flushAtoms(atoms: readonly Atom[], maxLines: number): string[] {
     }
     break
   }
-  out.push(dim(`  … (${total - out.length} more lines)`))
+  out.push(theme.muted(`  … (${total - out.length} more lines)`))
   return out
 }
 
 /**
  * Render FileDiff[] as ANSI-styled lines: a bold per-file header with a tag,
- * then gutter-numbered red removals and green additions grouped into hunks,
- * with dim context and `… N unchanged lines …` collapse markers between
- * them. Capped at `maxLines` (default 60); a dim trailer is appended when
- * content is cut, and the cut lands on a hunk boundary.
+ * then gutter-numbered removals (error role) and additions (success role)
+ * grouped into hunks, with muted context and `… N unchanged lines …` collapse
+ * markers between them. Capped at `maxLines` (default 60); a muted trailer is
+ * appended when content is cut, and the cut lands on a hunk boundary.
  *
  * Indentation (two leading spaces) is applied here so callers can drop the
- * returned lines directly beneath a tool row's head line.
+ * returned lines directly beneath a tool row's head line. Styles come from
+ * the injected `theme` (default: the built-in palette).
  */
 export function renderDiffLines(
   diffs: readonly FileDiff[],
   maxLines: number = DEFAULT_DIFF_LINE_CAP,
+  theme: Theme = defaultTheme,
 ): string[] {
   if (diffs.length === 0) return []
   const atoms: Atom[] = []
   for (const diff of diffs) {
     if (diff.oldText === null) {
-      atoms.push(...buildWholesaleAtoms(diff, maxLines, true))
+      atoms.push(...buildWholesaleAtoms(diff, maxLines, true, theme))
     } else if (diff.newText === '') {
-      atoms.push(...buildWholesaleAtoms(diff, maxLines, false))
+      atoms.push(...buildWholesaleAtoms(diff, maxLines, false, theme))
     } else {
-      atoms.push(...buildEditAtoms(diff, maxLines))
+      atoms.push(...buildEditAtoms(diff, maxLines, theme))
     }
   }
-  return flushAtoms(atoms, maxLines)
+  return flushAtoms(atoms, maxLines, theme)
 }

@@ -23,12 +23,12 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
-import { bold, dim, editorTheme } from './theme.ts'
+import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import {
   createApprovalBox,
@@ -36,6 +36,7 @@ import {
   createQuestionBox,
   createSessionSwitcherBox,
   createTodoPanelBox,
+  createUsagePanelBox,
 } from './overlays.ts'
 
 export interface BuildRootOptions {
@@ -50,6 +51,13 @@ export interface BuildRootOptions {
 	uiMode?: TuiMode
 	/** Fullscreen-only: mouse capture for wheel scrolling and app-owned selection. Default true. */
 	mouse?: boolean
+	/**
+	 * Per-role palette overrides for the terminal theme. Every role accepts a
+	 * basic ANSI color name or a raw SGR code string; invalid values keep the
+	 * built-in default, so an absent (or partial) override renders exactly like
+	 * the historical fixed palette.
+	 */
+	theme?: ThemeOverrides
 }
 
 /** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
@@ -106,6 +114,7 @@ function openSystemUrl(url: string): void {
 export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHandle {
 	const terminal = opts.terminal ?? new ProcessTerminal()
 	const mode: TuiMode = opts.uiMode ?? 'regular'
+	const theme = createTheme(opts.theme)
 	const tui: TUI = mode === 'fullscreen'
 		? new TuiAltScreen(terminal, undefined, undefined, {
 			mouse: opts.mouse ?? true,
@@ -113,8 +122,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		})
 		: new TuiMainScreen(terminal)
 
-	const title = new Text(bold('dsh cc-mode'), 0, 0)
-	const transcript = new TranscriptView()
+	const title = new Text(theme.bold('dsh cc-mode'), 0, 0)
+	const transcript = new TranscriptView(theme)
 
 	// Pending-steer chip line. Collapses to zero lines when the queue is empty
 	// (Text.render returns [] for blank content), so it takes no vertical space.
@@ -133,15 +142,100 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// every state change so they appear and disappear with the driver state.
 	const overlays = new Container()
 
-	const editor = new Editor(tui, editorTheme)
+	const editor = new Editor(tui, createEditorTheme(theme))
 	// Seed the editor's ↑/↓ recall from persisted history (oldest first —
 	// addToHistory unshifts, so the last-seeded/newest becomes index 0 and is
 	// recalled on the first ↑ press).
 	for (const entry of driver.promptHistory) editor.addToHistory(entry)
+
+	// --- `!` bash mode ---------------------------------------------------------
+	// Shell mode is derived, not stored: the composer is in shell mode exactly
+	// while its text starts with `!`. The border switches to the warning role
+	// so the mode is visible, ↑/↓ browse the bash-only history stack, and Esc
+	// exits the mode ahead of the generic busy-interrupt branch (the ordering
+	// in the input listener below is deliberate). Paste normalization lives at
+	// the driver's submit — a `!`-prefixed line runs locally no matter how it
+	// got into the buffer.
+	let bashBrowsing = false
+	let bashBrowsingIndex = -1
+	let bashDraft = ''
+	let bashRecallApplied = false
+	let bashRunning = false
+
+	const inShellMode = (): boolean => editor.getText().startsWith('!')
+
+	const resetBashHistoryBrowsing = (): void => {
+		bashBrowsing = false
+		bashBrowsingIndex = -1
+		bashDraft = ''
+	}
+
+	/**
+	 * Browse the bash history stack (driver-owned, newest-first). ↑ walks
+	 * toward older entries; ↓ walks back and restores the pre-browsing draft
+	 * past the newest. Recalled entries are re-prefixed with `!` so the buffer
+	 * stays shell-shaped and Enter re-runs them through the same submit path.
+	 */
+	const browseBashHistory = (towardsOlder: boolean): void => {
+		const entries = driver.bashHistory
+		if (entries.length === 0) return
+		if (!bashBrowsing) {
+			bashBrowsing = true
+			bashBrowsingIndex = -1
+			bashDraft = editor.getText()
+		}
+		if (towardsOlder) {
+			if (bashBrowsingIndex + 1 >= entries.length) return // clamped at the oldest
+			bashBrowsingIndex += 1
+		} else {
+			bashBrowsingIndex -= 1
+			if (bashBrowsingIndex < 0) {
+				// Down past the newest entry: restore the pre-browsing draft.
+				const draft = bashDraft
+				resetBashHistoryBrowsing()
+				bashRecallApplied = true
+				editor.setText(draft)
+				bashRecallApplied = false
+				return
+			}
+		}
+		bashRecallApplied = true
+		editor.setText(`!${entries[bashBrowsingIndex]}`)
+		bashRecallApplied = false
+	}
+
+	// Mirror the shell-mode border on every buffer change: the warning role
+	// while the buffer holds a `!`-prefixed line, the accent role otherwise.
+	const syncShellModeBorder = (): void => {
+		const styler = inShellMode() ? theme.warning : theme.accent
+		if (editor.borderColor !== styler) {
+			editor.borderColor = styler
+			tui.requestRender()
+		}
+	}
+
 	editor.onChange = (text: string): void => {
 		driver.setDraft(text)
+		syncShellModeBorder()
+		// Any buffer change that was not a bash recall ends history browsing,
+		// so the next ↑ starts fresh (mirrors the editor's own navigation).
+		if (!bashRecallApplied) resetBashHistoryBrowsing()
 	}
 	editor.onSubmit = (text: string): void => {
+		if (text.startsWith('!')) {
+			// Shell command: never a composer prompt. While the driver runs it,
+			// the composer is disabled — the input listener swallows every key
+			// until submit settles (bounded by the command's own timeout).
+			resetBashHistoryBrowsing()
+			bashRunning = true
+			void driver.submit(text)
+				.catch(() => {})
+				.then(() => {
+					bashRunning = false
+					tui.requestRender()
+				})
+			return
+		}
 		const parsed = parseSlash(text)
 		// Only prompts join editor recall; slash commands are not prompts.
 		if (parsed.kind === 'none') editor.addToHistory(text)
@@ -215,7 +309,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
 				live.modelPicker !== undefined || live.sessionSwitcher !== undefined ||
-				live.todoPanel !== undefined) {
+				live.todoPanel !== undefined || live.usagePanel !== undefined) {
 				return undefined
 			}
 			const now = Date.now()
@@ -231,8 +325,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			return { consume: true }
 		}
 		if (live.approval !== undefined) {
-			if (data === '1' || data === 'y' || data === 'Y') driver.answerApproval(true)
-			else if (data === '2' || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) driver.answerApproval(false)
+			// Approval keys route through the shared router in input.ts — the same
+			// single source of truth the headless composer path uses.
+			routeApprovalInput(driver, data)
 			return { consume: true }
 		}
 		if (live.question !== undefined) {
@@ -260,6 +355,12 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			routeTodoPanelInput(driver, data)
 			return { consume: true }
 		}
+		if (live.usagePanel !== undefined) {
+			// Modal usage panel: pure display with no navigation — esc closes,
+			// everything else is consumed. The open path is the /usage command.
+			routeUsagePanelInput(driver, data)
+			return { consume: true }
+		}
 		if (matchesKey(data, 'shift+tab')) {
 			driver.cyclePermissionMode()
 			return { consume: true }
@@ -277,6 +378,19 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			driver.steerQueued()
 			return { consume: true }
 		}
+		if (bashRunning) {
+			// A local `!` command is in flight: the composer is disabled and
+			// every key is swallowed until it settles. Ctrl+C above still owns
+			// interrupt/quit; the stall is bounded by the command's timeout.
+			return { consume: true }
+		}
+		if (inShellMode() && (matchesKey(data, Key.up) || matchesKey(data, Key.down))) {
+			// Bash history browsing: the root-owned stack from driver.bashHistory,
+			// consumed here so the editor's built-in prompt navigation never
+			// interleaves with it (the editor never sees these arrows).
+			browseBashHistory(matchesKey(data, Key.up))
+			return { consume: true }
+		}
 		if (matchesKey(data, Key.up) && editor.getText().length === 0 && live.queued.length > 0) {
 			// Empty composer + ↑ recalls the most recent queued entry for editing.
 			// A non-empty composer (or empty queue) falls through so the editor's
@@ -288,6 +402,15 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			}
 		}
 		if (matchesKey(data, Key.escape)) {
+			if (inShellMode()) {
+				// Bash mode owns Esc FIRST — this branch must stay above the
+				// busy-interrupt path: in shell mode Esc leaves the mode (the
+				// buffer clears via onChange, which also restores the border)
+				// and never interrupts the agent, even while busy.
+				editor.setText('')
+				resetBashHistoryBrowsing()
+				return { consume: true }
+			}
 			if (live.busy) {
 				driver.interrupt()
 				return { consume: true }
@@ -307,7 +430,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		queueLine.setText(
 			state.queued.length === 0
 				? ''
-				: state.queued.map(text => dim(`⏵ queued: ${text}`)).join('\n'),
+				: state.queued.map(text => theme.muted(`⏵ queued: ${text}`)).join('\n'),
 		)
 		queueLine.invalidate()
 
@@ -315,28 +438,33 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		todoLine.setText(
 			summary === undefined
 				? ''
-				: dim(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
+				: theme.muted(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
 		)
 		todoLine.invalidate()
 
-		noticeLine.setText(state.notice === undefined ? '' : dim(state.notice))
+		noticeLine.setText(state.notice === undefined ? '' : theme.muted(state.notice))
 		noticeLine.invalidate()
 
 		overlays.clear()
 		if (state.approval !== undefined) {
-			overlays.addChild(createApprovalBox(state.approval))
+			overlays.addChild(createApprovalBox(state.approval, theme))
 		}
 		if (state.question !== undefined) {
-			overlays.addChild(createQuestionBox(state.question))
+			overlays.addChild(createQuestionBox(state.question, theme))
 		}
 		if (state.modelPicker !== undefined) {
-			overlays.addChild(createModelPickerBox(state.modelPicker))
+			overlays.addChild(createModelPickerBox(state.modelPicker, theme))
 		}
 		if (state.sessionSwitcher !== undefined) {
-			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
+			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher, theme))
 		}
 		if (state.todoPanel !== undefined) {
-			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused))
+			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused, theme))
+		}
+		if (state.usagePanel !== undefined) {
+			// The panel rebuilds from the live snapshot on every emit, so
+			// projection changes refresh it in place while it is open.
+			overlays.addChild(createUsagePanelBox(state.usage, theme))
 		}
 		overlays.invalidate()
 

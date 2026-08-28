@@ -8,6 +8,9 @@
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
 
+/** The three approval answers: grant once, grant persistently, reject. */
+export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
+
 export interface Driver {
   readonly state: TuiState
   readonly statusLine: string
@@ -25,6 +28,14 @@ export interface Driver {
    * appended on submit (see {@link Driver.submit}). Read once at mount.
    */
   readonly promptHistory: readonly string[]
+  /**
+   * Bash-mode command history (newest-first, live reference). Every command
+   * executed through a leading `!` is prepended here and persisted to
+   * `~/.dsh/tui/bash-history.txt`; the root component browses this stack
+   * with ↑/↓ while in shell mode — deliberately separate from the composer
+   * prompt history.
+   */
+  readonly bashHistory: readonly string[]
   subscribe(listener: (state: TuiState) => void): () => void
   setDraft(draft: string): void
   submit(text?: string): Promise<void>
@@ -51,7 +62,13 @@ export interface Driver {
   toggleGlobalCollapse(): void
   /** Legacy thinking-only flip; kept for compatibility with Ctrl+O's old behavior. */
   toggleThinking(): void
-  answerApproval(allowed: boolean): void
+  /**
+   * Answer the open approval prompt: `'once'` grants this call only;
+   * `'always'` additionally derives a permission rule from the prompt's
+   * preview and persists it into the settings `permissions.allow` list;
+   * `'reject'` refuses the call.
+   */
+  answerApproval(kind: ApprovalAnswerKind): void
   /**
    * While a question overlay is open: move the focus one row across the
    * options and the trailing free-text ("Other") row.
@@ -118,6 +135,11 @@ export interface Driver {
   todoPanelMove(delta: -1 | 1): void
   /** Close the todo panel. */
   todoPanelClose(): void
+  /**
+   * Close the `/usage` panel (Esc). The panel is pure display — opening is
+   * owned by the `/usage` command — so closing is its only interaction.
+   */
+  usagePanelClose(): void
   /**
    * Show a one-line transient notice above the composer. The notice clears
    * itself after `ttlMs` (default 3000); a newer notice replaces the pending

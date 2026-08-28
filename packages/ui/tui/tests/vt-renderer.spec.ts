@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Terminal as XtermTerminal } from '@xterm/headless'
 import {
   TuiMainScreen,
@@ -6,6 +9,7 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
+import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
@@ -104,6 +108,7 @@ class VirtualTerminal implements PiTerminal {
 function fakeDriver(
   initial: TuiState = createInitialState(),
   promptHistory: readonly string[] = [],
+  bashHistory: readonly string[] = [],
 ): Driver & { setState(next: TuiState): void } {
   let state = initial
   const listeners = new Set<(s: TuiState) => void>()
@@ -113,6 +118,7 @@ function fakeDriver(
     statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return promptHistory },
+    get bashHistory() { return bashHistory },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)
@@ -141,7 +147,7 @@ function fakeDriver(
       state = toggleGlobalCollapse(state)
       for (const l of listeners) l(state)
     },
-    answerApproval(_allowed: boolean) {
+    answerApproval(_kind: 'once' | 'always' | 'reject') {
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
     },
@@ -220,6 +226,7 @@ function fakeDriver(
       state = closeTodoPanel(state)
       for (const l of listeners) l(state)
     },
+    usagePanelClose() {},
     showNotice(text: string) {
       state = setNotice(state, text)
       for (const l of listeners) l(state)
@@ -305,7 +312,10 @@ describe('vt-renderer', () => {
     state = setApproval(state, {
       toolName: 'Bash',
       reason: 'destructive git operation',
-      command: 'set -e\necho one\necho two\necho three',
+      preview: {
+        kind: 'command',
+        command: 'set -e\necho one\necho two\necho three\necho four\necho five\necho six\necho seven\necho eight\necho nine',
+      },
     })
     const driver = fakeDriver(state)
 
@@ -316,30 +326,56 @@ describe('vt-renderer', () => {
     const joined = vt.grid().join('\n')
     expect(joined).toContain('Approve Bash')
     expect(joined).toContain('destructive git operation')
-    // First three command lines render; the fourth is cut with a … trailer.
+    // First eight command lines render; the rest is cut with a … trailer.
     expect(joined).toContain('set -e')
-    expect(joined).toContain('echo one')
-    expect(joined).toContain('echo two')
+    expect(joined).toContain('echo seven')
     expect(joined).toContain('…')
-    expect(joined).not.toContain('echo three')
-    // Explicit key → outcome mapping, not a bare yes/no.
-    expect(joined).toContain('1 Yes, allow once')
-    expect(joined).toContain('2 No, reject')
+    expect(joined).not.toContain('echo eight')
+    expect(joined).not.toContain('echo nine')
+    // Explicit key → outcome mapping, including the always-allow option.
+    expect(joined).toContain('1 once · 2 no · 3 always')
 
     root.tui.stop()
     root.destroy()
   })
 
-  it('approval box: 1 resolves allow, 2 resolves reject, other keys never reach the editor', async () => {
+  it('approval box renders a diff preview for file-edit tools', async () => {
     const vt = new VirtualTerminal(80, 24)
     let state = createInitialState()
-    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /tmp/x' })
+    state = setApproval(state, {
+      toolName: 'Edit',
+      preview: {
+        kind: 'diff',
+        diffs: [{ path: 'src/a.ts', oldText: 'const a = 1\n', newText: 'const a = 2\n' }],
+      },
+    })
     const driver = fakeDriver(state)
-    const answers: boolean[] = []
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('Approve Edit')
+    expect(joined).toContain('src/a.ts')
+    expect(joined).toContain('- const a = 1')
+    expect(joined).toContain('+ const a = 2')
+    expect(joined).toContain('1 once · 2 no · 3 always')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 1 answers once, 2 answers reject, other keys never reach the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'rm -rf /tmp/x' } })
+    const driver = fakeDriver(state)
+    const answers: string[] = []
     const baseAnswer = driver.answerApproval.bind(driver)
-    driver.answerApproval = (allowed: boolean) => {
-      answers.push(allowed)
-      baseAnswer(allowed)
+    driver.answerApproval = (kind: 'once' | 'always' | 'reject') => {
+      answers.push(kind)
+      baseAnswer(kind)
     }
 
     const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
@@ -354,16 +390,82 @@ describe('vt-renderer', () => {
 
     vt.sendInput('1')
     await settle()
-    expect(answers).toEqual([true])
+    expect(answers).toEqual(['once'])
     expect(vt.grid().join('\n')).not.toContain('Approve Bash')
 
     // Reopen and reject with 2.
-    driver.setState(setApproval(driver.state, { toolName: 'Bash', command: 'rm -rf /tmp/x' }))
+    driver.setState(setApproval(driver.state, { toolName: 'Bash', preview: { kind: 'command', command: 'rm -rf /tmp/x' } }))
     await settle()
     vt.sendInput('2')
     await settle()
-    expect(answers).toEqual([true, false])
+    expect(answers).toEqual(['once', 'reject'])
     expect(root.editor.getText()).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 3 answers always and the allow-rule notice is echoed', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'npm install foo' } })
+    const driver = fakeDriver(state)
+    const baseAnswer = driver.answerApproval.bind(driver)
+    driver.answerApproval = (kind: 'once' | 'always' | 'reject') => {
+      if (kind === 'always') driver.showNotice('Always allow: Bash(npm )')
+      baseAnswer(kind)
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('3')
+    await settle()
+    expect(vt.grid().join('\n')).toContain('Always allow: Bash(npm )')
+    expect(vt.grid().join('\n')).not.toContain('Approve Bash')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('queued approvals render the queue position and answering advances FIFO', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'echo one' }, pendingCount: 1 })
+    const driver = fakeDriver(state)
+    // The driver owns the queue; answering the head promotes the next entry.
+    const queue: { toolName: string; preview: { kind: 'command'; command: string } }[] = [
+      { toolName: 'Bash', preview: { kind: 'command', command: 'echo one' } },
+      { toolName: 'Write', preview: { kind: 'command', command: 'echo two' } },
+    ]
+    driver.answerApproval = () => {
+      queue.shift()
+      const head = queue[0]
+      driver.setState(head === undefined
+        ? setApproval(driver.state, undefined)
+        : setApproval(driver.state, {
+          ...head,
+          ...queue.length <= 1 ? {} : { pendingCount: queue.length - 1 },
+        }))
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Head of two: the title carries the queue position.
+    expect(vt.grid().join('\n')).toContain('Approval (1 of 2)')
+
+    vt.sendInput('1')
+    await settle()
+    // The queued approval is promoted and is now a lone head.
+    expect(vt.grid().join('\n')).toContain('Approve Write?')
+    expect(vt.grid().join('\n')).not.toContain('1 of')
+
+    vt.sendInput('2')
+    await settle()
+    expect(vt.grid().join('\n')).not.toContain('Approve')
 
     root.tui.stop()
     root.destroy()
@@ -1546,5 +1648,149 @@ describe('vt-renderer', () => {
 
     root.tui.stop()
     root.destroy()
+  })
+})
+
+/**
+ * /usage panel over a real driver: the fakeDriver above cannot run local
+ * slash commands, so these tests mount createDriver against a projections
+ * stub and drive the panel through the actual submit path.
+ */
+describe('vt /usage panel (real driver)', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-vt-usage-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  function makeCtx(states: Record<string, unknown>) {
+    return {
+      get(key: string) {
+        if (key === 'agentPresets') {
+          return {
+            defaultId: 'cc',
+            resolve: async () => ({ id: 'cc' }),
+            mount: async () => ({ id: 'cc' }),
+          }
+        }
+        if (key === 'sessionProjections') {
+          return {
+            onChanged: () => () => {},
+            stateOf: (_session: unknown, key: string) => states[key],
+          }
+        }
+        return undefined
+      },
+      on: () => () => {},
+      agents: {
+        create: async () => ({
+          agent: {
+            options: {},
+            session: { id: 's-a', header: {}, events: [] },
+            id: 'a-1',
+            status: 'idle',
+            followup: vi.fn(),
+            steer: vi.fn(),
+            cancel: vi.fn(),
+          },
+          dispose: async () => {},
+        }),
+        resume: async () => {
+          throw new Error('not needed')
+        },
+      },
+    }
+  }
+
+  async function makeUsageDriver(states: Record<string, unknown>) {
+    return createDriver(makeCtx(states) as never, { cwd: '/w/proj', branchProbe: async () => undefined })
+  }
+
+  it('opens the usage panel via /usage with the context bar and token rows', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({
+      tokenUsage: {
+        totals: { uncachedInputTokens: 12_345, outputTokens: 1_234, cacheReadTokens: 5_678, cacheWriteTokens: 901 },
+        last: null,
+      },
+      contextPressure: {
+        contextWindow: 200_000,
+        pressureTokens: 85_000,
+        surfaceTokens: 3_000,
+        sampledSurfaceTokens: 2_000,
+      },
+      contextBreakdown: { system: 1_200, tools: 3_400, messages: 81_400 },
+    })
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+
+    expect(driver.state.usagePanel).toEqual({})
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Usage')
+    expect(stripped).toContain('████░░░░░░ 43% (86k/200k)')
+    expect(stripped).toContain('12,345')
+    expect(stripped).toContain('81,400')
+    expect(stripped).toContain('quota data unavailable · Esc close')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
+  })
+
+  it('closes the usage panel on escape', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({})
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+    expect(driver.state.usagePanel).toEqual({})
+
+    vt.sendInput('\x1b') // escape — close
+    await settle()
+
+    expect(driver.state.usagePanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('quota data unavailable')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
+  })
+
+  it('renders every section as n/a when the projections have no data', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({})
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Usage')
+    expect(stripped).toContain('n/a')
+    expect(stripped).toContain('quota data unavailable · Esc close')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
   })
 })

@@ -6,6 +6,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import type { ThemeOverrides } from './components/theme.ts'
 
 export const name = 'dsh-cc-tui'
 export const inject = ['agents']
@@ -29,6 +30,13 @@ export interface Config {
    * application-owned text selection (OSC 52 copy). Default true.
    */
   mouse?: boolean
+  /**
+   * Per-role palette overrides for the terminal theme. Every role accepts a
+   * basic ANSI color name ('red', 'brightCyan') or a raw SGR code string
+   * ('31', '1;31'); unknown values silently fall back to the built-in
+   * default, so omitting a role (or the whole block) keeps the default look.
+   */
+  theme?: ThemeOverrides
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -40,6 +48,14 @@ export const Config: Schema<Config> = Schema.object({
   allowNoTty: Schema.boolean(),
   uiMode: Schema.union([Schema.const('regular'), Schema.const('fullscreen')]),
   mouse: Schema.boolean(),
+  theme: Schema.object({
+    accent: Schema.string(),
+    success: Schema.string(),
+    error: Schema.string(),
+    warning: Schema.string(),
+    muted: Schema.string(),
+    highlight: Schema.string(),
+  }),
 })
 
 /**

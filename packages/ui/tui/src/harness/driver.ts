@@ -6,6 +6,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
@@ -19,16 +22,19 @@ import {
   type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { ruleString } from '@jianxx/dsh-cc-permission-rules/src/parser.ts'
 import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
+import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
-import { loadHistory, saveHistory } from '../history.ts'
+import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
+import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import { formatStatusLine, shortenSession } from '../statusline.ts'
 import {
   applySessionEvent,
@@ -36,11 +42,13 @@ import {
   type ToolPresenters,
 } from '../transcript.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
+import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
   backspaceQuestionText,
   clearQueue,
   clearRows,
   closeTodoPanel,
+  closeUsagePanel,
   createInitialState,
   enqueue,
   markExitAttempt,
@@ -49,6 +57,7 @@ import {
   moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
+  openUsagePanel,
   popQueued,
   setApproval,
   setBusy,
@@ -60,18 +69,24 @@ import {
   setQuestion,
   setSessionSwitcher,
   setTodos,
+  setUsage,
   toggleQuestionOption,
   toggleGlobalCollapse,
   toggleThinking,
   typeQuestionText,
   upsertRow,
   upsertSubagent,
+  type ApprovalPreview,
+  type ApprovalView,
   type CatalogEntryView,
   type HudView,
+  type QuestionView,
   type SessionEntryView,
   type SubagentRunView,
   type TodoItemView,
   type TuiState,
+  type UsageBreakdownView,
+  type UsageView,
 } from '../store.ts'
 
 export interface DriverConfig {
@@ -88,6 +103,17 @@ export interface DriverConfig {
    * {@link gitBranchOf}.
    */
   branchProbe?: (cwd: string) => Promise<string | undefined>
+  /**
+   * Output directory for `/export-md` when no path is given. Defaults to
+   * `$DSH_HOME/tui/exports` (same resolution as {@link resume-target}).
+   */
+  exportDir?: string
+  /**
+   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
+   * Injectable so tests capture the sequence; production wires it to the live
+   * terminal in plugin.ts (safe inline — the sequence paints nothing).
+   */
+  copyWrite?: (sequence: string) => void
 }
 
 type PermissionRulesLike = {
@@ -173,6 +199,46 @@ type SubagentRunEndInfoLike = {
 }
 
 /**
+ * Structural stand-in for the deployment's `shell` service (ShellExecutor's
+ * resolve→run seam), which the tui package doesn't import. `resolve` fills
+ * the request's defaults/caps; `run` executes the resolved spec and reports
+ * the first-cause outcome. Absent service → the driver degrades to a direct
+ * child process (see {@link runShellCommand}).
+ */
+type ShellExecSpecLike = {
+  command: string
+  workdir: string
+  timeoutMs: number
+  stdoutMaxBytes: number
+}
+
+type ShellRunResultLike = {
+  /** Exit code; null when the process died from a signal. */
+  exitCode: number | null
+  /** True when the executor's timeout was the first cause to cut the command. */
+  timedOut: boolean
+  stdout: { text: string }
+  stderr: { text: string }
+}
+
+type ShellExecutorLike = {
+  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
+  run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
+}
+
+/** Wall-clock lifetime of a `!` shell command. */
+export const BASH_TIMEOUT_MS = 120_000
+
+/** Foreground stdout byte budget handed to the shell executor for a `!` run. */
+export const BASH_STDOUT_MAX_BYTES = 64_000
+
+/** Lines of command output shown under the `$ cmd` echo row (rest is elided). */
+export const BASH_OUTPUT_LINE_CAP = 20
+
+/** Notice parked above the composer while a `!` command runs. */
+const BASH_RUNNING_NOTICE = '⠋ running…'
+
+/**
  * Structural stand-in for the sessionProjections registry
  * (@deepseek-ai/dsh-session-projection via token-meter's augmentation),
  * which the tui package doesn't import — same pattern as the other `*Like`
@@ -222,6 +288,28 @@ const execFileAsync = promisify(execFile)
 const NOTICE_TTL_MS = 3000
 
 /**
+ * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
+ * with BEL. The sequence is zero-width — writing it inline never disturbs the
+ * rendered frame.
+ */
+const OSC52_PREFIX = '\x1b]52;c;'
+
+/**
+ * Default `/export-md` output directory: `$DSH_HOME/tui/exports` (or
+ * `~/.dsh/tui/exports`), mirroring the {@link resume-target} data-dir
+ * resolution one level deeper.
+ */
+function defaultExportDir(): string {
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(dshHome, 'tui', 'exports')
+}
+
+/** Filesystem-safe timestamp for default export filenames (ISO, `:`/`.` dashed). */
+function exportStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+/**
  * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
  * with a short timeout. Never throws — errors (no git, no repo, detached
  * head) resolve to undefined and the statusline simply omits the segment.
@@ -235,6 +323,47 @@ export async function gitBranchOf(cwd: string): Promise<string | undefined> {
     return branch.length > 0 ? branch : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Cap combined command output at {@link BASH_OUTPUT_LINE_CAP} lines. Leading
+ * and trailing blank edges (from an empty stream or a trailing newline) are
+ * trimmed; interior blank lines are preserved.
+ */
+function capShellOutput(text: string): string {
+  const lines = text.replace(/^\n+/, '').replace(/\n+$/, '').split('\n')
+  if (lines.length === 1 && lines[0] === '') return ''
+  if (lines.length <= BASH_OUTPUT_LINE_CAP) return lines.join('\n')
+  const hidden = lines.length - BASH_OUTPUT_LINE_CAP
+  return `${lines.slice(0, BASH_OUTPUT_LINE_CAP).join('\n')}\n… +${hidden} more line${hidden === 1 ? '' : 's'}`
+}
+
+/**
+ * Assemble the bash-command output row: combined stdout/stderr (line-capped)
+ * plus a failure trailer. The row is error-marked for a non-zero exit, a
+ * signal death, or an executor timeout.
+ */
+function shellOutputRow(
+  stdout: string,
+  stderr: string,
+  outcome: { exitCode: number | null; timedOut: boolean },
+): { kind: 'status'; text: string; error?: boolean } {
+  const parts: string[] = []
+  const capped = capShellOutput(`${stdout}\n${stderr}`)
+  if (capped.length > 0) parts.push(capped)
+  if (outcome.timedOut) {
+    parts.push(`timed out after ${BASH_TIMEOUT_MS / 1000}s`)
+  } else if (outcome.exitCode === null) {
+    parts.push('killed by a signal')
+  } else if (outcome.exitCode !== 0) {
+    parts.push(`exit code ${outcome.exitCode}`)
+  }
+  const failed = outcome.timedOut || outcome.exitCode === null || outcome.exitCode !== 0
+  return {
+    kind: 'status',
+    text: parts.join('\n'),
+    ...(failed ? { error: true } : {}),
   }
 }
 
@@ -339,12 +468,102 @@ function percentOf(pressure: ContextPressureStateLike | undefined): number | und
   return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
 }
 
+/**
+ * `contextBreakdown` projection state (subset the usage panel reads): the
+ * projected context token count per content role.
+ */
+type ContextBreakdownStateLike = {
+  system?: number
+  tools?: number
+  messages?: number
+}
+
+/**
+ * Map a `contextBreakdown` projection value onto the usage panel's three role
+ * counts. Absent or malformed fields (shape drift, a partial value) degrade
+ * to no breakdown — the panel renders the whole section `n/a` instead of a
+ * misleading subset of numbers.
+ */
+function breakdownOf(value: unknown): UsageBreakdownView | undefined {
+  const raw = value as ContextBreakdownStateLike | null | undefined
+  if (raw === null || typeof raw !== 'object') return undefined
+  const { system, tools, messages } = raw
+  if (typeof system !== 'number' || typeof tools !== 'number' || typeof messages !== 'number') {
+    return undefined
+  }
+  return { system, tools, messages }
+}
+
+/**
+ * Assemble the usage panel's view from the three projection reads. Absent
+ * sections stay absent (the panel renders each `n/a` independently); an
+ * all-absent read yields undefined so no empty snapshot is parked in state.
+ */
+function usageViewOf(
+  totals: TokenUsageTotals | undefined,
+  occupancy: { used: number; window?: number } | undefined,
+  breakdown: UsageBreakdownView | undefined,
+): UsageView | undefined {
+  const view: UsageView = {}
+  if (totals !== undefined) view.totals = totals
+  if (occupancy !== undefined) {
+    view.contextUsed = occupancy.used
+    if (occupancy.window !== undefined) view.contextWindow = occupancy.window
+  }
+  if (breakdown !== undefined) view.breakdown = breakdown
+  const empty = view.totals === undefined && view.contextUsed === undefined && view.breakdown === undefined
+  return empty ? undefined : view
+}
+
+/** Structural equality for two usage token-total sets. */
+function sameTotals(a: UsageView['totals'], b: UsageView['totals']): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return a.input === b.input && a.output === b.output
+    && a.cacheRead === b.cacheRead && a.cacheWrite === b.cacheWrite
+}
+
+/** Structural equality for two usage breakdowns. */
+function sameBreakdown(a: UsageBreakdownView | undefined, b: UsageBreakdownView | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return a.system === b.system && a.tools === b.tools && a.messages === b.messages
+}
+
+/** Structural equality for two usage snapshots (all sections field-wise). */
+function sameUsage(a: UsageView | undefined, b: UsageView): boolean {
+  return a !== undefined
+    && sameTotals(a.totals, b.totals)
+    && a.contextUsed === b.contextUsed
+    && a.contextWindow === b.contextWindow
+    && sameBreakdown(a.breakdown, b.breakdown)
+}
+
 function liveMode(agent: Agent, fallback: string): string {
   if (foldPlanMode(agent.session.events)) return 'plan'
   return foldPermissionMode(agent.session.events) ?? fallback
 }
 
-function commandOf(req: ApprovalRequest): string | undefined {
+/**
+ * Character cap for the pretty-printed raw-arguments preview of an approval
+ * prompt (non-shell, non-file-edit tools).
+ */
+const ARGS_PREVIEW_MAX_CHARS = 500
+
+/**
+ * The restored arguments of an approved call: a parsed JSON object, or the
+ * raw stored text when the arguments are not a JSON object (malformed JSON,
+ * a bare scalar) so the preview degrades to the literal payload instead of
+ * nothing.
+ */
+type RestoredArgs = { args: Record<string, unknown> } | { raw: string }
+
+/**
+ * Restore the approved call's arguments by scanning the session log backwards
+ * for the `tool/call` event carrying the request's callId (`appendToolCall`
+ * lands before the pre-execute approval, so the event is always present).
+ * Returns undefined when the callId is missing, unpaired, or its arguments
+ * are not stored as a string.
+ */
+function argsOf(req: ApprovalRequest): RestoredArgs | undefined {
   if (req.callId === undefined) return undefined
   const events = req.agent.session.events
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -355,16 +574,111 @@ function commandOf(req: ApprovalRequest): string | undefined {
     if (typeof raw !== 'string') return undefined
     try {
       const parsed: unknown = JSON.parse(raw)
-      if (parsed !== null && typeof parsed === 'object' && 'command' in parsed) {
-        const command = (parsed as { command: unknown }).command
-        return typeof command === 'string' ? command : undefined
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { args: parsed as Record<string, unknown> }
       }
     } catch {
-      return raw.slice(0, 500)
+      // Not JSON — fall through to the raw-text preview.
     }
-    return raw.slice(0, 500)
+    return { raw }
   }
   return undefined
+}
+
+/**
+ * Build the approval prompt's structured payload preview from the restored
+ * call arguments: shell-style `command` arguments map to the command kind;
+ * Edit/MultiEdit/Write arguments map to per-file diffs (rendered with the
+ * transcript's multi-hunk diff renderer); anything else pretty-prints the raw
+ * arguments, and a failed recovery degrades to tool name + reason only.
+ */
+export function payloadOf(req: ApprovalRequest): ApprovalPreview {
+  const restored = argsOf(req)
+  if (restored === undefined) return { kind: 'none' }
+  if ('raw' in restored) {
+    return { kind: 'args', json: restored.raw.slice(0, ARGS_PREVIEW_MAX_CHARS) }
+  }
+  const args = restored.args
+  if (typeof args.command === 'string') {
+    return { kind: 'command', command: args.command }
+  }
+  const diffs = diffsOf(req.toolName.toLowerCase(), args)
+  if (diffs !== undefined) return { kind: 'diff', diffs }
+  return { kind: 'args', json: JSON.stringify(args, null, 2).slice(0, ARGS_PREVIEW_MAX_CHARS) }
+}
+
+/**
+ * Extract per-file diffs from file-edit tool arguments, or undefined when the
+ * arguments do not carry the expected shape (the preview then degrades to the
+ * raw-arguments kind).
+ */
+function diffsOf(name: string, args: Record<string, unknown>): readonly { path: string; oldText: string | null; newText: string }[] | undefined {
+  const path = typeof args.file_path === 'string' ? args.file_path : undefined
+  if (name === 'write') {
+    if (path === undefined || typeof args.content !== 'string') return undefined
+    return [{ path, oldText: null, newText: args.content }]
+  }
+  if (name === 'edit') {
+    if (path === undefined || typeof args.old_string !== 'string' || typeof args.new_string !== 'string') return undefined
+    return [{ path, oldText: args.old_string, newText: args.new_string }]
+  }
+  if (name === 'multiedit' || name === 'multi_edit') {
+    if (path === undefined || !Array.isArray(args.edits)) return undefined
+    const diffs: { path: string; oldText: string | null; newText: string }[] = []
+    for (const edit of args.edits) {
+      if (edit === null || typeof edit !== 'object') continue
+      const { old_string: oldText, new_string: newText } = edit as Record<string, unknown>
+      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
+      diffs.push({ path, oldText, newText })
+    }
+    return diffs.length > 0 ? diffs : undefined
+  }
+  return undefined
+}
+
+/**
+ * Derive the permission rule an "always" answer persists for the approved
+ * call. Shell commands get a trailing-space first-word prefix rule
+ * (`Bash(npm )` matches `npm install …` but not `npmx …` — the deliberate
+ * trailing space replaces the colon-carrying `:*` legacy form, which would
+ * otherwise embed the colon in the prefix and never match). Every other tool
+ * gets a whole-tool rule. Undefined (stay once-only) when nothing usable
+ * remains, e.g. a blank command.
+ */
+export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
+  const name = toolName.trim()
+  if (name === '') return undefined
+  if (preview?.kind === 'command') {
+    const firstWord = preview.command.trim().split(/\s+/)[0] ?? ''
+    if (firstWord === '') return undefined
+    // ruleString escapes parens/backslashes so a subshell-opening first word
+    // round-trips through parseRuleString.
+    return ruleString(name, `${firstWord} `)
+  }
+  return name
+}
+
+/**
+ * Structural seam for the deployment settings provider: the pieces the
+ * always-allow write path needs (namespace descriptors and whole-section
+ * replace). Declared locally — the tui package does not import the settings
+ * package, mirroring the other `*Like` seams.
+ */
+type SettingsProviderLike = {
+  readonly writable?: boolean
+  describe(options?: { redactSecrets?: boolean }): readonly {
+    ns: unknown
+    revision: number
+    user?: unknown
+  }[]
+  replace(ns: unknown, section: object, expectedRevision?: number): Promise<void>
+}
+
+/** Whether an error is the settings provider's revision-conflict rejection. */
+function isSettingsConflict(error: unknown): boolean {
+  const candidate = error as { name?: unknown; code?: unknown } | null
+  if (candidate === null || typeof candidate !== 'object') return false
+  return candidate.code === 'SETTINGS_CONFLICT' || candidate.name === 'SettingsConflictError'
 }
 
 /**
@@ -463,6 +777,15 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // editor by root.ts. New prompts are appended on submit (see submit()).
   const historyDir = config.historyDir
   let history = loadHistory(historyDir)
+  // Bash-mode history: a separate stack (own file, same dir resolution) so
+  // shell commands never dilute composer prompt recall. Kept newest-first in
+  // memory for direct ↑ indexing; the file stays oldest→newest.
+  let bashHistory: string[] = loadBashHistory(historyDir).reverse()
+  const appendBashHistory = (command: string): void => {
+    if (bashHistory[0] === command) return
+    bashHistory = [command, ...bashHistory].slice(0, HISTORY_CAP)
+    saveBashHistory([...bashHistory].reverse(), historyDir)
+  }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
   // Boot banner: one status row greeting. Emitted before the resume fold so it
@@ -484,6 +807,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   const tools = ctx.get('tools') as ToolsLike | undefined
+  // Shell executor seam for `!` commands; absent → runShellCommand degrades
+  // to a direct child process.
+  const shell = ctx.get('shell') as ShellExecutorLike | undefined
   const presenters: ToolPresenters | undefined = tools === undefined
     ? undefined
     : {
@@ -555,6 +881,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (percentSame && tokensSame && detailSame) return // emit only on an actual change
     emit(setHud(state, patch))
   }
+  // Usage panel: each of the three token-meter projections folds its own
+  // section (totals / context occupancy / role breakdown) into one live
+  // snapshot through the same merge — a section its projection never reports
+  // stays absent, and the panel renders that section `n/a`. A read that
+  // yields no section at all (patch undefined) is a no-op.
+  const applyUsage = (patch: UsageView | undefined): void => {
+    if (patch === undefined) return
+    const merged: UsageView = { ...state.usage, ...patch }
+    if (sameUsage(state.usage, merged)) return
+    emit(setUsage(state, merged))
+  }
   const seedHud = (): void => {
     const patch: Partial<HudView> = {}
     if (projections !== undefined) {
@@ -591,8 +928,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     projections.onChanged((session, key, value) => {
       if (session.id !== current.agent.session.id) return
       if (key === 'tokenUsage') {
-        const tokens = tokensOf(value as TokenUsageStateLike | undefined)
+        const usage = value as TokenUsageStateLike | undefined
+        const tokens = tokensOf(usage)
         if (tokens !== undefined) applyHud({ tokens })
+        applyUsage(usageViewOf(totalsOf(usage), undefined, undefined))
       } else if (key === 'contextPressure') {
         const pressure = value as ContextPressureStateLike | undefined
         const percent = percentOf(pressure)
@@ -602,10 +941,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
           ...percent === undefined ? {} : { contextPercent: percent },
           ...occupancy === undefined ? {} : { contextTokens: occupancy },
         })
+        applyUsage(usageViewOf(undefined, occupancy, undefined))
       } else if (key === 'todos') {
         const todos = todosOf(value)
         if (sameTodos(state.todos, todos)) return
         emit(setTodos(state, todos))
+      } else if (key === 'contextBreakdown') {
+        applyUsage(usageViewOf(undefined, undefined, breakdownOf(value)))
       }
     })
   }
@@ -627,30 +969,131 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   })
 
-  let pendingApproval: { resolve: (outcome: ApprovalOutcome) => void } | undefined
+  // --- Modal pipeline: approvals + questions share one FIFO ------------------
+  // Concurrent approval requests used to overwrite a single slot (leaving the
+  // first request's promise hanging) and a question arriving mid-approval
+  // rendered both boxes while input routing favored the approval. Instead,
+  // every modal enters one FIFO; only the head renders (exactly one of the
+  // approval and question slots is set), answering or aborting the head
+  // promotes the next entry, and `ask()` during an active modal queues behind
+  // it instead of stacking a second box.
+  type ApprovalEntry = {
+    kind: 'approval'
+    view: ApprovalView
+    resolve: (outcome: ApprovalOutcome) => void
+    signal?: AbortSignal
+  }
+  type QuestionEntry = {
+    kind: 'question'
+    id: string
+    view: QuestionView
+    resolve: (answer: AskUserQuestionAnswer) => void
+    reject: (error: unknown) => void
+    signal?: AbortSignal
+  }
+  type ModalEntry = ApprovalEntry | QuestionEntry
+  const modalQueue: ModalEntry[] = []
+
+  /** Publish the queue head into exactly one of the two modal slots. */
+  const publishHead = (): void => {
+    const head = modalQueue[0]
+    const behind = modalQueue.length - 1
+    if (head === undefined || head.kind !== 'approval') emit(setApproval(state, undefined))
+    if (head === undefined || head.kind !== 'question') emit(setQuestion(state, undefined))
+    if (head === undefined) return
+    if (head.kind === 'approval') {
+      emit(setApproval(state, { ...head.view, ...behind === 0 ? {} : { pendingCount: behind } }))
+    } else {
+      emit(setQuestion(state, head.view))
+    }
+  }
+
+  /** Remove an entry from the queue (no-op if already gone) and republish. */
+  const dequeueModal = (entry: ModalEntry): void => {
+    const index = modalQueue.indexOf(entry)
+    if (index < 0) return
+    modalQueue.splice(index, 1)
+    publishHead()
+  }
+
+  // --- Approvals ------------------------------------------------------------
+  // The head approval is parked in state.approval together with the
+  // recoverable payload preview. The "always" answer resolves the current call
+  // like a one-shot grant AND persists a derived permission rule through the
+  // settings provider (see writeAllowRule). Already-queued requests are decided
+  // one by one even after a rule lands — grants never apply retroactively.
+  // Requests from the current agent and from tracked subagents (their session
+  // id was seen on `subagent/start`, which fires before a subagent's first
+  // approval) queue here; anything else passes through to the next provider.
   ctx.on('approval/request', async (req: ApprovalRequest, next) => {
-    if (req.agent.id !== current.agent.id) return next()
-    const command = commandOf(req)
-    emit(setApproval(state, {
+    const ownSessions = new Set(state.subagents.map(run => run.sessionId))
+    ownSessions.add(String(current.agent.session.id))
+    if (!ownSessions.has(String(req.agent.session.id))) return next()
+    const preview = payloadOf(req)
+    const view: ApprovalView = {
       toolName: req.toolName,
       ...req.reason === undefined ? {} : { reason: req.reason },
-      ...command === undefined ? {} : { command },
-    }))
+      ...preview.kind === 'none' ? {} : { preview },
+    }
     return await new Promise<ApprovalOutcome>(resolve => {
-      pendingApproval = { resolve }
+      const entry: ApprovalEntry = {
+        kind: 'approval',
+        view,
+        resolve,
+        ...req.signal === undefined ? {} : { signal: req.signal },
+      }
+      modalQueue.push(entry)
       req.signal?.addEventListener('abort', () => {
-        pendingApproval = undefined
-        emit(setApproval(state, undefined))
+        dequeueModal(entry)
         resolve('cancelled')
       }, { once: true })
+      publishHead()
     })
   })
 
-  let pendingQuestion: {
-    id: string
-    resolve: (answer: AskUserQuestionAnswer) => void
-    reject: (error: unknown) => void
-  } | undefined
+  /**
+   * Persist the allow rule an "always" answer grants: read the `permissions`
+   * namespace descriptor, merge the rule into the raw user section's allow
+   * list (re-attaching every passthrough field — `replace` overwrites the
+   * whole section), and write it back at the observed revision. One retry on
+   * a revision conflict (re-describe, re-merge, replace). Degradations
+   * (provider missing, namespace unregistered, write failure) leave the call
+   * allowed once and say so in a notice — never a crash after the fact.
+   */
+  const writeAllowRule = async (toolName: string, preview: ApprovalPreview | undefined): Promise<void> => {
+    const rule = allowRuleOf(toolName, preview)
+    if (rule === undefined) return
+    const settings = ctx.get('settings') as SettingsProviderLike | undefined
+    if (settings === undefined || settings.writable === false || typeof settings.describe !== 'function') {
+      showNotice('Allowed once only — no writable settings provider is mounted.')
+      return
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const descriptor = settings.describe().find(
+        entry => String(entry.ns) === String(PERMISSION_SETTINGS_NAMESPACE),
+      )
+      if (descriptor === undefined) {
+        showNotice('Allowed once only — the "permissions" settings namespace is not mounted.')
+        return
+      }
+      const user = descriptor.user !== null && typeof descriptor.user === 'object'
+        ? descriptor.user as Record<string, unknown>
+        : {}
+      const current = Array.isArray(user.allow) ? [...user.allow as unknown[]] : []
+      const allow = current.includes(rule) ? current : [...current, rule]
+      try {
+        await settings.replace(PERMISSION_SETTINGS_NAMESPACE, { ...user, allow }, descriptor.revision)
+        showNotice(`Always allow: ${rule}`)
+        return
+      } catch (error) {
+        if (attempt === 0 && isSettingsConflict(error)) continue
+        const message = error instanceof Error ? error.message : String(error)
+        showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
+        return
+      }
+    }
+  }
+
   const userQuestions = ctx.get('userQuestions') as
     | { registerProvider(provider: { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
     | undefined
@@ -660,7 +1103,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       questionsDispose = userQuestions.registerProvider({
         ask: async (request: AskUserQuestionRequest) => {
           const first = request.questions[0]
-          emit(setQuestion(state, {
+          const view: QuestionView = {
             header: first?.header ?? 'Question',
             question: first?.question ?? '',
             ...first?.detail === undefined ? {} : { detail: first.detail },
@@ -673,10 +1116,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
             focused: 0,
             selected: [],
             custom: '',
-          }))
+          }
+          // Queue behind any active modal; when the pipeline is empty this
+          // entry becomes the head and renders immediately.
           return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-            pendingQuestion = {
+            const entry: QuestionEntry = {
+              kind: 'question',
               id: first?.id ?? '',
+              view,
               resolve: (answer) => resolve({
                 answers: answer.answers.map((item, index) => ({
                   id: request.questions[index]?.id ?? item.id,
@@ -685,12 +1132,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
                 })),
               }),
               reject,
+              ...request.signal === undefined ? {} : { signal: request.signal },
             }
+            modalQueue.push(entry)
             request.signal?.addEventListener('abort', () => {
-              pendingQuestion = undefined
-              emit(setQuestion(state, undefined))
+              dequeueModal(entry)
               reject(new UserQuestionError('question cancelled', 'CANCELLED'))
             }, { once: true })
+            publishHead()
           })
         },
       })
@@ -700,18 +1149,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   /**
-   * Resolve the open question and dismiss the overlay. Labels are echoed
+   * Resolve the head question and advance the modal queue. Labels are echoed
    * verbatim — the plan-review `intent.approve` contract requires the exact
    * label string, never an inferred or re-indexed one.
    */
   const resolveQuestion = (selected: readonly string[], custom?: string): void => {
-    const pending = pendingQuestion
-    if (pending === undefined) return
-    pendingQuestion = undefined
-    emit(setQuestion(state, undefined))
-    pending.resolve({
+    const head = modalQueue[0]
+    if (head === undefined || head.kind !== 'question') return
+    modalQueue.shift()
+    publishHead()
+    head.resolve({
       answers: [{
-        id: pending.id,
+        id: head.id,
         selected: [...selected],
         ...custom === undefined ? {} : { custom },
       }],
@@ -899,15 +1348,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // No-op guard: same id → stay.
     if (id === String(current.agent.session.id)) return
 
-    // Clear pending overlays and queue (mirror the abort paths). The session
-    // switcher overlay itself is managed by the caller (sessionSwitcherSubmit).
-    if (pendingApproval !== undefined) {
-      pendingApproval.resolve('cancelled')
-      pendingApproval = undefined
-    }
-    if (pendingQuestion !== undefined) {
-      pendingQuestion.reject(new UserQuestionError('session switching', 'CANCELLED'))
-      pendingQuestion = undefined
+    // Clear pending overlays and the modal queue (mirror the abort paths):
+    // every parked approval resolves cancelled and every parked question
+    // rejects cancelled. The session switcher overlay itself is managed by the
+    // caller (sessionSwitcherSubmit).
+    for (const entry of modalQueue.splice(0)) {
+      if (entry.kind === 'approval') entry.resolve('cancelled')
+      else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
     }
     emit(setApproval(state, undefined))
     emit(setQuestion(state, undefined))
@@ -980,6 +1427,40 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
+  // --- /export-md + /copy: local transcript utilities ------------------------
+  // /export-md serializes the live rows via rowsToMarkdown — an explicit path
+  // is resolved against the session cwd; no argument lands under the export
+  // dir as <sessionId>-<timestamp>.md. Failures degrade to a notice, never a
+  // throw into the composer path.
+  const exportTranscript = (rawInput: string): void => {
+    const target = rawInput.length > 0
+      ? resolve(cwd, rawInput)
+      : join(config.exportDir ?? defaultExportDir(), `${String(current.agent.session.id)}-${exportStamp()}.md`)
+    try {
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, rowsToMarkdown(state.rows))
+      showNotice(`Exported to ${target}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      showNotice(`Export failed: ${message}`)
+    }
+  }
+
+  // /copy re-emits the latest assistant reply through an OSC 52 sequence so
+  // the terminal itself owns the clipboard (no child process, no permissions).
+  // The write sink is injected; without a sink the command still reports — it
+  // just has nowhere to hand the payload.
+  const copyLatestReply = (): void => {
+    const last = [...state.rows].reverse().find(row => row.kind === 'assistant')
+    if (last === undefined || last.kind !== 'assistant' || last.text.trim().length === 0) {
+      showNotice('Nothing to copy yet — no assistant reply in the transcript.')
+      return
+    }
+    const payload = Buffer.from(last.text, 'utf8').toString('base64')
+    config.copyWrite?.(`${OSC52_PREFIX}${payload}\x07`)
+    showNotice('Copied latest reply')
+  }
+
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
       await current.handle.dispose()
@@ -1028,6 +1509,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(upsertRow(state, { kind: 'status', text: formatCostReport(totals) }))
       return
     }
+    if (name === 'usage') {
+      // Seed from the live projections before opening: a resumed session (or
+      // one with no projection change since boot) already holds data the
+      // change feed has never delivered. From here on the onChanged feed
+      // keeps the snapshot fresh, so an open panel refreshes live.
+      if (projections !== undefined) {
+        applyUsage(usageViewOf(
+          totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined),
+          occupancyOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined),
+          breakdownOf(projections.stateOf(current.agent.session, 'contextBreakdown')),
+        ))
+      }
+      emit(openUsagePanel(state))
+      return
+    }
     if (name === 'agents') {
       const runs = state.subagents
       if (runs.length === 0) {
@@ -1042,6 +1538,15 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
       }
       emit(upsertRow(state, { kind: 'status', text: lines.join('\n') }))
+      return
+    }
+    if (name === 'export-md') {
+      exportTranscript(rawInput)
+      return
+    }
+    if (name === 'copy') {
+      copyLatestReply()
+      return
     }
   }
 
@@ -1109,10 +1614,77 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     return popped.text
   }
 
+  // --- `!` bash mode: local shell commands -----------------------------------
+  // A composer line with a leading `!` is executed locally: through the
+  // mounted shell executor (resolve→run, bounded spec) or, when none is
+  // mounted, through a direct /bin/sh child with the same timeout and output
+  // budget. The command never reaches the agent and never touches the session
+  // log (status rows are UI-only), and its output is line-capped.
+  const runShellCommand = async (raw: string): Promise<void> => {
+    const command = raw.trim()
+    if (command.length === 0) return
+    appendBashHistory(command)
+    emit(upsertRow(state, { kind: 'status', text: `$ ${command}` }))
+    emit(setNotice(state, BASH_RUNNING_NOTICE))
+    try {
+      if (shell === undefined) {
+        // Degraded path: no shell executor mounted. Non-zero exits, timeout
+        // kills, and spawn failures all arrive as rejections.
+        const result = await execFileAsync('/bin/sh', ['-c', command], {
+          cwd,
+          timeout: BASH_TIMEOUT_MS,
+          maxBuffer: BASH_STDOUT_MAX_BYTES,
+        })
+        const row = shellOutputRow(result.stdout, result.stderr, { exitCode: 0, timedOut: false })
+        if (row.text.length > 0) emit(upsertRow(state, row))
+      } else {
+        const result = await shell.run(shell.resolve({
+          command,
+          timeoutMs: BASH_TIMEOUT_MS,
+          stdoutMaxBytes: BASH_STDOUT_MAX_BYTES,
+        }))
+        const row = shellOutputRow(result.stdout.text, result.stderr.text, result)
+        if (row.text.length > 0) emit(upsertRow(state, row))
+      }
+    } catch (error) {
+      const failure = error as {
+        code?: unknown
+        killed?: boolean
+        message?: string
+        stdout?: string
+        stderr?: string
+      }
+      let row: { kind: 'status'; text: string; error?: boolean }
+      if (typeof failure.code === 'number') {
+        // Non-zero exit from the fallback child: output rides on the error.
+        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: failure.code, timedOut: false })
+      } else if (failure.killed === true) {
+        // The fallback child hit the timeout and was killed.
+        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: null, timedOut: true })
+      } else {
+        // Infrastructure fault (executor rejection, unwritable workdir, no
+        // /bin/sh): the message is all there is to show.
+        row = { kind: 'status', text: failure.message ?? String(error), error: true }
+      }
+      if (row.text.length > 0) emit(upsertRow(state, row))
+    } finally {
+      // Drop the running indicator only if nothing replaced it meanwhile.
+      if (state.notice === BASH_RUNNING_NOTICE) emit(setNotice(state, undefined))
+    }
+  }
+
   const submit = async (text?: string): Promise<void> => {
     const draft = text ?? state.draft
     if (draft.trim().length === 0) return
     emit(setDraft(state, ''))
+    // A leading `!` marks a LOCAL shell command no matter how the text was
+    // entered — typed in shell mode or pasted wholesale. It runs even while
+    // the agent is busy (a local command never touches the turn) and is
+    // neither a prompt nor a slash command.
+    if (draft.startsWith('!')) {
+      await runShellCommand(draft.slice(1))
+      return
+    }
     const parsed = parseSlash(draft)
     if (parsed.kind === 'local') {
       await runLocal(parsed.name, parsed.rawInput)
@@ -1171,6 +1743,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     get promptHistory() {
       return history
     },
+    get bashHistory() {
+      return bashHistory
+    },
     subscribe(listener) {
       listeners.add(listener)
       listener(state)
@@ -1206,10 +1781,22 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     toggleThinking() {
       emit(toggleThinking(state))
     },
-    answerApproval(allowed) {
-      pendingApproval?.resolve(allowed ? 'allowed-once' : 'rejected')
-      pendingApproval = undefined
-      emit(setApproval(state, undefined))
+    answerApproval(kind: ApprovalAnswerKind) {
+      const head = modalQueue[0]
+      if (head === undefined || head.kind !== 'approval') return
+      // Advance the queue BEFORE resolving: a resolution can immediately fire
+      // the next approval/request, which must enqueue behind the survivors.
+      modalQueue.shift()
+      publishHead()
+      head.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
+      if (kind === 'always') {
+        // Fire-and-forget: the call proceeds while the rule persists; a write
+        // failure surfaces as a notice, never as an answer error.
+        void writeAllowRule(head.view.toolName, head.view.preview).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
+        })
+      }
     },
     questionMove(delta) {
       emit(moveQuestionFocus(state, delta))
@@ -1314,6 +1901,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     todoPanelClose() {
       emit(closeTodoPanel(state))
+    },
+    usagePanelClose() {
+      emit(closeUsagePanel(state))
     },
     showNotice,
     markExitAttempt(now) {
