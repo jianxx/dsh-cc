@@ -17,6 +17,7 @@ import {
 	TuiMainScreen,
 	VStack,
 	getKeybindings,
+	isKeyRelease,
 	type Component,
 	type Terminal,
 	type TUI,
@@ -296,6 +297,13 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// the editor; this listener owns only overlays and global chords. Anything it
 	// does not consume falls through to the focused editor.
 	const removeInputListener = tui.addInputListener((data: string) => {
+		// Kitty protocol flag 2 (report event types) delivers a release event
+		// after every physical press. pi-tui filters releases only on the
+		// focused-component path — this listener chain gets them raw, so drop
+		// them here before any routing. Otherwise one keypress double-fires
+		// overlay navigation (the /model picker moved two rows per press).
+		// Repeats are kept: holding a key must still autoscroll.
+		if (isKeyRelease(data)) return { consume: true }
 		const live = driver.state
 		// Ctrl+C arrives as a raw \x03 byte in raw mode (never a SIGINT). Treat it
 		// as an escape hatch: interrupt when busy; quit when idle — but only on a

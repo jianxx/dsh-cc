@@ -1794,3 +1794,71 @@ describe('vt /usage panel (real driver)', () => {
     await driver.dispose()
   })
 })
+describe('kitty release events', () => {
+  function pickerState(): TuiState {
+    let state = createInitialState()
+    state = setModelPicker(state, {
+      entries: [
+        { provider: 'p', id: 'm1', name: 'Model One' },
+        { provider: 'p', id: 'm2', name: 'Model Two' },
+        { provider: 'p', id: 'm3', name: 'Model Three' },
+      ],
+      focused: 0,
+    })
+    return state
+  }
+
+  it('a kitty press+release pair moves the /model picker focus exactly one row', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(pickerState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Kitty flag 2 (report event types) delivers a release event after every
+    // physical press. The release must not trigger a second move.
+    vt.sendInput('\x1b[B') // press
+    vt.sendInput('\x1b[1;1:3B') // release
+    await settle()
+    expect(driver.state.modelPicker?.focused).toBe(1)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('kitty release does not dismiss the picker via escape', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(pickerState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x1b[1;1:3A') // release of ↑ alone — no press, no action
+    await settle()
+    expect(driver.state.modelPicker?.focused).toBe(0)
+    expect(driver.state.modelPicker).toBeDefined()
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('kitty repeat events still autoscroll the picker', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(pickerState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Holding ↓: one press + one repeat must move two rows.
+    vt.sendInput('\x1b[1;1:1B') // press (event type 1)
+    vt.sendInput('\x1b[1;1:2B') // repeat (event type 2)
+    await settle()
+    expect(driver.state.modelPicker?.focused).toBe(2)
+
+    root.tui.stop()
+    root.destroy()
+  })
+})
