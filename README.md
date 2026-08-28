@@ -1,16 +1,16 @@
-# dsh-cc-plugins
+# dsh-cc
 
 **A Claude Code-style coding experience for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
 
-`dsh-cc-plugins` adds the interactive coding-agent features developers expect — a terminal UI, slash commands, subagents, skills, MCP, hooks, permissions, memory, worktrees, resumable sessions, model aliases, and more — as composable plugins for DeepSeek Harness.
+`dsh-cc` adds the interactive coding-agent features developers expect — a terminal UI, slash commands, subagents, skills, MCP, hooks, permissions, memory, worktrees, resumable sessions, model aliases, and more — as composable plugins for DeepSeek Harness.
 
 **No permanent DeepSeek Harness fork required.**
 
 > This project is not Claude Code and is not a wrapper around Claude Code. It re-creates familiar Claude Code-style workflows on top of the DeepSeek Harness runtime, where you control the models, tools, plugins, and agent composition.
 
-## Why dsh-cc-plugins?
+## Why dsh-cc?
 
-DeepSeek Harness provides a flexible agent runtime and plugin system. `dsh-cc-plugins` builds a more complete interactive coding environment on top of it.
+DeepSeek Harness provides a flexible agent runtime and plugin system. `dsh-cc` builds a more complete interactive coding environment on top of it.
 
 With the CC profile installed, you get:
 
@@ -157,7 +157,7 @@ Claude Code-style agent definitions often refer to models using aliases:
 model: sonnet
 ```
 
-`dsh-cc-plugins` can route those aliases to provider/model pairs configured for your deployment.
+`dsh-cc` can route those aliases to provider/model pairs configured for your deployment.
 
 Conceptually:
 
@@ -174,7 +174,7 @@ Aliases are configuration, not hard-coded vendor bindings. This lets you preserv
 
 ### vs. Claude Code
 
-Claude Code is a complete coding-agent product. `dsh-cc-plugins` instead brings many familiar interaction patterns to the DeepSeek Harness runtime, where the deployment controls models, tools, plugins, permissions, and agent composition.
+Claude Code is a complete coding-agent product. `dsh-cc` instead brings many familiar interaction patterns to the DeepSeek Harness runtime, where the deployment controls models, tools, plugins, permissions, and agent composition.
 
 ### vs. a DeepSeek Harness fork
 
@@ -284,7 +284,7 @@ Release process details: **[docs/release.md](docs/release.md)**.
 
 ## Project status
 
-`dsh-cc-plugins` is evolving alongside DeepSeek Harness. The compatibility surface can change as upstream adds new extension points or changes existing ones.
+`dsh-cc` is evolving alongside DeepSeek Harness. The compatibility surface can change as upstream adds new extension points or changes existing ones.
 
 If you find a workflow that works differently from Claude Code, the [parity matrix](docs/cc-parity-matrix.md) is the best place to check whether it is implemented, partial, intentionally out of scope, or still missing.
 
