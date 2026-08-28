@@ -12,6 +12,7 @@ import type {
   QuestionView,
   SessionSwitcherView,
   TodoItemView,
+  UsageView,
 } from '../store.ts'
 import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
@@ -274,5 +275,97 @@ export function createTodoPanelBox(todos: readonly TodoItemView[], focused: numb
   }
 
   box.addChild(new Text(theme.muted('↑↓ navigate · Esc close'), 0, 0))
+  return box
+}
+
+/** Width (in cells) of the context-occupancy bar in the usage panel. */
+const USAGE_BAR_WIDTH = 10
+
+/**
+ * Compact token count for the context line: digits below a thousand, then
+ * `86k` / `1.2k`-style thousands (single decimal, dropped when it rounds to
+ * `.0`; none past three digits).
+ */
+function compactTokens(count: number): string {
+  if (count < 1000) return String(count)
+  const k = count / 1000
+  const text = k >= 100 ? String(Math.round(k)) : k.toFixed(1).replace(/\.0$/, '')
+  return `${text}k`
+}
+
+/**
+ * Context-occupancy line: a bar, the percent, and both raw counts —
+ * `████░░░░░░ 43% (86k/200k)`. The bar fills by the rounded occupancy ratio
+ * with the percent clamped to [0, 100]. Each unknown degrades to a dim
+ * fallback: no used count at all renders `n/a`; a used count without a known
+ * window renders the count plus a dim `window n/a` (no percent is claimed).
+ */
+function contextLine(view: UsageView | undefined, theme: Theme): string {
+  const { contextUsed, contextWindow } = view ?? {}
+  if (contextUsed === undefined) return theme.muted('n/a')
+  if (contextWindow === undefined) {
+    return theme.muted(`${compactTokens(contextUsed)} tok · window n/a`)
+  }
+  const ratio = contextUsed / contextWindow
+  const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)))
+  const filled = Math.max(0, Math.min(USAGE_BAR_WIDTH, Math.round(ratio * USAGE_BAR_WIDTH)))
+  const bar = '█'.repeat(filled) + '░'.repeat(USAGE_BAR_WIDTH - filled)
+  return `${bar} ${percent}% (${compactTokens(contextUsed)}/${compactTokens(contextWindow)})`
+}
+
+/**
+ * Aligned `  label  value` rows (thousands separators, shared column widths)
+ * for one usage-panel section.
+ */
+function alignedRows(entries: readonly (readonly [string, number])[]): string[] {
+  const labelWidth = Math.max(...entries.map(([label]) => label.length))
+  const valueWidth = Math.max(...entries.map(([, value]) => value.toLocaleString('en-US').length))
+  return entries.map(([label, value]) =>
+    `  ${label.padEnd(labelWidth)}  ${value.toLocaleString('en-US').padStart(valueWidth)}`,
+  )
+}
+
+/**
+ * Usage panel box (`/usage`): the live context-occupancy bar, the cumulative
+ * token totals (cache rows only when non-zero, mirroring /cost), and the
+ * context breakdown by role. Pure display — no focus or navigation — and
+ * each section degrades independently to a dim `n/a` when its projection has
+ * no data. Quota and rate-limit figures have no projection at all, so the
+ * footer says so explicitly instead of implying the panel is exhaustive.
+ */
+export function createUsagePanelBox(view: UsageView | undefined, theme: Theme = defaultTheme): Container {
+  const box = new Container()
+  box.addChild(new Text(theme.bold('Usage'), 0, 0))
+  box.addChild(new Text(contextLine(view, theme), 0, 0))
+
+  box.addChild(new Text('Tokens', 0, 0))
+  const totals = view?.totals
+  if (totals === undefined) {
+    box.addChild(new Text(theme.muted('n/a'), 0, 0))
+  } else {
+    const entries: [string, number][] = [['input', totals.input], ['output', totals.output]]
+    const { cacheRead, cacheWrite } = totals
+    if (cacheRead !== undefined && cacheRead > 0) entries.push(['cache r', cacheRead])
+    if (cacheWrite !== undefined && cacheWrite > 0) entries.push(['cache w', cacheWrite])
+    for (const line of alignedRows(entries)) {
+      box.addChild(new Text(line, 0, 0))
+    }
+  }
+
+  box.addChild(new Text('Breakdown', 0, 0))
+  const breakdown = view?.breakdown
+  if (breakdown === undefined) {
+    box.addChild(new Text(theme.muted('n/a'), 0, 0))
+  } else {
+    for (const line of alignedRows([
+      ['system', breakdown.system],
+      ['tools', breakdown.tools],
+      ['messages', breakdown.messages],
+    ])) {
+      box.addChild(new Text(line, 0, 0))
+    }
+  }
+
+  box.addChild(new Text(theme.muted('quota data unavailable · Esc close'), 0, 0))
   return box
 }

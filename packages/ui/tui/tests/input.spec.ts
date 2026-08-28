@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { handleComposerInput, type InputSink } from '@jianxx/dsh-cc-tui/input.ts'
 import {
+  closeUsagePanel,
   createInitialState,
   openTodoPanel,
+  openUsagePanel,
   setApproval,
   setBusy,
   setModelPicker,
@@ -45,6 +47,10 @@ interface TodoPanelCalls {
   toggled: number
 }
 
+interface UsagePanelCalls {
+  closed: number
+}
+
 function sink(initial: TuiState = createInitialState()): InputSink & {
   disposed: boolean
   interrupted: boolean
@@ -54,6 +60,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   modelPickerCalls: ModelPickerCalls
   sessionSwitcherCalls: SessionSwitcherCalls
   todoPanelCalls: TodoPanelCalls
+  usagePanelCalls: UsagePanelCalls
 } {
   let state = initial
   const questionCalls: QuestionCalls = {
@@ -80,6 +87,9 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     closed: 0,
     toggled: 0,
   }
+  const usagePanelCalls: UsagePanelCalls = {
+    closed: 0,
+  }
   return {
     disposed: false,
     interrupted: false,
@@ -89,6 +99,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     modelPickerCalls,
     sessionSwitcherCalls,
     todoPanelCalls,
+    usagePanelCalls,
     get state() {
       return state
     },
@@ -150,6 +161,9 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     todoPanelClose() {
       todoPanelCalls.closed += 1
+    },
+    usagePanelClose() {
+      usagePanelCalls.closed += 1
     },
     async dispose() {
       this.disposed = true
@@ -591,5 +605,51 @@ describe('handleComposerInput todo panel routing', () => {
     handleComposerInput(driver, '\r')
     expect(driver.sessionSwitcherCalls.submitted).toBe(1)
     expect(driver.todoPanelCalls.closed).toBe(0)
+  })
+})
+
+describe('usage panel routing', () => {
+  function usagePanelState(): TuiState {
+    return openUsagePanel(createInitialState())
+  }
+
+  it('esc closes the usage panel while it is open', () => {
+    const driver = sink(usagePanelState())
+    const action = handleComposerInput(driver, '\x1b')
+    expect(driver.usagePanelCalls.closed).toBe(1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('the usage panel is modal: every other key is consumed without action', () => {
+    const driver = sink(usagePanelState())
+    for (const key of ['h', ' ', '2', '\x7f', '\x1b[A', '\x1b[B', '\x1b[Z', '\x14']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    // No navigation, no toggle side effects — Esc (tested above) is the only
+    // action the panel recognizes.
+    expect(driver.usagePanelCalls.closed).toBe(0)
+    expect(driver.todoPanelCalls.toggled).toBe(0)
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('does not interrupt on escape while the panel is open and the agent is busy (close wins)', () => {
+    const driver = sink(setBusy(usagePanelState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.usagePanelCalls.closed).toBe(1)
+  })
+
+  it('esc with the usage panel closed falls through to the generic escape path', () => {
+    const driver = sink(setBusy(createInitialState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(true)
+    expect(driver.usagePanelCalls.closed).toBe(0)
+  })
+
+  it('closeUsagePanel drops the field entirely (store round-trip)', () => {
+    const state = closeUsagePanel(usagePanelState())
+    expect(state.usagePanel).toBeUndefined()
   })
 })

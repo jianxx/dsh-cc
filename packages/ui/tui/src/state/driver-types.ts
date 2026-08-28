@@ -136,6 +136,11 @@ export interface Driver {
   /** Close the todo panel. */
   todoPanelClose(): void
   /**
+   * Close the `/usage` panel (Esc). The panel is pure display — opening is
+   * owned by the `/usage` command — so closing is its only interaction.
+   */
+  usagePanelClose(): void
+  /**
    * Show a one-line transient notice above the composer. The notice clears
    * itself after `ttlMs` (default 3000); a newer notice replaces the pending
    * clear timer of the previous one.

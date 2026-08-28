@@ -23,7 +23,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { buildArgCompleters } from './arg-completers.ts'
@@ -36,6 +36,7 @@ import {
   createQuestionBox,
   createSessionSwitcherBox,
   createTodoPanelBox,
+  createUsagePanelBox,
 } from './overlays.ts'
 
 export interface BuildRootOptions {
@@ -308,7 +309,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
 				live.modelPicker !== undefined || live.sessionSwitcher !== undefined ||
-				live.todoPanel !== undefined) {
+				live.todoPanel !== undefined || live.usagePanel !== undefined) {
 				return undefined
 			}
 			const now = Date.now()
@@ -352,6 +353,12 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			// consumed. The open path is the ctrl+t binding below, which only
 			// fires while the panel is closed.
 			routeTodoPanelInput(driver, data)
+			return { consume: true }
+		}
+		if (live.usagePanel !== undefined) {
+			// Modal usage panel: pure display with no navigation — esc closes,
+			// everything else is consumed. The open path is the /usage command.
+			routeUsagePanelInput(driver, data)
 			return { consume: true }
 		}
 		if (matchesKey(data, 'shift+tab')) {
@@ -453,6 +460,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		}
 		if (state.todoPanel !== undefined) {
 			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused, theme))
+		}
+		if (state.usagePanel !== undefined) {
+			// The panel rebuilds from the live snapshot on every emit, so
+			// projection changes refresh it in place while it is open.
+			overlays.addChild(createUsagePanelBox(state.usage, theme))
 		}
 		overlays.invalidate()
 

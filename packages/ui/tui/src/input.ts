@@ -35,6 +35,8 @@ export interface InputSink {
   todoPanelMove(delta: -1 | 1): void
   /** Close the todo panel. */
   todoPanelClose(): void
+  /** Close the `/usage` panel. */
+  usagePanelClose(): void
   dispose(): Promise<void>
 }
 
@@ -200,6 +202,20 @@ export function routeTodoPanelInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open `/usage` panel. The panel is pure
+ * display with no focus list, so escape closes it and every other key is
+ * consumed and ignored — the composer editor must never see keystrokes while
+ * it is open. Opening is owned by the `/usage` command.
+ */
+export function routeUsagePanelInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.usagePanelClose()
+    return
+  }
+  // All other keys consumed and ignored (modal, no navigation).
+}
+
+/**
  * Apply one raw keypress against the live driver. Returns whether the app
  * should exit. Called from the pi-tui global input listener before the editor
  * receives the keystroke.
@@ -229,6 +245,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.todoPanel !== undefined) {
     routeTodoPanelInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.usagePanel !== undefined) {
+    routeUsagePanelInput(driver, data)
     return { kind: 'none' }
   }
 

@@ -48,6 +48,7 @@ import {
   clearQueue,
   clearRows,
   closeTodoPanel,
+  closeUsagePanel,
   createInitialState,
   enqueue,
   markExitAttempt,
@@ -56,6 +57,7 @@ import {
   moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
+  openUsagePanel,
   popQueued,
   setApproval,
   setBusy,
@@ -67,6 +69,7 @@ import {
   setQuestion,
   setSessionSwitcher,
   setTodos,
+  setUsage,
   toggleQuestionOption,
   toggleGlobalCollapse,
   toggleThinking,
@@ -82,6 +85,8 @@ import {
   type SubagentRunView,
   type TodoItemView,
   type TuiState,
+  type UsageBreakdownView,
+  type UsageView,
 } from '../store.ts'
 
 export interface DriverConfig {
@@ -463,6 +468,75 @@ function percentOf(pressure: ContextPressureStateLike | undefined): number | und
   return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
 }
 
+/**
+ * `contextBreakdown` projection state (subset the usage panel reads): the
+ * projected context token count per content role.
+ */
+type ContextBreakdownStateLike = {
+  system?: number
+  tools?: number
+  messages?: number
+}
+
+/**
+ * Map a `contextBreakdown` projection value onto the usage panel's three role
+ * counts. Absent or malformed fields (shape drift, a partial value) degrade
+ * to no breakdown — the panel renders the whole section `n/a` instead of a
+ * misleading subset of numbers.
+ */
+function breakdownOf(value: unknown): UsageBreakdownView | undefined {
+  const raw = value as ContextBreakdownStateLike | null | undefined
+  if (raw === null || typeof raw !== 'object') return undefined
+  const { system, tools, messages } = raw
+  if (typeof system !== 'number' || typeof tools !== 'number' || typeof messages !== 'number') {
+    return undefined
+  }
+  return { system, tools, messages }
+}
+
+/**
+ * Assemble the usage panel's view from the three projection reads. Absent
+ * sections stay absent (the panel renders each `n/a` independently); an
+ * all-absent read yields undefined so no empty snapshot is parked in state.
+ */
+function usageViewOf(
+  totals: TokenUsageTotals | undefined,
+  occupancy: { used: number; window?: number } | undefined,
+  breakdown: UsageBreakdownView | undefined,
+): UsageView | undefined {
+  const view: UsageView = {}
+  if (totals !== undefined) view.totals = totals
+  if (occupancy !== undefined) {
+    view.contextUsed = occupancy.used
+    if (occupancy.window !== undefined) view.contextWindow = occupancy.window
+  }
+  if (breakdown !== undefined) view.breakdown = breakdown
+  const empty = view.totals === undefined && view.contextUsed === undefined && view.breakdown === undefined
+  return empty ? undefined : view
+}
+
+/** Structural equality for two usage token-total sets. */
+function sameTotals(a: UsageView['totals'], b: UsageView['totals']): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return a.input === b.input && a.output === b.output
+    && a.cacheRead === b.cacheRead && a.cacheWrite === b.cacheWrite
+}
+
+/** Structural equality for two usage breakdowns. */
+function sameBreakdown(a: UsageBreakdownView | undefined, b: UsageBreakdownView | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return a.system === b.system && a.tools === b.tools && a.messages === b.messages
+}
+
+/** Structural equality for two usage snapshots (all sections field-wise). */
+function sameUsage(a: UsageView | undefined, b: UsageView): boolean {
+  return a !== undefined
+    && sameTotals(a.totals, b.totals)
+    && a.contextUsed === b.contextUsed
+    && a.contextWindow === b.contextWindow
+    && sameBreakdown(a.breakdown, b.breakdown)
+}
+
 function liveMode(agent: Agent, fallback: string): string {
   if (foldPlanMode(agent.session.events)) return 'plan'
   return foldPermissionMode(agent.session.events) ?? fallback
@@ -807,6 +881,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (percentSame && tokensSame && detailSame) return // emit only on an actual change
     emit(setHud(state, patch))
   }
+  // Usage panel: each of the three token-meter projections folds its own
+  // section (totals / context occupancy / role breakdown) into one live
+  // snapshot through the same merge — a section its projection never reports
+  // stays absent, and the panel renders that section `n/a`. A read that
+  // yields no section at all (patch undefined) is a no-op.
+  const applyUsage = (patch: UsageView | undefined): void => {
+    if (patch === undefined) return
+    const merged: UsageView = { ...state.usage, ...patch }
+    if (sameUsage(state.usage, merged)) return
+    emit(setUsage(state, merged))
+  }
   const seedHud = (): void => {
     const patch: Partial<HudView> = {}
     if (projections !== undefined) {
@@ -843,8 +928,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     projections.onChanged((session, key, value) => {
       if (session.id !== current.agent.session.id) return
       if (key === 'tokenUsage') {
-        const tokens = tokensOf(value as TokenUsageStateLike | undefined)
+        const usage = value as TokenUsageStateLike | undefined
+        const tokens = tokensOf(usage)
         if (tokens !== undefined) applyHud({ tokens })
+        applyUsage(usageViewOf(totalsOf(usage), undefined, undefined))
       } else if (key === 'contextPressure') {
         const pressure = value as ContextPressureStateLike | undefined
         const percent = percentOf(pressure)
@@ -854,10 +941,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
           ...percent === undefined ? {} : { contextPercent: percent },
           ...occupancy === undefined ? {} : { contextTokens: occupancy },
         })
+        applyUsage(usageViewOf(undefined, occupancy, undefined))
       } else if (key === 'todos') {
         const todos = todosOf(value)
         if (sameTodos(state.todos, todos)) return
         emit(setTodos(state, todos))
+      } else if (key === 'contextBreakdown') {
+        applyUsage(usageViewOf(undefined, undefined, breakdownOf(value)))
       }
     })
   }
@@ -1419,6 +1509,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(upsertRow(state, { kind: 'status', text: formatCostReport(totals) }))
       return
     }
+    if (name === 'usage') {
+      // Seed from the live projections before opening: a resumed session (or
+      // one with no projection change since boot) already holds data the
+      // change feed has never delivered. From here on the onChanged feed
+      // keeps the snapshot fresh, so an open panel refreshes live.
+      if (projections !== undefined) {
+        applyUsage(usageViewOf(
+          totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined),
+          occupancyOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined),
+          breakdownOf(projections.stateOf(current.agent.session, 'contextBreakdown')),
+        ))
+      }
+      emit(openUsagePanel(state))
+      return
+    }
     if (name === 'agents') {
       const runs = state.subagents
       if (runs.length === 0) {
@@ -1796,6 +1901,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     todoPanelClose() {
       emit(closeTodoPanel(state))
+    },
+    usagePanelClose() {
+      emit(closeUsagePanel(state))
     },
     showNotice,
     markExitAttempt(now) {

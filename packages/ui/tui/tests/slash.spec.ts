@@ -5,7 +5,7 @@ describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
     expect(names).toEqual([
-      'agents', 'clear', 'copy', 'cost', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help',
+      'agents', 'clear', 'copy', 'cost', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help', 'usage',
     ])
   })
 
@@ -32,6 +32,12 @@ describe('LOCAL_COMMANDS', () => {
     expect(cost).toBeDefined()
     expect(cost!.description.toLowerCase()).toContain('token usage')
   })
+
+  it('usage is listed with a panel description', () => {
+    const usage = LOCAL_COMMANDS.find(c => c.name === 'usage')
+    expect(usage).toBeDefined()
+    expect(usage!.description.toLowerCase()).toContain('panel')
+  })
 })
 
 describe('parseSlash', () => {
@@ -51,6 +57,7 @@ describe('parseSlash', () => {
       kind: 'local', name: 'export-md', rawInput: '/tmp/notes.md',
     })
     expect(parseSlash('/copy')).toEqual({ kind: 'local', name: 'copy', rawInput: '' })
+    expect(parseSlash('/usage')).toEqual({ kind: 'local', name: 'usage', rawInput: '' })
   })
 
   it('forwards unknown names to the harness catalog', () => {

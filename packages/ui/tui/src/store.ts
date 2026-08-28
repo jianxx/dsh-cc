@@ -177,6 +177,41 @@ export interface TodoPanelView {
   focused: number
 }
 
+/** Cumulative token usage across the four provider-reported buckets. */
+export interface UsageTotalsView {
+  input: number
+  output: number
+  cacheRead?: number
+  cacheWrite?: number
+}
+
+/** Context composition by role: system prompt, tool output, messages. */
+export interface UsageBreakdownView {
+  system: number
+  tools: number
+  messages: number
+}
+
+/**
+ * Live `/usage` panel content, folded from the tokenUsage, contextPressure,
+ * and contextBreakdown projections. Every section is optional — the panel
+ * degrades each missing one to a dim `n/a` independently.
+ */
+export interface UsageView {
+  totals?: UsageTotalsView
+  /** Context tokens currently projected into the window. */
+  contextUsed?: number
+  /** Context window size; absent when the projection does not report one. */
+  contextWindow?: number
+  breakdown?: UsageBreakdownView
+}
+
+/**
+ * Marker for the open `/usage` panel overlay — pure display with no focus or
+ * navigation state; the content comes from `state.usage`.
+ */
+export type UsagePanelView = Record<string, never>
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -208,6 +243,10 @@ export interface TuiState {
   todos?: readonly TodoItemView[]
   /** Open Ctrl+T todo panel; absent while closed. */
   todoPanel?: TodoPanelView
+  /** Live usage snapshot (token totals, context occupancy, breakdown). */
+  usage?: UsageView
+  /** Open `/usage` panel; absent while closed. */
+  usagePanel?: UsagePanelView
   /**
    * Timestamp (`Date.now()`) of the last idle Ctrl+C press — the anchor for
    * the double-press-to-exit window. Never cleared: a stale anchor simply
@@ -580,4 +619,30 @@ export function todoSummary(state: TuiState): { total: number; done: number; act
     else if (todo.status === 'in_progress' && active === undefined) active = todo.content
   }
   return { total: todos.length, done, ...active === undefined ? {} : { active } }
+}
+
+/**
+ * Replace the live usage snapshot, or clear it when `usage` is undefined.
+ * Returns the same state reference when the clear finds nothing to drop.
+ */
+export function setUsage(state: TuiState, usage: UsageView | undefined): TuiState {
+  if (usage === undefined) {
+    if (state.usage === undefined) return state
+    const { usage: _dropped, ...rest } = state
+    return rest
+  }
+  return { ...state, usage }
+}
+
+/** Open the `/usage` panel (a same-reference no-op when already open). */
+export function openUsagePanel(state: TuiState): TuiState {
+  if (state.usagePanel !== undefined) return state
+  return { ...state, usagePanel: {} }
+}
+
+/** Close the `/usage` panel. */
+export function closeUsagePanel(state: TuiState): TuiState {
+  if (state.usagePanel === undefined) return state
+  const { usagePanel: _dropped, ...rest } = state
+  return rest
 }

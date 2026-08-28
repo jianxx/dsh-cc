@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Terminal as XtermTerminal } from '@xterm/headless'
 import {
   TuiMainScreen,
@@ -6,6 +9,7 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
+import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
@@ -222,6 +226,7 @@ function fakeDriver(
       state = closeTodoPanel(state)
       for (const l of listeners) l(state)
     },
+    usagePanelClose() {},
     showNotice(text: string) {
       state = setNotice(state, text)
       for (const l of listeners) l(state)
@@ -1643,5 +1648,149 @@ describe('vt-renderer', () => {
 
     root.tui.stop()
     root.destroy()
+  })
+})
+
+/**
+ * /usage panel over a real driver: the fakeDriver above cannot run local
+ * slash commands, so these tests mount createDriver against a projections
+ * stub and drive the panel through the actual submit path.
+ */
+describe('vt /usage panel (real driver)', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-vt-usage-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  function makeCtx(states: Record<string, unknown>) {
+    return {
+      get(key: string) {
+        if (key === 'agentPresets') {
+          return {
+            defaultId: 'cc',
+            resolve: async () => ({ id: 'cc' }),
+            mount: async () => ({ id: 'cc' }),
+          }
+        }
+        if (key === 'sessionProjections') {
+          return {
+            onChanged: () => () => {},
+            stateOf: (_session: unknown, key: string) => states[key],
+          }
+        }
+        return undefined
+      },
+      on: () => () => {},
+      agents: {
+        create: async () => ({
+          agent: {
+            options: {},
+            session: { id: 's-a', header: {}, events: [] },
+            id: 'a-1',
+            status: 'idle',
+            followup: vi.fn(),
+            steer: vi.fn(),
+            cancel: vi.fn(),
+          },
+          dispose: async () => {},
+        }),
+        resume: async () => {
+          throw new Error('not needed')
+        },
+      },
+    }
+  }
+
+  async function makeUsageDriver(states: Record<string, unknown>) {
+    return createDriver(makeCtx(states) as never, { cwd: '/w/proj', branchProbe: async () => undefined })
+  }
+
+  it('opens the usage panel via /usage with the context bar and token rows', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({
+      tokenUsage: {
+        totals: { uncachedInputTokens: 12_345, outputTokens: 1_234, cacheReadTokens: 5_678, cacheWriteTokens: 901 },
+        last: null,
+      },
+      contextPressure: {
+        contextWindow: 200_000,
+        pressureTokens: 85_000,
+        surfaceTokens: 3_000,
+        sampledSurfaceTokens: 2_000,
+      },
+      contextBreakdown: { system: 1_200, tools: 3_400, messages: 81_400 },
+    })
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+
+    expect(driver.state.usagePanel).toEqual({})
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Usage')
+    expect(stripped).toContain('████░░░░░░ 43% (86k/200k)')
+    expect(stripped).toContain('12,345')
+    expect(stripped).toContain('81,400')
+    expect(stripped).toContain('quota data unavailable · Esc close')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
+  })
+
+  it('closes the usage panel on escape', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({})
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+    expect(driver.state.usagePanel).toEqual({})
+
+    vt.sendInput('\x1b') // escape — close
+    await settle()
+
+    expect(driver.state.usagePanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('quota data unavailable')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
+  })
+
+  it('renders every section as n/a when the projections have no data', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = await makeUsageDriver({})
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    await driver.submit('/usage')
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Usage')
+    expect(stripped).toContain('n/a')
+    expect(stripped).toContain('quota data unavailable · Esc close')
+
+    root.tui.stop()
+    root.destroy()
+    await driver.dispose()
   })
 })
