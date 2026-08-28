@@ -10,7 +10,8 @@
  *   3. repository.url, normalized, names this repo — npm's sigstore
  *      provenance check rejects any publish whose manifest does not
  *      declare the repo it was built from (v0.1.1 pi-tui incident).
- *   4. license === "Apache-2.0"
+ *   4. license matches the project license, except for explicit vendored
+ *      packages that must preserve their upstream license.
  *   5. (only when a sibling checkout <repoRoot>/../deepseek-harness exists)
  *      every dependency/devDependency/peerDependency key matching
  *      /^@deepseek-ai\/dsh-/ carries a range that the harness version
@@ -186,6 +187,9 @@ function harnessVersion(root) {
 /** The repo every publishable package must declare as its provenance. */
 export const EXPECTED_REPOSITORY = "jianxx/dsh-cc";
 export const EXPECTED_LICENSE = "Apache-2.0";
+export const LICENSE_EXCEPTIONS = new Map([
+  ["@jianxx/dsh-cc-pi-tui", "MIT"],
+]);
 
 /**
  * Normalize a repository declaration to the bare `owner/repo` slug so the
@@ -251,10 +255,11 @@ export function findManifestViolations(root = ROOT) {
           `${EXPECTED_REPOSITORY} — npm sigstore provenance will reject the publish`,
       });
     }
-    if (json.license !== EXPECTED_LICENSE) {
+    const expectedLicense = LICENSE_EXCEPTIONS.get(json.name) ?? EXPECTED_LICENSE;
+    if (json.license !== expectedLicense) {
       problems.push({
         pkg: pkgName,
-        reason: `license is '${json.license ?? "<missing>"}' (expected '${EXPECTED_LICENSE}')`,
+        reason: `license is '${json.license ?? "<missing>"}' (expected '${expectedLicense}')`,
       });
     }
     if (hasHarness) {
