@@ -12,6 +12,7 @@ import {
   closeTodoPanel,
   createInitialState,
   enqueue,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
@@ -19,6 +20,7 @@ import {
   setApproval,
   setBusy,
   setModelPicker,
+  setNotice,
   setQuestion,
   setSessionSwitcher,
   setTodos,
@@ -214,6 +216,14 @@ function fakeDriver(
     },
     todoPanelClose() {
       state = closeTodoPanel(state)
+      for (const l of listeners) l(state)
+    },
+    showNotice(text: string) {
+      state = setNotice(state, text)
+      for (const l of listeners) l(state)
+    },
+    markExitAttempt(now?: number) {
+      state = markExitAttempt(state, now ?? Date.now())
       for (const l of listeners) l(state)
     },
     async openSessionSwitcher() {},
@@ -1240,7 +1250,7 @@ describe('vt-renderer', () => {
     root.destroy()
   })
 
-  it('Ctrl+C (\\x03) when idle calls onQuit and does not interrupt', async () => {
+  it('a single idle Ctrl+C shows the exit hint and does not quit', async () => {
     const vt = new VirtualTerminal(80, 24)
     const driver = fakeDriver(createInitialState())
     let interrupted = 0
@@ -1253,8 +1263,55 @@ describe('vt-renderer', () => {
     vt.sendInput('\x03')
     await settle()
 
+    // First press only anchors the double-press window and hints.
+    expect(quitCalled).toBe(false)
+    expect(interrupted).toBe(0)
+    expect(driver.state.notice).toBe('Press Ctrl+C again to exit')
+    expect(driver.state.lastExitAttemptAt).toBeDefined()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('Press Ctrl+C again to exit')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('a second Ctrl+C within the double-press window quits', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+    let interrupted = 0
+    driver.interrupt = () => { interrupted++ }
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+    vt.sendInput('\x03')
+    await settle()
+
     expect(quitCalled).toBe(true)
     expect(interrupted).toBe(0)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('an idle Ctrl+C after the double-press window expired hints again instead of quitting', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    // Seed a stale exit attempt well outside the double-press window.
+    const driver = fakeDriver(markExitAttempt(createInitialState(), Date.now() - 10_000))
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+
+    expect(quitCalled).toBe(false)
+    expect(driver.state.notice).toBe('Press Ctrl+C again to exit')
+    // The stale anchor was replaced with a fresh one.
+    expect(driver.state.lastExitAttemptAt).toBeGreaterThan(Date.now() - 10_000)
 
     root.tui.stop()
     root.destroy()

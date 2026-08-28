@@ -43,6 +43,7 @@ import {
   closeTodoPanel,
   createInitialState,
   enqueue,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveSessionSwitcherFocus,
@@ -216,6 +217,9 @@ type ContextPressureStateLike = {
 
 const execFileAsync = promisify(execFile)
 
+/** Default lifetime of a transient `showNotice` hint. */
+const NOTICE_TTL_MS = 3000
+
 /**
  * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
  * with a short timeout. Never throws — errors (no git, no repo, detached
@@ -372,6 +376,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const emit = (next: TuiState): void => {
     state = next
     for (const listener of listeners) listener(state)
+  }
+
+  // Transient notice: parked in state.notice with a self-clearing timer. The
+  // timer handle lives here so dispose() can cancel it (reversible effect),
+  // and a newer notice replaces the pending timer of the previous one.
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined
+  const showNotice = (text: string, ttlMs = NOTICE_TTL_MS): void => {
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer)
+    emit(setNotice(state, text))
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined
+      // Same-reference guard: no churn when the notice was already cleared.
+      if (state.notice !== undefined) emit(setNotice(state, undefined))
+    }, ttlMs)
   }
 
   const composition = await composePreset(ctx, config.agentPreset ?? 'cc')
@@ -696,7 +714,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     const planMode = ctx.get('planMode') as PlanModeLike | undefined
     if (mode === 'plan') {
       if (planMode === undefined) {
-        emit(setNotice(state, 'plan mode is not mounted in this composition'))
+        showNotice('plan mode is not mounted in this composition')
         return
       }
       planMode.set(current.agent, true)
@@ -707,7 +725,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       planMode?.set(current.agent, false)
     }
     if (rules === undefined) {
-      emit(setNotice(state, 'The permission-rules engine is not mounted in this composition.'))
+      showNotice('The permission-rules engine is not mounted in this composition.')
       return
     }
     rules.setMode(current.agent, mode)
@@ -985,7 +1003,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       const catalog = await loadCatalog()
       const chosen = parseModelChoice(rawInput, catalog)
       if (chosen === undefined) {
-        emit(setNotice(state, `Unknown model "${rawInput}". Try /model for the catalog.`))
+        showNotice(`Unknown model "${rawInput}". Try /model for the catalog.`)
         return
       }
       selection.current = { provider: chosen.provider, model: chosen.model }
@@ -1021,7 +1039,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const runHarness = async (line: string): Promise<void> => {
     const commands = ctx.get('commands') as CommandsLike | undefined
     if (commands === undefined) {
-      emit(setNotice(state, 'No command registry is mounted.'))
+      showNotice('No command registry is mounted.')
       return
     }
     const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
@@ -1234,6 +1252,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     todoPanelClose() {
       emit(closeTodoPanel(state))
     },
+    showNotice,
+    markExitAttempt(now) {
+      emit(markExitAttempt(state, now ?? Date.now()))
+    },
     async switchSession(id) {
       await switchSession(id)
     },
@@ -1247,6 +1269,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       return commandCatalog
     },
     async dispose() {
+      if (noticeTimer !== undefined) {
+        clearTimeout(noticeTimer)
+        noticeTimer = undefined
+      }
       questionsDispose?.()
       await current.handle.dispose()
     },

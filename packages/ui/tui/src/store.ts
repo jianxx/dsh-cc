@@ -190,6 +190,12 @@ export interface TuiState {
   todos?: readonly TodoItemView[]
   /** Open Ctrl+T todo panel; absent while closed. */
   todoPanel?: TodoPanelView
+  /**
+   * Timestamp (`Date.now()`) of the last idle Ctrl+C press — the anchor for
+   * the double-press-to-exit window. Never cleared: a stale anchor simply
+   * falls outside the window, so the next press starts a new attempt.
+   */
+  lastExitAttemptAt?: number
 }
 
 /** Empty composer + idle agent. */
@@ -363,6 +369,15 @@ export function clearRows(state: TuiState): TuiState {
 export function setNotice(state: TuiState, notice: string | undefined): TuiState {
   const { notice: _dropped, ...rest } = state
   return notice === undefined ? rest : { ...rest, notice }
+}
+
+/**
+ * Record the moment of an idle Ctrl+C press (the double-press-to-exit window
+ * anchor). Pure state evolution — the window comparison itself lives at the
+ * input layer.
+ */
+export function markExitAttempt(state: TuiState, at: number): TuiState {
+  return { ...state, lastExitAttemptAt: at }
 }
 
 /** Park a submitted text as pending steering while the agent is busy. */

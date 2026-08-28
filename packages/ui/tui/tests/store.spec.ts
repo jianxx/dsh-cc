@@ -9,6 +9,7 @@ import {
   enqueue,
   focusQuestionOption,
   focusModelPicker,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
@@ -548,5 +549,31 @@ describe('subagent helpers', () => {
       runId: 'r1', provider: 'p', sessionId: 's1', status: 'done', stopReason: 'end_turn',
     }
     expect(view.status === 'running' || view.status === 'done').toBe(true)
+  })
+})
+
+describe('exit-attempt tracking', () => {
+  it('markExitAttempt records the timestamp on a fresh state', () => {
+    const state = markExitAttempt(createInitialState(), 1000)
+    expect(state.lastExitAttemptAt).toBe(1000)
+  })
+
+  it('markExitAttempt overwrites a previous timestamp', () => {
+    const base = markExitAttempt(createInitialState(), 1000)
+    const next = markExitAttempt(base, 2500)
+    expect(next.lastExitAttemptAt).toBe(2500)
+  })
+
+  it('markExitAttempt does not mutate the original state', () => {
+    const base = createInitialState()
+    const next = markExitAttempt(base, 42)
+    expect(base.lastExitAttemptAt).toBeUndefined()
+    expect(next).not.toBe(base)
+    expect(next.lastExitAttemptAt).toBe(42)
+  })
+
+  it('createInitialState leaves lastExitAttemptAt undefined', () => {
+    const state: TuiState = createInitialState()
+    expect(state.lastExitAttemptAt).toBeUndefined()
   })
 })

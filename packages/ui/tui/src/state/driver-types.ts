@@ -106,6 +106,19 @@ export interface Driver {
   /** Close the todo panel. */
   todoPanelClose(): void
   /**
+   * Show a one-line transient notice above the composer. The notice clears
+   * itself after `ttlMs` (default 3000); a newer notice replaces the pending
+   * clear timer of the previous one.
+   */
+  showNotice(text: string, ttlMs?: number): void
+  /**
+   * Record the moment of an idle Ctrl+C press — the anchor for the
+   * double-press-to-exit window. Pure state evolution; callers pass the
+   * timestamp they compared against so anchor and comparison share one clock
+   * read. Defaults to `Date.now()`.
+   */
+  markExitAttempt(now?: number): void
+  /**
    * Switch the live agent to a different persisted session in-process: dispose
    * the current handle, resume the target, replay its history through the same
    * fold the boot path uses, and reset the transcript. No-op when `id` matches

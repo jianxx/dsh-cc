@@ -55,6 +55,9 @@ export interface BuildRootOptions {
 /** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
 const TODO_ACTIVE_CAP = 60
 
+/** How long after the first idle Ctrl+C a second press still quits (ms). */
+const DOUBLE_PRESS_WINDOW_MS = 2000
+
 function truncateActive(content: string): string {
 	return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
 }
@@ -88,7 +91,7 @@ function openSystemUrl(url: string): void {
 /**
  * Build the pi-tui render tree.
  *
- * Children order: title · transcript · queue chips · todo strip ·
+ * Children order: title · transcript · queue chips · todo strip · notice ·
  * [approval] · [question] · editor · statusline. The transcript and overlays
  * rebuild on every driver emit; the editor is persistent so it retains focus
  * and cursor state across renders.
@@ -120,6 +123,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// Session todo strip (`☐ done/total · active task`), same persistent-Text
 	// pattern: blank content collapses it to zero lines when no todos exist.
 	const todoLine = new Text('', 0, 0)
+
+	// Transient notice line (e.g. the "Press Ctrl+C again to exit" hint), same
+	// persistent-Text pattern: blank content collapses it to zero lines when no
+	// notice is parked.
+	const noticeLine = new Text('', 0, 0)
 
 	// Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
 	// every state change so they appear and disappear with the driver state.
@@ -157,7 +165,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	const statusline = new Text(driver.statusLineIn(terminal.columns), 0, 0)
 
 	// Ordered chrome shared by the inline mount and the fullscreen exit replay.
-	const chrome: Component[] = [title, transcript, queueLine, todoLine, overlays, editor, statusline]
+	const chrome: Component[] = [title, transcript, queueLine, todoLine, noticeLine, overlays, editor, statusline]
 
 	if (tui instanceof TuiAltScreen) {
 		// Fullscreen (alternate screen): transcript scrolls inside the primary
@@ -174,6 +182,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		const dock = new VStack()
 		dock.addChild(queueLine, { shrink: 1, minSize: 0 })
 		dock.addChild(todoLine, { shrink: 1, minSize: 0 })
+		dock.addChild(noticeLine, { shrink: 1, minSize: 0 })
 		dock.addChild(overlays, { shrink: 1, minSize: 0 })
 		dock.addChild(editor, { shrink: 1, minSize: 1 })
 		dock.addChild(statusline, { shrink: 1, minSize: 1 })
@@ -195,7 +204,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	const removeInputListener = tui.addInputListener((data: string) => {
 		const live = driver.state
 		// Ctrl+C arrives as a raw \x03 byte in raw mode (never a SIGINT). Treat it
-		// as an escape hatch: interrupt when busy, quit when idle. When an overlay
+		// as an escape hatch: interrupt when busy; quit when idle — but only on a
+		// double press, so a stray Ctrl+C never kills the session. When an overlay
 		// is open and the agent is idle, fall through so the overlay's own key
 		// handling (esc to dismiss, etc.) owns it.
 		if (data === '\x03') {
@@ -208,7 +218,16 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				live.todoPanel !== undefined) {
 				return undefined
 			}
-			opts.onQuit?.()
+			const now = Date.now()
+			const lastAttempt = live.lastExitAttemptAt
+			if (lastAttempt !== undefined && now - lastAttempt <= DOUBLE_PRESS_WINDOW_MS) {
+				opts.onQuit?.()
+				return { consume: true }
+			}
+			// First press: anchor the window and hint. The window expires
+			// naturally — no per-keystroke timer resets.
+			driver.markExitAttempt(now)
+			driver.showNotice('Press Ctrl+C again to exit')
 			return { consume: true }
 		}
 		if (live.approval !== undefined) {
@@ -284,6 +303,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				: dim(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
 		)
 		todoLine.invalidate()
+
+		noticeLine.setText(state.notice === undefined ? '' : dim(state.notice))
+		noticeLine.invalidate()
 
 		overlays.clear()
 		if (state.approval !== undefined) {
