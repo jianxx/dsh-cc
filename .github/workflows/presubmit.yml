@@ -86,6 +86,12 @@ jobs:
         working-directory: dsh-cc-plugins
         run: node scripts/check-tui-boundary.mjs
 
+      # 跨包深链 src/ import 会在 tsc emit 中原样保留,运行时命中 Node 的
+      # node_modules type-stripping 限制(plugin tree boot 直接失败)。
+      - name: Deep src imports (check:deep-imports)
+        working-directory: dsh-cc-plugins
+        run: node scripts/check-deep-src-imports.mjs
+
       - name: Vendored pi-tui purity (check:vendor-purity)
         working-directory: dsh-cc-plugins
         run: node scripts/check-vendor-purity.mjs

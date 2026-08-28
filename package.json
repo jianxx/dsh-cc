@@ -20,7 +20,8 @@
     "check:publish": "node scripts/check-publish-manifests.mjs",
     "check:tui-boundary": "node scripts/check-tui-boundary.mjs",
     "check:vendor-purity": "node scripts/check-vendor-purity.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "check:deep-imports": "node scripts/check-deep-src-imports.mjs"
   },
   "devDependencies": {
     "husky": "^9.1.7",
