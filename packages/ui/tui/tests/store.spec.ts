@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   backspaceQuestionText,
   clearQueue,
+  clearTurn,
   closeTodoPanel,
   countRunningSubagents,
   createInitialState,
@@ -18,6 +19,7 @@ import {
   setModelPicker,
   setQuestion,
   setTodos,
+  setTurnActive,
   todoSummary,
   toggleGlobalCollapse,
   toggleQuestionOption,
@@ -31,6 +33,7 @@ import {
   type TodoItemView,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
+import { VERBS } from '@jianxx/dsh-cc-tui/working-line.ts'
 
 function questionState(overrides: Partial<QuestionView> = {}): TuiState {
   const question: QuestionView = {
@@ -602,5 +605,44 @@ describe('exit-attempt tracking', () => {
   it('createInitialState leaves lastExitAttemptAt undefined', () => {
     const state: TuiState = createInitialState()
     expect(state.lastExitAttemptAt).toBeUndefined()
+  })
+})
+
+describe('turn anchor helpers', () => {
+  it('setTurnActive anchors the turn with a deterministic verbIndex', () => {
+    const state = setTurnActive(createInitialState(), { startedAt: 12_345, outputBase: 40 })
+    expect(state.turn).toEqual({ startedAt: 12_345, outputBase: 40, verbIndex: 12_345 % VERBS.length })
+  })
+
+  it('setTurnActive accepts an unseeded outputBase (undefined until the HUD lands)', () => {
+    const state = setTurnActive(createInitialState(), { startedAt: 7, outputBase: undefined })
+    expect(state.turn).toEqual({ startedAt: 7, outputBase: undefined, verbIndex: 7 % VERBS.length })
+  })
+
+  it('re-anchoring with the same startedAt keeps the verb stable (pure baseline pin)', () => {
+    const first = setTurnActive(createInitialState(), { startedAt: 99, outputBase: undefined })
+    const repinned = setTurnActive(first, { startedAt: 99, outputBase: 5 })
+    expect(repinned.turn).toEqual({ startedAt: 99, outputBase: 5, verbIndex: 99 % VERBS.length })
+  })
+
+  it('clearTurn drops the turn key entirely', () => {
+    const state = setTurnActive(createInitialState(), { startedAt: 1, outputBase: 2 })
+    const cleared = clearTurn(state)
+    // Cleared state does not carry the dropped field at all.
+    expect('turn' in cleared).toBe(false)
+    // The rest of the state survives the clear.
+    expect(cleared.rows).toEqual(state.rows)
+  })
+
+  it('turn helpers do not mutate the original state', () => {
+    const base = createInitialState()
+    const anchored = setTurnActive(base, { startedAt: 1, outputBase: undefined })
+    expect(base.turn).toBeUndefined()
+    expect(anchored.turn).toBeDefined()
+    expect(anchored).not.toBe(base)
+
+    const cleared = clearTurn(anchored)
+    expect(anchored.turn).toBeDefined()
+    expect(cleared).not.toBe(anchored)
   })
 })

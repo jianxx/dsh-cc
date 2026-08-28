@@ -9,10 +9,12 @@ import {
   markExitAttempt,
   popQueued,
   setNotice,
+  setTurnActive,
   toggleGlobalCollapse,
   upsertRow,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
+import { VERBS } from '@jianxx/dsh-cc-tui/working-line.ts'
 
 /**
  * Minimal pi-tui Terminal that pipes write() calls into an @xterm/headless
@@ -281,6 +283,61 @@ describe('fullscreen layout', () => {
 		g = vt.grid().map(stripAnsi)
 		expect(g.join('\n')).not.toContain('Press Ctrl+C again to exit')
 		expect(g[23]).toContain('test · status')
+
+		root.stopForExit()
+		root.destroy()
+	})
+})
+
+describe('working line', () => {
+	/**
+	 * Seed a live turn anchor into the fake driver; the verb is derived from
+	 * startedAt exactly as the store does, so the assertion is deterministic
+	 * (only the elapsed segment moves with the clock).
+	 */
+	function turnState(): TuiState {
+		const startedAt = Date.now()
+		return setTurnActive(createInitialState(), { startedAt, outputBase: undefined })
+	}
+
+	const verbOf = (state: TuiState): string => VERBS[state.turn!.startedAt % VERBS.length]
+
+	it('renders the working line while a turn is anchored and collapses when it clears (fullscreen dock)', async () => {
+		const vt = new VirtualTerminal(80, 24)
+		const driver = fakeDriver(turnState())
+		const verb = verbOf(driver.state)
+
+		const root = buildRoot(driver, { terminal: vt, onQuit: () => {}, uiMode: 'fullscreen', mouse: false })
+		root.tui.start()
+		await settle()
+
+		// The spinner row appears with the anchored turn's verb (`Galloping… (…)`).
+		expect(vt.grid().map(stripAnsi).join('\n')).toContain(`${verb}… (`)
+
+		// Clearing the anchor collapses the row back to zero lines.
+		driver.setState(createInitialState())
+		await settle()
+		expect(vt.grid().map(stripAnsi).join('\n')).not.toContain(`${verb}… (`)
+
+		root.stopForExit()
+		root.destroy()
+	})
+
+	it('renders the working line in regular (inline) mode too', async () => {
+		const vt = new VirtualTerminal(80, 24)
+		const driver = fakeDriver(turnState())
+		const verb = verbOf(driver.state)
+
+		const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+		expect(root.mode).toBe('regular')
+		root.tui.start()
+		await settle()
+
+		expect(vt.grid().map(stripAnsi).join('\n')).toContain(`${verb}… (`)
+
+		driver.setState(createInitialState())
+		await settle()
+		expect(vt.grid().map(stripAnsi).join('\n')).not.toContain(`${verb}… (`)
 
 		root.stopForExit()
 		root.destroy()

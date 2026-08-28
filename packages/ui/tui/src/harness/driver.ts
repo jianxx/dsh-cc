@@ -46,6 +46,7 @@ import {
   backspaceQuestionText,
   clearQueue,
   clearRows,
+  clearTurn,
   closeTodoPanel,
   closeUsagePanel,
   createInitialState,
@@ -68,6 +69,7 @@ import {
   setQuestion,
   setSessionSwitcher,
   setTodos,
+  setTurnActive,
   setUsage,
   toggleQuestionOption,
   toggleGlobalCollapse,
@@ -923,6 +925,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   seedHud()
   seedTodos()
+  // Boot may resume a log that ended mid-turn (crashed process): the setBusy
+  // sync above flipped busy from the ground-truth agent status, so anchor the
+  // working line here — deliberately after seedHud, so outputBase reads the
+  // seeded token totals instead of pinning an unseeded baseline.
+  if (state.busy) {
+    emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
+  }
   if (projections !== undefined) {
     projections.onChanged((session, key, value) => {
       if (session.id !== current.agent.session.id) return
@@ -931,6 +940,16 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         const tokens = tokensOf(usage)
         if (tokens !== undefined) applyHud({ tokens })
         applyUsage(usageViewOf(totalsOf(usage), undefined, undefined))
+        // Working-line rebase guard: an anchor created before the HUD was
+        // seeded carries outputBase === undefined; the first tokenUsage
+        // change pins it. Strictly turn-MODIFYING (turn must already exist) —
+        // a tokenUsage emit while idle must never conjure a phantom anchor.
+        // setTurnActive re-derives verbIndex deterministically from the
+        // unchanged startedAt, so this is a pure baseline pin.
+        const turn = state.turn
+        if (turn !== undefined && turn.outputBase === undefined && tokens !== undefined) {
+          emit(setTurnActive(state, { startedAt: turn.startedAt, outputBase: tokens.output }))
+        }
       } else if (key === 'contextPressure') {
         const pressure = value as ContextPressureStateLike | undefined
         const percent = percentOf(pressure)
@@ -958,12 +977,29 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       emit(setPermissionMode(state, liveMode(current.agent, state.permissionMode)))
     }
+    // Working-line anchor backstop: a live `turn/start` (or `agent/status`
+    // running) can be the first evidence of a turn this UI never saw
+    // submitted. Anchor only when none exists — re-anchoring a live turn
+    // would reset elapsed time and the token delta to zero. steerQueued
+    // deliberately does not anchor: it fires mid-turn.
+    if (eventType === 'turn/start' && state.turn === undefined) {
+      emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
+    } else if (eventType === 'agent/status' && state.turn === undefined) {
+      const status = (event as SessionEventLike).data as { status?: unknown } | undefined
+      if (status?.status === 'running') {
+        emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
+      }
+    }
     // Outbox flush anchor: the durable `turn/end` fires exactly once per turn
     // (aborts and errors included). agent/status is unusable here — live
     // events never reach the session log — and busy flips jitter per step, so
     // turn/end is the only per-turn heartbeat. An empty queue makes the flush
     // a no-op (e.g. after interrupt() already cleared it).
     if (eventType === 'turn/end') {
+      // Fixed order: the fold above already emitted the turn's last rows, the
+      // working-line anchor clears next, and only then does the queue flush —
+      // its dispatch re-anchors for the followup turn.
+      emit(clearTurn(state))
       flushQueue()
     }
   })
@@ -1401,12 +1437,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }))
     emit(foldHistory())
     emit(setPermissionMode(state, liveMode(current.agent, 'default')))
-    emit(setBusy(state, current.agent.status === 'running'))
+    // Success path: drop the previous session's anchor together with the busy
+    // sync (a failed resume returned above and keeps it), then re-anchor
+    // below once the new session's HUD is seeded.
+    emit(clearTurn(setBusy(state, current.agent.status === 'running')))
     // Refresh the HUD, todos, and branch for the new session: stateOf may
     // already be populated (or absent — stale fields must not leak), and the
     // cwd may point at a different repo.
     seedHud()
     seedTodos()
+    // Resumed log may end mid-turn: re-anchor the working line after seedHud
+    // so outputBase reads the new session's seeded token totals.
+    if (state.busy) {
+      emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
+    }
     refreshBranch()
   }
 
@@ -1579,7 +1623,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         source: { kind: 'user' },
       }))
     }
-    emit(setBusy(clearQueue(state), true))
+    // Unconditional anchor: the only call site is the turn/end handler, which
+    // has just cleared the previous turn's anchor, so this re-anchors for the
+    // flushed followup turn and can never reset a live one.
+    emit(setTurnActive(setBusy(clearQueue(state), true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
   }
 
   /**
@@ -1711,7 +1758,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       content: [{ type: 'text', text: draft }],
       source: { kind: 'user' },
     }))
-    emit(setBusy(state, true))
+    // Anchor the working line at dispatch: elapsed counts from here, the
+    // token delta from the current HUD total (undefined when unseeded — the
+    // tokenUsage rebase pins it on the first change).
+    emit(setTurnActive(setBusy(state, true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
   }
 
   const statusLineOf = (width?: number): string => formatStatusLine({
@@ -1761,7 +1811,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       // cancel discards queued/steering inbox items; mirror that in UI state.
       // Clearing BEFORE the abort's turn/end lands also guarantees the flush
       // anchor finds an empty queue — an interrupt never resurrects entries.
-      emit(upsertRow(clearQueue(setBusy(state, false)), {
+      // The working-line anchor clears with the turn.
+      emit(upsertRow(clearTurn(clearQueue(setBusy(state, false))), {
         kind: 'status',
         text: 'Interrupted by user.',
       }))

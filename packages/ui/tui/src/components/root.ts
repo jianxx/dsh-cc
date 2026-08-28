@@ -27,10 +27,12 @@ import type { Driver } from '../state/driver-types.ts'
 import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
+import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
+import { WorkingLine } from './working-line.ts'
 import {
   createApprovalBox,
   createModelPickerBox,
@@ -101,7 +103,7 @@ function openSystemUrl(url: string): void {
  * Build the pi-tui render tree.
  *
  * Children order: title · transcript · queue chips · todo strip · notice ·
- * [approval] · [question] · editor · statusline. The transcript and overlays
+ * [approval] · [question] · working line · editor · statusline. The transcript and overlays
  * rebuild on every driver emit; the editor is persistent so it retains focus
  * and cursor state across renders.
  *
@@ -138,6 +140,21 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// persistent-Text pattern: blank content collapses it to zero lines when no
 	// notice is parked.
 	const noticeLine = new Text('', 0, 0)
+
+	// Live working line (claude-code style spinner row). Visibility is driven
+	// purely by the `state.turn` anchor (the subscribe below starts/stops it
+	// on undefined→set jumps); the message re-evaluates on every spinner tick,
+	// so elapsed time and token deltas keep moving with no driver events.
+	// stop() blanks it, and an empty Text collapses to zero lines.
+	const workingLine = new WorkingLine(
+		theme.accent,
+		theme.muted,
+		() => {
+			const s = driver.state
+			return s.turn === undefined ? '' : formatWorkingLine(s.turn, s.hud?.tokens?.output ?? 0, Date.now())
+		},
+		() => tui.requestRender(),
+	)
 
 	// Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
 	// every state change so they appear and disappear with the driver state.
@@ -260,7 +277,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	const statusline = new Text(driver.statusLineIn(terminal.columns), 0, 0)
 
 	// Ordered chrome shared by the inline mount and the fullscreen exit replay.
-	const chrome: Component[] = [title, transcript, queueLine, todoLine, noticeLine, overlays, editor, statusline]
+	const chrome: Component[] = [title, transcript, queueLine, todoLine, noticeLine, overlays, workingLine, editor, statusline]
 
 	if (tui instanceof TuiAltScreen) {
 		// Fullscreen (alternate screen): transcript scrolls inside the primary
@@ -279,6 +296,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		dock.addChild(todoLine, { shrink: 1, minSize: 0 })
 		dock.addChild(noticeLine, { shrink: 1, minSize: 0 })
 		dock.addChild(overlays, { shrink: 1, minSize: 0 })
+		dock.addChild(workingLine, { shrink: 1, minSize: 0 })
 		dock.addChild(editor, { shrink: 1, minSize: 1 })
 		dock.addChild(statusline, { shrink: 1, minSize: 1 })
 		const layoutRoot = new VStack()
@@ -429,6 +447,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	})
 
 	// Rebuild transcript + overlays + statusline on every driver emit.
+	// `undefined` until the subscribe's immediate first callback seeds the
+	// turn-anchor tracker — that first call acts, so a boot into an
+	// already-running session (turn set before mount) starts the line.
+	let workingLineLive: boolean | undefined
 	const unsubscribe = driver.subscribe((state) => {
 		transcript.setRows(state.rows, {
 			thinkingExpanded: state.thinkingExpanded,
@@ -452,6 +474,16 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
 		noticeLine.setText(state.notice === undefined ? '' : theme.muted(state.notice))
 		noticeLine.invalidate()
+
+		// Working line lifecycle tracks the turn anchor: start on the
+		// undefined→set jump, stop on the reverse. Seeded by the first
+		// (immediate) subscribe call — see workingLineLive above.
+		const turnLive = state.turn !== undefined
+		if (workingLineLive !== turnLive) {
+			workingLineLive = turnLive
+			if (turnLive) workingLine.start()
+			else workingLine.stop()
+		}
 
 		overlays.clear()
 		if (state.approval !== undefined) {
@@ -504,6 +536,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		},
 		editor,
 		destroy() {
+			// Stop the working line first: it must not tick after teardown —
+			// this covers the quit-mid-turn path (the stopForExit chrome replay
+			// would otherwise bake a live spinner frame into scrollback) and the
+			// no-polling suite's no-dangling-interval invariant.
+			workingLine.stop()
 			removeInputListener()
 			unsubscribe()
 		},
