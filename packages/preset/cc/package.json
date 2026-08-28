@@ -6,7 +6,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "url": "git+https://github.com/jianxx/dsh-cc.git",
     "directory": "packages/preset/cc"
   },
   "files": [
