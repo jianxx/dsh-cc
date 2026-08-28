@@ -5,6 +5,7 @@
  */
 
 import type { FileDiff } from './tool-card.ts'
+import { VERBS, type TurnAnchor } from './working-line.ts'
 
 export type TranscriptRow =
   | { kind: 'user'; text: string }
@@ -216,6 +217,12 @@ export interface TuiState {
   rows: TranscriptRow[]
   draft: string
   busy: boolean
+  /**
+   * Anchor of the currently-running turn (drives the working line): absent
+   * while idle. `busy` alone cannot back the line — it flips false on the
+   * first assistant/message fold and jitters within a turn.
+   */
+  turn?: TurnAnchor
   permissionMode: string
   notice?: string
   approval?: ApprovalView
@@ -301,6 +308,35 @@ export function setDraft(state: TuiState, draft: string): TuiState {
 /** Mark the agent busy or idle. */
 export function setBusy(state: TuiState, busy: boolean): TuiState {
   return { ...state, busy }
+}
+
+/**
+ * Anchor a newly-running turn for the working line: elapsed time counts from
+ * `startedAt`, the output-token delta from `outputBase` (which may be
+ * undefined when the HUD was not yet seeded — the driver's tokenUsage
+ * rebase pins it later). `verbIndex` is derived deterministically from
+ * `startedAt`, so re-anchoring with the same timestamp is snapshot-stable.
+ * Also used as a pure baseline pin: passing the existing `startedAt` with a
+ * new `outputBase` only moves the baseline.
+ */
+export function setTurnActive(
+  state: TuiState,
+  activity: { startedAt: number; outputBase: number | undefined },
+): TuiState {
+  return {
+    ...state,
+    turn: {
+      startedAt: activity.startedAt,
+      outputBase: activity.outputBase,
+      verbIndex: activity.startedAt % VERBS.length,
+    },
+  }
+}
+
+/** Clear the turn anchor (turn ended, interrupted, or session switched). */
+export function clearTurn(state: TuiState): TuiState {
+  const { turn: _dropped, ...rest } = state
+  return rest
 }
 
 /** Record the live permission-mode footer. */
