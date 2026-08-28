@@ -100,6 +100,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 		statusLineIn: () => 'test · status',
 		get cwd() { return process.cwd() },
 		get promptHistory() { return [] },
+		get bashHistory() { return [] },
 		subscribe(listener) {
 			listeners.add(listener)
 			listener(state)

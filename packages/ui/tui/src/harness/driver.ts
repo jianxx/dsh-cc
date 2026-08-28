@@ -33,7 +33,8 @@ import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
-import { loadHistory, saveHistory } from '../history.ts'
+import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
+import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import { formatStatusLine, shortenSession } from '../statusline.ts'
 import {
   applySessionEvent,
@@ -193,6 +194,46 @@ type SubagentRunEndInfoLike = {
 }
 
 /**
+ * Structural stand-in for the deployment's `shell` service (ShellExecutor's
+ * resolve→run seam), which the tui package doesn't import. `resolve` fills
+ * the request's defaults/caps; `run` executes the resolved spec and reports
+ * the first-cause outcome. Absent service → the driver degrades to a direct
+ * child process (see {@link runShellCommand}).
+ */
+type ShellExecSpecLike = {
+  command: string
+  workdir: string
+  timeoutMs: number
+  stdoutMaxBytes: number
+}
+
+type ShellRunResultLike = {
+  /** Exit code; null when the process died from a signal. */
+  exitCode: number | null
+  /** True when the executor's timeout was the first cause to cut the command. */
+  timedOut: boolean
+  stdout: { text: string }
+  stderr: { text: string }
+}
+
+type ShellExecutorLike = {
+  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
+  run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
+}
+
+/** Wall-clock lifetime of a `!` shell command. */
+export const BASH_TIMEOUT_MS = 120_000
+
+/** Foreground stdout byte budget handed to the shell executor for a `!` run. */
+export const BASH_STDOUT_MAX_BYTES = 64_000
+
+/** Lines of command output shown under the `$ cmd` echo row (rest is elided). */
+export const BASH_OUTPUT_LINE_CAP = 20
+
+/** Notice parked above the composer while a `!` command runs. */
+const BASH_RUNNING_NOTICE = '⠋ running…'
+
+/**
  * Structural stand-in for the sessionProjections registry
  * (@deepseek-ai/dsh-session-projection via token-meter's augmentation),
  * which the tui package doesn't import — same pattern as the other `*Like`
@@ -277,6 +318,47 @@ export async function gitBranchOf(cwd: string): Promise<string | undefined> {
     return branch.length > 0 ? branch : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Cap combined command output at {@link BASH_OUTPUT_LINE_CAP} lines. Leading
+ * and trailing blank edges (from an empty stream or a trailing newline) are
+ * trimmed; interior blank lines are preserved.
+ */
+function capShellOutput(text: string): string {
+  const lines = text.replace(/^\n+/, '').replace(/\n+$/, '').split('\n')
+  if (lines.length === 1 && lines[0] === '') return ''
+  if (lines.length <= BASH_OUTPUT_LINE_CAP) return lines.join('\n')
+  const hidden = lines.length - BASH_OUTPUT_LINE_CAP
+  return `${lines.slice(0, BASH_OUTPUT_LINE_CAP).join('\n')}\n… +${hidden} more line${hidden === 1 ? '' : 's'}`
+}
+
+/**
+ * Assemble the bash-command output row: combined stdout/stderr (line-capped)
+ * plus a failure trailer. The row is error-marked for a non-zero exit, a
+ * signal death, or an executor timeout.
+ */
+function shellOutputRow(
+  stdout: string,
+  stderr: string,
+  outcome: { exitCode: number | null; timedOut: boolean },
+): { kind: 'status'; text: string; error?: boolean } {
+  const parts: string[] = []
+  const capped = capShellOutput(`${stdout}\n${stderr}`)
+  if (capped.length > 0) parts.push(capped)
+  if (outcome.timedOut) {
+    parts.push(`timed out after ${BASH_TIMEOUT_MS / 1000}s`)
+  } else if (outcome.exitCode === null) {
+    parts.push('killed by a signal')
+  } else if (outcome.exitCode !== 0) {
+    parts.push(`exit code ${outcome.exitCode}`)
+  }
+  const failed = outcome.timedOut || outcome.exitCode === null || outcome.exitCode !== 0
+  return {
+    kind: 'status',
+    text: parts.join('\n'),
+    ...(failed ? { error: true } : {}),
   }
 }
 
@@ -621,6 +703,15 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // editor by root.ts. New prompts are appended on submit (see submit()).
   const historyDir = config.historyDir
   let history = loadHistory(historyDir)
+  // Bash-mode history: a separate stack (own file, same dir resolution) so
+  // shell commands never dilute composer prompt recall. Kept newest-first in
+  // memory for direct ↑ indexing; the file stays oldest→newest.
+  let bashHistory: string[] = loadBashHistory(historyDir).reverse()
+  const appendBashHistory = (command: string): void => {
+    if (bashHistory[0] === command) return
+    bashHistory = [command, ...bashHistory].slice(0, HISTORY_CAP)
+    saveBashHistory([...bashHistory].reverse(), historyDir)
+  }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
   // Boot banner: one status row greeting. Emitted before the resume fold so it
@@ -642,6 +733,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   const tools = ctx.get('tools') as ToolsLike | undefined
+  // Shell executor seam for `!` commands; absent → runShellCommand degrades
+  // to a direct child process.
+  const shell = ctx.get('shell') as ShellExecutorLike | undefined
   const presenters: ToolPresenters | undefined = tools === undefined
     ? undefined
     : {
@@ -1415,10 +1509,77 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     return popped.text
   }
 
+  // --- `!` bash mode: local shell commands -----------------------------------
+  // A composer line with a leading `!` is executed locally: through the
+  // mounted shell executor (resolve→run, bounded spec) or, when none is
+  // mounted, through a direct /bin/sh child with the same timeout and output
+  // budget. The command never reaches the agent and never touches the session
+  // log (status rows are UI-only), and its output is line-capped.
+  const runShellCommand = async (raw: string): Promise<void> => {
+    const command = raw.trim()
+    if (command.length === 0) return
+    appendBashHistory(command)
+    emit(upsertRow(state, { kind: 'status', text: `$ ${command}` }))
+    emit(setNotice(state, BASH_RUNNING_NOTICE))
+    try {
+      if (shell === undefined) {
+        // Degraded path: no shell executor mounted. Non-zero exits, timeout
+        // kills, and spawn failures all arrive as rejections.
+        const result = await execFileAsync('/bin/sh', ['-c', command], {
+          cwd,
+          timeout: BASH_TIMEOUT_MS,
+          maxBuffer: BASH_STDOUT_MAX_BYTES,
+        })
+        const row = shellOutputRow(result.stdout, result.stderr, { exitCode: 0, timedOut: false })
+        if (row.text.length > 0) emit(upsertRow(state, row))
+      } else {
+        const result = await shell.run(shell.resolve({
+          command,
+          timeoutMs: BASH_TIMEOUT_MS,
+          stdoutMaxBytes: BASH_STDOUT_MAX_BYTES,
+        }))
+        const row = shellOutputRow(result.stdout.text, result.stderr.text, result)
+        if (row.text.length > 0) emit(upsertRow(state, row))
+      }
+    } catch (error) {
+      const failure = error as {
+        code?: unknown
+        killed?: boolean
+        message?: string
+        stdout?: string
+        stderr?: string
+      }
+      let row: { kind: 'status'; text: string; error?: boolean }
+      if (typeof failure.code === 'number') {
+        // Non-zero exit from the fallback child: output rides on the error.
+        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: failure.code, timedOut: false })
+      } else if (failure.killed === true) {
+        // The fallback child hit the timeout and was killed.
+        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: null, timedOut: true })
+      } else {
+        // Infrastructure fault (executor rejection, unwritable workdir, no
+        // /bin/sh): the message is all there is to show.
+        row = { kind: 'status', text: failure.message ?? String(error), error: true }
+      }
+      if (row.text.length > 0) emit(upsertRow(state, row))
+    } finally {
+      // Drop the running indicator only if nothing replaced it meanwhile.
+      if (state.notice === BASH_RUNNING_NOTICE) emit(setNotice(state, undefined))
+    }
+  }
+
   const submit = async (text?: string): Promise<void> => {
     const draft = text ?? state.draft
     if (draft.trim().length === 0) return
     emit(setDraft(state, ''))
+    // A leading `!` marks a LOCAL shell command no matter how the text was
+    // entered — typed in shell mode or pasted wholesale. It runs even while
+    // the agent is busy (a local command never touches the turn) and is
+    // neither a prompt nor a slash command.
+    if (draft.startsWith('!')) {
+      await runShellCommand(draft.slice(1))
+      return
+    }
     const parsed = parseSlash(draft)
     if (parsed.kind === 'local') {
       await runLocal(parsed.name, parsed.rawInput)
@@ -1476,6 +1637,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     get promptHistory() {
       return history
+    },
+    get bashHistory() {
+      return bashHistory
     },
     subscribe(listener) {
       listeners.add(listener)

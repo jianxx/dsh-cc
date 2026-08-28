@@ -104,6 +104,7 @@ class VirtualTerminal implements PiTerminal {
 function fakeDriver(
   initial: TuiState = createInitialState(),
   promptHistory: readonly string[] = [],
+  bashHistory: readonly string[] = [],
 ): Driver & { setState(next: TuiState): void } {
   let state = initial
   const listeners = new Set<(s: TuiState) => void>()
@@ -113,6 +114,7 @@ function fakeDriver(
     statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return promptHistory },
+    get bashHistory() { return bashHistory },
     subscribe(listener: (s: TuiState) => void) {
       listeners.add(listener)
       listener(state)

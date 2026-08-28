@@ -28,6 +28,14 @@ export interface Driver {
    * appended on submit (see {@link Driver.submit}). Read once at mount.
    */
   readonly promptHistory: readonly string[]
+  /**
+   * Bash-mode command history (newest-first, live reference). Every command
+   * executed through a leading `!` is prepended here and persisted to
+   * `~/.dsh/tui/bash-history.txt`; the root component browses this stack
+   * with ↑/↓ while in shell mode — deliberately separate from the composer
+   * prompt history.
+   */
+  readonly bashHistory: readonly string[]
   subscribe(listener: (state: TuiState) => void): () => void
   setDraft(draft: string): void
   submit(text?: string): Promise<void>
