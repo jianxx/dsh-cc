@@ -301,7 +301,9 @@ describe('createDriver listCommands catalog', () => {
     const driver = await createDriver(makeCtx({}) as never, {})
     const catalog = driver.listCommands()
     const names = catalog.map(c => c.name).sort()
-    expect(names).toEqual(['agents', 'clear', 'cost', 'exit', 'model', 'quit', 'resume', 'tui-help'])
+    expect(names).toEqual([
+      'agents', 'clear', 'copy', 'cost', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help',
+    ])
   })
 
   it('refreshes the catalog when commands/change fires', async () => {

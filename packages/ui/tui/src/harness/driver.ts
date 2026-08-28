@@ -6,6 +6,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
@@ -27,6 +30,7 @@ import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
+import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
 import { loadHistory, saveHistory } from '../history.ts'
@@ -93,6 +97,17 @@ export interface DriverConfig {
    * {@link gitBranchOf}.
    */
   branchProbe?: (cwd: string) => Promise<string | undefined>
+  /**
+   * Output directory for `/export-md` when no path is given. Defaults to
+   * `$DSH_HOME/tui/exports` (same resolution as {@link resume-target}).
+   */
+  exportDir?: string
+  /**
+   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
+   * Injectable so tests capture the sequence; production wires it to the live
+   * terminal in plugin.ts (safe inline — the sequence paints nothing).
+   */
+  copyWrite?: (sequence: string) => void
 }
 
 type PermissionRulesLike = {
@@ -225,6 +240,28 @@ const execFileAsync = promisify(execFile)
 
 /** Default lifetime of a transient `showNotice` hint. */
 const NOTICE_TTL_MS = 3000
+
+/**
+ * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
+ * with BEL. The sequence is zero-width — writing it inline never disturbs the
+ * rendered frame.
+ */
+const OSC52_PREFIX = '\x1b]52;c;'
+
+/**
+ * Default `/export-md` output directory: `$DSH_HOME/tui/exports` (or
+ * `~/.dsh/tui/exports`), mirroring the {@link resume-target} data-dir
+ * resolution one level deeper.
+ */
+function defaultExportDir(): string {
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(dshHome, 'tui', 'exports')
+}
+
+/** Filesystem-safe timestamp for default export filenames (ISO, `:`/`.` dashed). */
+function exportStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 /**
  * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
@@ -1206,6 +1243,40 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
+  // --- /export-md + /copy: local transcript utilities ------------------------
+  // /export-md serializes the live rows via rowsToMarkdown — an explicit path
+  // is resolved against the session cwd; no argument lands under the export
+  // dir as <sessionId>-<timestamp>.md. Failures degrade to a notice, never a
+  // throw into the composer path.
+  const exportTranscript = (rawInput: string): void => {
+    const target = rawInput.length > 0
+      ? resolve(cwd, rawInput)
+      : join(config.exportDir ?? defaultExportDir(), `${String(current.agent.session.id)}-${exportStamp()}.md`)
+    try {
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, rowsToMarkdown(state.rows))
+      showNotice(`Exported to ${target}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      showNotice(`Export failed: ${message}`)
+    }
+  }
+
+  // /copy re-emits the latest assistant reply through an OSC 52 sequence so
+  // the terminal itself owns the clipboard (no child process, no permissions).
+  // The write sink is injected; without a sink the command still reports — it
+  // just has nowhere to hand the payload.
+  const copyLatestReply = (): void => {
+    const last = [...state.rows].reverse().find(row => row.kind === 'assistant')
+    if (last === undefined || last.kind !== 'assistant' || last.text.trim().length === 0) {
+      showNotice('Nothing to copy yet — no assistant reply in the transcript.')
+      return
+    }
+    const payload = Buffer.from(last.text, 'utf8').toString('base64')
+    config.copyWrite?.(`${OSC52_PREFIX}${payload}\x07`)
+    showNotice('Copied latest reply')
+  }
+
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
       await current.handle.dispose()
@@ -1268,6 +1339,15 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
       }
       emit(upsertRow(state, { kind: 'status', text: lines.join('\n') }))
+      return
+    }
+    if (name === 'export-md') {
+      exportTranscript(rawInput)
+      return
+    }
+    if (name === 'copy') {
+      copyLatestReply()
+      return
     }
   }
 

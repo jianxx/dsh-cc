@@ -38,6 +38,12 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     ...config.model === undefined || config.model.length === 0
       ? {}
       : { model: config.model },
+    // /copy hands the OSC 52 sequence to the live terminal (`root` is assigned
+    // below, before any command can run — same late-binding pattern as the
+    // shutdown closure).
+    copyWrite: (sequence) => {
+      root.tui.terminal.write(sequence)
+    },
   })
 
   if (process.stdin.isTTY) {

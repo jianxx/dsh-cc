@@ -5,7 +5,9 @@
  */
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
-export const LOCAL_SLASH = ['quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'agents', 'cost'] as const
+export const LOCAL_SLASH = [
+  'quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'agents', 'cost', 'export-md', 'copy',
+] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
 
@@ -29,6 +31,12 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
   { name: 'agents', description: 'List subagent activity' },
   { name: 'cost', description: 'Show token usage' },
+  {
+    name: 'export-md',
+    description: 'Export the transcript to a Markdown file',
+    argumentHint: '<path>',
+  },
+  { name: 'copy', description: 'Copy the latest assistant reply to the clipboard' },
 ] as const
 
 export type ParsedSlash =

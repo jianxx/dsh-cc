@@ -4,7 +4,9 @@ import { LOCAL_COMMANDS, parseSlash } from '@jianxx/dsh-cc-tui/slash.ts'
 describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
-    expect(names).toEqual(['agents', 'clear', 'cost', 'exit', 'model', 'quit', 'resume', 'tui-help'])
+    expect(names).toEqual([
+      'agents', 'clear', 'copy', 'cost', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help',
+    ])
   })
 
   it('every entry has a non-empty description', () => {
@@ -45,6 +47,10 @@ describe('parseSlash', () => {
     expect(parseSlash('/model 2')).toEqual({ kind: 'local', name: 'model', rawInput: '2' })
     expect(parseSlash('/agents')).toEqual({ kind: 'local', name: 'agents', rawInput: '' })
     expect(parseSlash('/cost')).toEqual({ kind: 'local', name: 'cost', rawInput: '' })
+    expect(parseSlash('/export-md /tmp/notes.md')).toEqual({
+      kind: 'local', name: 'export-md', rawInput: '/tmp/notes.md',
+    })
+    expect(parseSlash('/copy')).toEqual({ kind: 'local', name: 'copy', rawInput: '' })
   })
 
   it('forwards unknown names to the harness catalog', () => {
