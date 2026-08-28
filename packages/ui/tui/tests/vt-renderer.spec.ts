@@ -22,6 +22,7 @@ import {
   setQuestion,
   setSessionSwitcher,
   setTodos,
+  toggleGlobalCollapse,
   toggleQuestionOption,
   typeQuestionText,
   upsertRow,
@@ -130,6 +131,10 @@ function fakeDriver(
     cyclePermissionMode() {},
     toggleThinking() {
       state = { ...state, thinkingExpanded: !state.thinkingExpanded }
+      for (const l of listeners) l(state)
+    },
+    toggleGlobalCollapse() {
+      state = toggleGlobalCollapse(state)
       for (const l of listeners) l(state)
     },
     answerApproval(_allowed: boolean) {
@@ -593,7 +598,7 @@ describe('vt-renderer', () => {
     await settle()
 
     const stripped = stripAnsi(vt.grid().join('\n'))
-    expect(stripped).toContain('thinking (3 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('thinking (3 lines — Ctrl+O to toggle)')
     expect(stripped).toContain('▸')
     // Collapsed: the body text must NOT leak into the grid.
     expect(stripped).not.toContain('let me reason')
@@ -616,7 +621,7 @@ describe('vt-renderer', () => {
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('▾')
     expect(stripped).toContain('let me reason')
-    expect(stripped).not.toContain('Ctrl+O to expand')
+    expect(stripped).not.toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -633,7 +638,7 @@ describe('vt-renderer', () => {
     await settle()
 
     let stripped = stripAnsi(vt.grid().join('\n'))
-    expect(stripped).toContain('thinking (1 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('thinking (1 lines — Ctrl+O to toggle)')
     expect(stripped).not.toContain('secret reasoning')
 
     // Flip the flag WITHOUT touching the rows array reference — the cached
@@ -643,7 +648,7 @@ describe('vt-renderer', () => {
 
     stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('secret reasoning')
-    expect(stripped).not.toContain('Ctrl+O to expand')
+    expect(stripped).not.toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -668,6 +673,96 @@ describe('vt-renderer', () => {
     stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('hidden thought')
     expect(driver.state.thinkingExpanded).toBe(true)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('ctrl+o collapses tool output into a summary and a second press restores it', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 't1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'alpha output\nbeta output\ngamma output',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Default: tool output expanded (first result line visible, no summary).
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('alpha output')
+    expect(stripped).not.toContain('▸ output')
+
+    // Press 1: fresh state is mixed (thinking collapsed, tools expanded), so
+    // everything expands — tool output is unaffected.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.thinkingExpanded).toBe(true)
+    expect(driver.state.toolOutputExpanded).toBe(true)
+    expect(stripped).toContain('alpha output')
+
+    // Press 2: everything was expanded, so everything collapses — the result
+    // body disappears behind the dim summary line.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.thinkingExpanded).toBe(false)
+    expect(driver.state.toolOutputExpanded).toBe(false)
+    expect(stripped).not.toContain('alpha output')
+    expect(stripped).not.toContain('beta output')
+    expect(stripped).toContain('▸ output (3 lines — Ctrl+O to toggle)')
+
+    // Press 3: everything expands again — the result body returns.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.toolOutputExpanded).toBe(true)
+    expect(stripped).toContain('alpha output')
+    expect(stripped).not.toContain('▸ output')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('collapses a diff-card tool row on ctrl+o without leaving hunk lines behind', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Press 1 expands everything (mixed start), press 2 collapses everything.
+    vt.sendInput('\x0f') // ctrl+o — expand
+    await settle()
+    vt.sendInput('\x0f') // ctrl+o — collapse
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('- old line')
+    expect(stripped).not.toContain('+ new line')
+    expect(stripped).toContain('Edit foo.ts')
+    expect(stripped).toContain('▸ output (')
+    expect(stripped).toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -1021,6 +1116,84 @@ describe('vt-renderer', () => {
     const rendered = renderRowText(row)
     expect(rendered).toContain('\x1b[2m')
     expect(rendered).not.toContain('\x1b[31m')
+  })
+
+  it('hides tool output behind a dim summary when toolOutputExpanded is false', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'file one\nfile two\nfile three',
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    // Head line survives; the result body is dropped.
+    expect(stripped).toContain('ls -la ✓')
+    expect(stripped).not.toContain('file one')
+    expect(stripped).toContain('▸ output (3 lines — Ctrl+O to toggle)')
+  })
+
+  it('collapses diff hunks to the summary line when toolOutputExpanded is false', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c2',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    expect(stripped).toContain('Edit foo.ts')
+    expect(stripped).not.toContain('- old line')
+    expect(stripped).not.toContain('+ new line')
+    expect(stripped).toContain('▸ output (')
+    expect(stripped).toContain('Ctrl+O to toggle')
+  })
+
+  it('omits the summary line for a collapsed tool row with no output at all', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c3',
+      name: 'bash',
+      args: '',
+      title: 'noop',
+      running: false,
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    expect(rendered).not.toContain('▸ output')
+    expect(rendered).toContain('noop')
+  })
+
+  it('keeps tool output expanded by default (toolOutputExpanded defaults to true)', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c4',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'file one\nfile two',
+    }
+    // No options at all, and an options object without the flag — both must
+    // keep the existing expanded rendering so old callers stay compatible.
+    for (const options of [undefined, { thinkingExpanded: true }]) {
+      const rendered = renderRowText(row, options)
+      expect(rendered).toContain('file one')
+      expect(rendered).not.toContain('▸ output')
+    }
+  })
+
+  it('renders the collapsed thinking hint with toggle wording (not expand)', () => {
+    const row = { kind: 'thinking' as const, text: 'a\nb\nc' }
+    const rendered = renderRowText(row)
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    expect(stripped).toContain('▸ thinking (3 lines — Ctrl+O to toggle)')
+    expect(stripped).not.toContain('Ctrl+O to expand')
   })
 
   it('clears the editor text after submitting on Enter (regression — ff49148)', async () => {

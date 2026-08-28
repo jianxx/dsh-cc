@@ -3,7 +3,7 @@ import { Terminal as XtermTerminal } from '@xterm/headless'
 import { type Terminal as PiTerminal } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
-import { createInitialState, upsertRow, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
+import { createInitialState, toggleGlobalCollapse, upsertRow, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
 
 /**
  * Minimal pi-tui Terminal that pipes write() calls into an @xterm/headless
@@ -106,6 +106,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 		interrupt() { state = { ...state, busy: false }; emit() },
 		cyclePermissionMode: noop,
 		toggleThinking() { state = { ...state, thinkingExpanded: !state.thinkingExpanded }; emit() },
+		toggleGlobalCollapse() { state = toggleGlobalCollapse(state); emit() },
 		answerApproval() { state = { ...state, approval: undefined }; emit() },
 		questionMove: noop,
 		questionToggle: noop,

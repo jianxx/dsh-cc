@@ -30,6 +30,13 @@ export interface Driver {
   submit(text?: string): Promise<void>
   interrupt(): void
   cyclePermissionMode(): void
+  /**
+   * Flip the global collapse state (Ctrl+O): thinking rows and tool output
+   * collapse together, or both expand back. Supersedes {@link Driver.toggleThinking},
+   * which is retained for compatibility.
+   */
+  toggleGlobalCollapse(): void
+  /** Legacy thinking-only flip; kept for compatibility with Ctrl+O's old behavior. */
   toggleThinking(): void
   answerApproval(allowed: boolean): void
   /**

@@ -26,20 +26,35 @@ export const TRANSCRIPT_LINE_BUDGET = 2000
 /** Cheap source-line count for a row (NOT rendered lines). */
 function rowSourceLines(row: TranscriptRow): number {
   if (row.kind === 'tool') {
-    if (row.diffs !== undefined && row.diffs.length > 0) {
-      // Diff hunks replace the summary body; count their rendered lines.
-      return 1 + renderDiffLines(row.diffs).length
-    }
-    const body = row.body ?? row.result ?? row.args ?? ''
-    return 1 + body.split('\n').length
+    return 1 + toolOutputLines(row)
   }
   return row.text.split('\n').length
+}
+
+/**
+ * Line count of a tool row's collapsible output: rendered diff hunks when a
+ * diff card is present, otherwise the summary body/result (args as the last
+ * fallback, matching the expanded renderer). 0 when there is nothing to hide.
+ */
+function toolOutputLines(row: Extract<TranscriptRow, { kind: 'tool' }>): number {
+  if (row.diffs !== undefined && row.diffs.length > 0) {
+    // Diff hunks replace the summary body; count their rendered lines.
+    return renderDiffLines(row.diffs).length
+  }
+  const body = row.body ?? row.result ?? row.args
+  if (body === undefined || body.length === 0) return 0
+  return body.split('\n').length
 }
 
 /** Options that affect how a row renders (independent of row identity). */
 export interface RowRenderOptions {
   /** Expand thinking rows; default false (collapsed to a one-line hint). */
   thinkingExpanded?: boolean
+  /**
+   * Expand tool rows' output (body/result/diffs); default true. When false a
+   * collapsed tool row renders only its head plus a dim summary line.
+   */
+  toolOutputExpanded?: boolean
 }
 
 export function renderRowText(row: TranscriptRow, options?: RowRenderOptions): string {
@@ -52,7 +67,7 @@ export function renderRowText(row: TranscriptRow, options?: RowRenderOptions): s
       const expanded = options?.thinkingExpanded ?? false
       if (!expanded) {
         const lines = row.text.split('\n').length
-        return dim(italic(`▸ thinking (${lines} lines — Ctrl+O to expand)`))
+        return dim(italic(`▸ thinking (${lines} lines — Ctrl+O to toggle)`))
       }
       return dim(italic(`▾ ${row.text}`))
     }
@@ -63,6 +78,15 @@ export function renderRowText(row: TranscriptRow, options?: RowRenderOptions): s
       const verbPrefix = row.running ? `${dim(toolVerb(row.name))} ` : ''
       const head = yellow(`⏺ ${verbPrefix}${row.title} ${status}`)
       const headLine = row.error === true ? red(head) : head
+
+      // Collapsed: drop the output entirely (diff hunks, body, or result) and
+      // point at the toggle. Rows with no output keep the bare head line.
+      if (!(options?.toolOutputExpanded ?? true)) {
+        const lines = toolOutputLines(row)
+        return lines > 0
+          ? `${headLine}\n${dim(`▸ output (${lines} lines — Ctrl+O to toggle)`)}`
+          : headLine
+      }
 
       // When structured diffs are present, render real hunks beneath the head.
       // The one-line summary body is replaced to avoid duplicating the path info.
@@ -108,10 +132,13 @@ type ChildCacheKey = TranscriptRow | string
 export class TranscriptView extends Container {
   private prevCache = new Map<ChildCacheKey, Component>()
   private prevThinkingExpanded = false
+  private prevToolOutputExpanded = true
 
   setRows(rows: readonly TranscriptRow[], options?: RowRenderOptions): void {
     const thinkingExpanded = options?.thinkingExpanded ?? false
+    const toolOutputExpanded = options?.toolOutputExpanded ?? true
     const thinkingFlagChanged = thinkingExpanded !== this.prevThinkingExpanded
+    const toolFlagChanged = toolOutputExpanded !== this.prevToolOutputExpanded
 
     // Apply the line budget: drop oldest rows until under budget (always keep
     // at least one row so a single huge paste is not emptied entirely). The
@@ -129,9 +156,11 @@ export class TranscriptView extends Container {
     // Build children with identity caching. The store's immutable updates
     // only replace changed row objects, so reference-keyed reuse keeps the
     // existing component (and its render cache) for unchanged rows. Thinking
-    // rows are the exception: their rendering depends on the thinkingExpanded
-    // flag, so a flag change forces a rebuild even when the row reference is
-    // unchanged (toggleThinking does not touch the rows array).
+    // and tool rows are the exception: their rendering depends on the
+    // thinkingExpanded / toolOutputExpanded flags, so a flag change forces a
+    // rebuild even when the row reference is unchanged (the collapse toggles
+    // do not touch the rows array). Read-group children are flag-independent
+    // (their cache key is the member callId list), so they reuse across flips.
     const cache = new Map<ChildCacheKey, Component>()
     const rowChildren: Component[] = []
     for (const item of groupReadRows(clipped)) {
@@ -143,9 +172,11 @@ export class TranscriptView extends Container {
         continue
       }
       const row = item.row
-      const thinkingStale = thinkingFlagChanged && row.kind === 'thinking'
-      const child = (thinkingStale ? undefined : this.prevCache.get(row))
-        ?? buildChild(row, { thinkingExpanded })
+      const stale =
+        (thinkingFlagChanged && row.kind === 'thinking') ||
+        (toolFlagChanged && row.kind === 'tool')
+      const child = (stale ? undefined : this.prevCache.get(row))
+        ?? buildChild(row, { thinkingExpanded, toolOutputExpanded })
       cache.set(row, child)
       rowChildren.push(child)
     }
@@ -157,5 +188,6 @@ export class TranscriptView extends Container {
 
     this.prevCache = cache
     this.prevThinkingExpanded = thinkingExpanded
+    this.prevToolOutputExpanded = toolOutputExpanded
   }
 }

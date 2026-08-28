@@ -10,7 +10,7 @@ import {
 } from '@jianxx/dsh-cc-tui/components/read-group.ts'
 import { TranscriptView } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
-import { createInitialState, upsertRow, type TuiState, type TranscriptRow } from '@jianxx/dsh-cc-tui/store.ts'
+import { createInitialState, toggleGlobalCollapse, upsertRow, type TuiState, type TranscriptRow } from '@jianxx/dsh-cc-tui/store.ts'
 
 /** Build a completed Read tool row targeting `filePath`. */
 function readRow(callId: string, filePath: string, overrides: Partial<Extract<TranscriptRow, { kind: 'tool' }>> = {}): TranscriptRow {
@@ -116,6 +116,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     interrupt() { state = { ...state, busy: false }; emit() },
     cyclePermissionMode: noop,
     toggleThinking() { state = { ...state, thinkingExpanded: !state.thinkingExpanded }; emit() },
+    toggleGlobalCollapse() { state = toggleGlobalCollapse(state); emit() },
     answerApproval() { state = { ...state, approval: undefined }; emit() },
     questionMove: noop,
     questionToggle: noop,
@@ -375,6 +376,27 @@ describe('TranscriptView read grouping', () => {
 
     view.setRows([readRow('1', 'a.ts'), readRow('2', 'b.ts'), readRow('3', 'c.ts')])
     expect(view.children[0]).not.toBe(grouped)
+  })
+
+  it('keeps the group child stable across collapse-flag flips and collapses lone read rows', () => {
+    const view = new TranscriptView()
+    view.setRows([readRow('1', 'a.ts'), readRow('2', 'b.ts')])
+    const grouped = view.children[0]
+
+    // Flip the collapse flags without replacing any row object: the grouped
+    // summary line is flag-independent, so its cached child must be reused
+    // (a flag flip must not strand the group cache as stale).
+    view.setRows([readRow('1', 'a.ts'), readRow('2', 'b.ts')], { toolOutputExpanded: false })
+    expect(view.children[0]).toBe(grouped)
+
+    // A lone (ungrouped) read row renders through the normal tool renderer,
+    // so the same flip must re-collapse it behind the summary line.
+    const lone = new TranscriptView()
+    lone.setRows([readRow('1', 'a.ts')])
+    lone.setRows([readRow('1', 'a.ts')], { toolOutputExpanded: false })
+    const joined = stripAnsi(lone.render(200).join('\n'))
+    expect(joined).toContain('▸ output (1 lines — Ctrl+O to toggle)')
+    expect(joined).not.toContain('⎿')
   })
 
   it('still renders a single completed Read row through the normal tool renderer', () => {

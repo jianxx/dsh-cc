@@ -59,6 +59,7 @@ import {
   setSessionSwitcher,
   setTodos,
   toggleQuestionOption,
+  toggleGlobalCollapse,
   toggleThinking,
   typeQuestionText,
   upsertRow,
@@ -1117,6 +1118,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       const next = nextPermissionMode(live)
       if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return
       applyMode(next)
+    },
+    toggleGlobalCollapse() {
+      emit(toggleGlobalCollapse(state))
     },
     toggleThinking() {
       emit(toggleThinking(state))

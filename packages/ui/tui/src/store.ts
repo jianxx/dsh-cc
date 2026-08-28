@@ -177,6 +177,11 @@ export interface TuiState {
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
   thinkingExpanded: boolean
+  /**
+   * Whether tool rows render their output (body/result/diffs) expanded
+   * (Ctrl+O). Expanded by default — collapsing is opt-in via the toggle.
+   */
+  toolOutputExpanded: boolean
   /** Observed subagent runs (newest appended; capped at 20). */
   subagents: readonly SubagentRunView[]
   /** Statusline HUD (context %, token totals) from the projections feed. */
@@ -196,6 +201,7 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     permissionMode,
     queued: [],
     thinkingExpanded: false,
+    toolOutputExpanded: true,
     subagents: [],
   }
 }
@@ -385,6 +391,21 @@ export function clearQueue(state: TuiState): TuiState {
 /** Flip the thinking-accordion expansion flag (Ctrl+O). */
 export function toggleThinking(state: TuiState): TuiState {
   return { ...state, thinkingExpanded: !state.thinkingExpanded }
+}
+
+/**
+ * Flip the global collapse state (Ctrl+O): everything expanded collapses,
+ * anything else expands. Only the all-expanded state counts as "open" so the
+ * toggle is a clean two-way switch between fully expanded and fully
+ * collapsed, regardless of how the individual flags got there.
+ */
+export function toggleGlobalCollapse(state: TuiState): TuiState {
+  const allExpanded = state.thinkingExpanded && state.toolOutputExpanded
+  return {
+    ...state,
+    thinkingExpanded: !allExpanded,
+    toolOutputExpanded: !allExpanded,
+  }
 }
 
 /** Maximum subagent runs retained in state; oldest done drops first. */

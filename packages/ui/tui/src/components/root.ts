@@ -246,7 +246,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			return { consume: true }
 		}
 		if (matchesKey(data, Key.ctrl('o'))) {
-			driver.toggleThinking()
+			driver.toggleGlobalCollapse()
 			return { consume: true }
 		}
 		if (matchesKey(data, Key.ctrl('t'))) {
@@ -265,7 +265,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
 	// Rebuild transcript + overlays + statusline on every driver emit.
 	const unsubscribe = driver.subscribe((state) => {
-		transcript.setRows(state.rows, { thinkingExpanded: state.thinkingExpanded })
+		transcript.setRows(state.rows, {
+			thinkingExpanded: state.thinkingExpanded,
+			toolOutputExpanded: state.toolOutputExpanded,
+		})
 
 		queueLine.setText(
 			state.queued.length === 0

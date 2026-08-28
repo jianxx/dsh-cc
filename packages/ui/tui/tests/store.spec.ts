@@ -17,6 +17,7 @@ import {
   setQuestion,
   setTodos,
   todoSummary,
+  toggleGlobalCollapse,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
@@ -261,6 +262,47 @@ describe('thinkingExpanded', () => {
     expect(state.thinkingExpanded).toBe(false)
     expect(next.thinkingExpanded).toBe(true)
     expect(next).not.toBe(state)
+  })
+})
+
+describe('toolOutputExpanded / toggleGlobalCollapse', () => {
+  it('defaults toolOutputExpanded to true (tool output expanded by default)', () => {
+    expect(createInitialState().toolOutputExpanded).toBe(true)
+  })
+
+  it('collapses both flags only when everything is currently expanded', () => {
+    // Fresh state: thinking collapsed + tools expanded -> everything expanded.
+    const expanded = toggleGlobalCollapse(createInitialState())
+    expect(expanded.thinkingExpanded).toBe(true)
+    expect(expanded.toolOutputExpanded).toBe(true)
+    // Everything expanded -> everything collapsed.
+    const collapsed = toggleGlobalCollapse(expanded)
+    expect(collapsed.thinkingExpanded).toBe(false)
+    expect(collapsed.toolOutputExpanded).toBe(false)
+    // Mixed (thinking collapsed, tools expanded) -> everything expanded, not
+    // a per-flag flip.
+    const mixed = createInitialState()
+    const next = toggleGlobalCollapse(mixed)
+    expect(next.thinkingExpanded).toBe(true)
+    expect(next.toolOutputExpanded).toBe(true)
+  })
+
+  it('expands both flags from the fully-collapsed state', () => {
+    let state = toggleGlobalCollapse(createInitialState()) // all expanded
+    state = toggleGlobalCollapse(state) // all collapsed
+    state = toggleGlobalCollapse(state) // back to all expanded
+    expect(state.thinkingExpanded).toBe(true)
+    expect(state.toolOutputExpanded).toBe(true)
+  })
+
+  it('does not mutate the original state', () => {
+    const state = createInitialState()
+    const next = toggleGlobalCollapse(state)
+    expect(state.thinkingExpanded).toBe(false)
+    expect(state.toolOutputExpanded).toBe(true)
+    expect(next).not.toBe(state)
+    expect(next.thinkingExpanded).toBe(true)
+    expect(next.toolOutputExpanded).toBe(true)
   })
 })
 

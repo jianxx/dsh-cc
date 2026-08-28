@@ -7,6 +7,7 @@ import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   createInitialState,
+  toggleGlobalCollapse,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 import {
@@ -81,6 +82,7 @@ function fakeDriver(initial: TuiState): Driver {
     interrupt() {},
     cyclePermissionMode() {},
     toggleThinking() {},
+    toggleGlobalCollapse() { state = toggleGlobalCollapse(state) },
     answerApproval() {},
     questionMove() {},
     questionToggle() {},
