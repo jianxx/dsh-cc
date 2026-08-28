@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jianxx/dsh-cc-plugins.git",
+    "url": "git+https://github.com/jianxx/dsh-cc.git",
     "directory": "packages/interaction/command-plugin"
   },
   "type": "module",
