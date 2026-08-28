@@ -40,11 +40,16 @@ import {
   backspaceQuestionText,
   clearQueue,
   clearRows,
+  closeTodoPanel,
   createInitialState,
   enqueue,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveSessionSwitcherFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
+  popQueued,
   setApproval,
   setBusy,
   setDraft,
@@ -56,6 +61,7 @@ import {
   setSessionSwitcher,
   setTodos,
   toggleQuestionOption,
+  toggleGlobalCollapse,
   toggleThinking,
   typeQuestionText,
   upsertRow,
@@ -212,6 +218,9 @@ type ContextPressureStateLike = {
 
 const execFileAsync = promisify(execFile)
 
+/** Default lifetime of a transient `showNotice` hint. */
+const NOTICE_TTL_MS = 3000
+
 /**
  * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
  * with a short timeout. Never throws — errors (no git, no repo, detached
@@ -299,21 +308,35 @@ function sameTodos(
 }
 
 /**
- * Context-occupancy percent (0-100 int) from a `contextPressure` state
- * value. Uses the projection's own occupancy definition: the latest sample
- * plus the surface's movement since that sample was taken, falling back to
- * the bare sample when no anchor exists. Undefined until both numerator and
- * denominator are known.
+ * Raw context-window occupancy behind {@link percentOf}: the latest sample
+ * plus the surface's movement since that sample was taken (the projection's
+ * anchor adjustment), falling back to the bare sample when no anchor exists.
+ * `window` is undefined — the result still being usable for exact-token
+ * display — when the projection does not expose a positive window. Callers
+ * must render from these raw counts, never back-derive them from the rounded
+ * percent.
  */
-function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
-  const contextWindow = pressure?.contextWindow
+function occupancyOf(pressure: ContextPressureStateLike | undefined): { used: number; window?: number } | undefined {
   const sample = pressure?.pressureTokens
-  if (typeof contextWindow !== 'number' || contextWindow <= 0 || typeof sample !== 'number') return undefined
+  if (typeof sample !== 'number') return undefined
   const { surfaceTokens, sampledSurfaceTokens } = pressure ?? {}
-  const occupancy = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
+  const used = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
     ? Math.max(0, sample + surfaceTokens - sampledSurfaceTokens)
     : sample
-  return Math.max(0, Math.min(100, Math.round((occupancy / contextWindow) * 100)))
+  const contextWindow = pressure?.contextWindow
+  const window = typeof contextWindow === 'number' && contextWindow > 0 ? contextWindow : undefined
+  // exactOptionalPropertyTypes: `window` must be absent, not explicitly undefined.
+  return window === undefined ? { used } : { used, window }
+}
+
+/**
+ * Context-occupancy percent (0-100 int) from a `contextPressure` state
+ * value. Undefined until both numerator and denominator are known.
+ */
+function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
+  const occupancy = occupancyOf(pressure)
+  if (occupancy === undefined || occupancy.window === undefined) return undefined
+  return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -354,6 +377,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const emit = (next: TuiState): void => {
     state = next
     for (const listener of listeners) listener(state)
+  }
+
+  // Transient notice: parked in state.notice with a self-clearing timer. The
+  // timer handle lives here so dispose() can cancel it (reversible effect),
+  // and a newer notice replaces the pending timer of the previous one.
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined
+  const showNotice = (text: string, ttlMs = NOTICE_TTL_MS): void => {
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer)
+    emit(setNotice(state, text))
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined
+      // Same-reference guard: no churn when the notice was already cleared.
+      if (state.notice !== undefined) emit(setNotice(state, undefined))
+    }, ttlMs)
   }
 
   const composition = await composePreset(ctx, config.agentPreset ?? 'cc')
@@ -510,7 +547,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     const tokens = patch.tokens
     const tokensSame = tokens === undefined
       || (hud?.tokens !== undefined && hud.tokens.input === tokens.input && hud.tokens.output === tokens.output)
-    if (percentSame && tokensSame) return // emit only on an actual change
+    const detail = patch.contextTokens
+    const detailSame = detail === undefined
+      || (hud?.contextTokens !== undefined
+        && hud.contextTokens.used === detail.used
+        && hud.contextTokens.window === detail.window)
+    if (percentSame && tokensSame && detailSame) return // emit only on an actual change
     emit(setHud(state, patch))
   }
   const seedHud = (): void => {
@@ -518,13 +560,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (projections !== undefined) {
       const tokens = tokensOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
       if (tokens !== undefined) patch.tokens = tokens
-      const percent = percentOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined)
+      const pressure = projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined
+      const percent = percentOf(pressure)
       if (percent !== undefined) patch.contextPercent = percent
+      const occupancy = occupancyOf(pressure)
+      if (occupancy !== undefined) patch.contextTokens = occupancy
     }
     // Replace wholesale: clear first so stale fields from a previous session
     // never leak, then apply whatever the new session actually has.
     let next = setHud(state, undefined)
-    if (patch.contextPercent !== undefined || patch.tokens !== undefined) next = setHud(next, patch)
+    if (patch.contextPercent !== undefined || patch.tokens !== undefined || patch.contextTokens !== undefined) {
+      next = setHud(next, patch)
+    }
     if (next !== state) emit(next)
   }
   // Todos: same seeding contract as the HUD — stateOf at (re)bind, then the
@@ -547,8 +594,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         const tokens = tokensOf(value as TokenUsageStateLike | undefined)
         if (tokens !== undefined) applyHud({ tokens })
       } else if (key === 'contextPressure') {
-        const percent = percentOf(value as ContextPressureStateLike | undefined)
-        if (percent !== undefined) applyHud({ contextPercent: percent })
+        const pressure = value as ContextPressureStateLike | undefined
+        const percent = percentOf(pressure)
+        const occupancy = occupancyOf(pressure)
+        if (percent === undefined && occupancy === undefined) return
+        applyHud({
+          ...percent === undefined ? {} : { contextPercent: percent },
+          ...occupancy === undefined ? {} : { contextTokens: occupancy },
+        })
       } else if (key === 'todos') {
         const todos = todosOf(value)
         if (sameTodos(state.todos, todos)) return
@@ -563,6 +616,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     const eventType = event.type as string
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       emit(setPermissionMode(state, liveMode(current.agent, state.permissionMode)))
+    }
+    // Outbox flush anchor: the durable `turn/end` fires exactly once per turn
+    // (aborts and errors included). agent/status is unusable here — live
+    // events never reach the session log — and busy flips jitter per step, so
+    // turn/end is the only per-turn heartbeat. An empty queue makes the flush
+    // a no-op (e.g. after interrupt() already cleared it).
+    if (eventType === 'turn/end') {
+      flushQueue()
     }
   })
 
@@ -662,7 +723,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     const planMode = ctx.get('planMode') as PlanModeLike | undefined
     if (mode === 'plan') {
       if (planMode === undefined) {
-        emit(setNotice(state, 'plan mode is not mounted in this composition'))
+        showNotice('plan mode is not mounted in this composition')
         return
       }
       planMode.set(current.agent, true)
@@ -673,7 +734,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       planMode?.set(current.agent, false)
     }
     if (rules === undefined) {
-      emit(setNotice(state, 'The permission-rules engine is not mounted in this composition.'))
+      showNotice('The permission-rules engine is not mounted in this composition.')
       return
     }
     rules.setMode(current.agent, mode)
@@ -851,6 +912,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setApproval(state, undefined))
     emit(setQuestion(state, undefined))
     emit(setModelPicker(state, undefined))
+    emit(closeTodoPanel(state))
     emit(clearQueue(setBusy(state, false)))
 
     // Resume first: keeps the old session alive if resume throws. The harness
@@ -950,7 +1012,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       const catalog = await loadCatalog()
       const chosen = parseModelChoice(rawInput, catalog)
       if (chosen === undefined) {
-        emit(setNotice(state, `Unknown model "${rawInput}". Try /model for the catalog.`))
+        showNotice(`Unknown model "${rawInput}". Try /model for the catalog.`)
         return
       }
       selection.current = { provider: chosen.provider, model: chosen.model }
@@ -986,7 +1048,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const runHarness = async (line: string): Promise<void> => {
     const commands = ctx.get('commands') as CommandsLike | undefined
     if (commands === undefined) {
-      emit(setNotice(state, 'No command registry is mounted.'))
+      showNotice('No command registry is mounted.')
       return
     }
     const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
@@ -994,6 +1056,57 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (text !== undefined && text.length > 0) {
       emit(upsertRow(state, { kind: 'status', text }))
     }
+  }
+
+  /**
+   * Outbox flush, anchored to the durable `turn/end` event: snapshot the
+   * queue, dispatch every entry FIFO through `followup`, and clear the queue
+   * in the same synchronous stroke as the dispatch — so the queue never holds
+   * an entry that was already sent and ↑ recall cannot race a flush. Busy is
+   * re-asserted optimistically (the flushed followups start a new turn
+   * immediately; the fold's `turn/end` handling just set it false).
+   */
+  const flushQueue = (): void => {
+    const pending = [...state.queued]
+    if (pending.length === 0) return
+    for (const text of pending) {
+      current.agent.followup(createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      }))
+    }
+    emit(setBusy(clearQueue(state), true))
+  }
+
+  /**
+   * Ctrl+S queue-jump: inject every queued entry into the RUNNING turn
+   * immediately — same synchronous snapshot-then-clear discipline as
+   * {@link flushQueue}, but via `agent.steer` and without a busy flip (the
+   * turn is already running).
+   */
+  const steerQueued = (): void => {
+    const pending = [...state.queued]
+    if (pending.length === 0) return
+    for (const text of pending) {
+      current.agent.steer(createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      }))
+    }
+    emit(clearQueue(state))
+  }
+
+  /**
+   * Recall for editing: pop the most recent queued entry back out of the
+   * outbox and hand it to the caller (root.ts puts it into the composer).
+   * Race-free by construction — flush and steer always clear synchronously,
+   * so the queue only ever holds entries that were never sent.
+   */
+  const recallQueued = (): string | undefined => {
+    const popped = popQueued(state)
+    if (popped.text === undefined) return undefined
+    emit(popped.state)
+    return popped.text
   }
 
   const submit = async (text?: string): Promise<void> => {
@@ -1013,17 +1126,16 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // prompts, and would dilute the recall signal). Consecutive duplicates
     // and the cap are handled inside saveHistory.
     history = saveHistory([...history, draft], historyDir)
-    // Always queue the text; the chip clears when the durable user/message
-    // event folds the row into the transcript (near-instant in-process).
-    // No optimistic user row — both paths surface it from the durable event.
-    emit(enqueue(state, draft))
     if (state.busy) {
-      current.agent.steer(createUserMessage({
-        content: [{ type: 'text', text: draft }],
-        source: { kind: 'user' },
-      }))
+      // Outbox: park the text as a pending chip only. It reaches the agent on
+      // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
+      // (steerQueued). No injection into the running turn here — that is what
+      // makes recall-then-edit meaningful.
+      emit(enqueue(state, draft))
       return
     }
+    // Idle sends bypass the outbox entirely — the row surfaces from the
+    // durable `user/message` event, and a sent text must not stay recallable.
     current.agent.followup(createUserMessage({
       content: [{ type: 'text', text: draft }],
       source: { kind: 'user' },
@@ -1031,16 +1143,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setBusy(state, true))
   }
 
-  const statusLineOf = (): string => formatStatusLine({
+  const statusLineOf = (width?: number): string => formatStatusLine({
     cwd: current.agent.session.header.cwd ?? cwd,
     sessionId: String(current.agent.session.id),
     permissionMode: state.permissionMode,
     ...selection.current === undefined ? {} : { model: selection.current.model },
     ...branch === undefined ? {} : { branch },
     ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
+    ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
     ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
     busy: state.busy,
-  })
+  }, width === undefined ? {} : { width })
 
   return {
     get state() {
@@ -1048,6 +1161,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     get statusLine() {
       return statusLineOf()
+    },
+    statusLineIn(width?: number) {
+      return statusLineOf(width)
     },
     get cwd() {
       return cwd
@@ -1069,16 +1185,23 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     interrupt() {
       current.agent.cancel({ kind: 'user' })
       // cancel discards queued/steering inbox items; mirror that in UI state.
+      // Clearing BEFORE the abort's turn/end lands also guarantees the flush
+      // anchor finds an empty queue — an interrupt never resurrects entries.
       emit(upsertRow(clearQueue(setBusy(state, false)), {
         kind: 'status',
         text: 'Interrupted by user.',
       }))
     },
+    steerQueued,
+    recallQueued,
     cyclePermissionMode() {
       const live = liveMode(current.agent, state.permissionMode)
       const next = nextPermissionMode(live)
       if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return
       applyMode(next)
+    },
+    toggleGlobalCollapse() {
+      emit(toggleGlobalCollapse(state))
     },
     toggleThinking() {
       emit(toggleThinking(state))
@@ -1179,16 +1302,40 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     sessionSwitcherCancel() {
       emit(setSessionSwitcher(state, undefined))
     },
+    toggleTodoPanel() {
+      if (state.todoPanel !== undefined) {
+        emit(closeTodoPanel(state))
+        return
+      }
+      emit(openTodoPanel(state))
+    },
+    todoPanelMove(delta) {
+      emit(moveTodoPanelFocus(state, delta))
+    },
+    todoPanelClose() {
+      emit(closeTodoPanel(state))
+    },
+    showNotice,
+    markExitAttempt(now) {
+      emit(markExitAttempt(state, now ?? Date.now()))
+    },
     async switchSession(id) {
       await switchSession(id)
     },
     async listSessions() {
       return listSessions()
     },
+    async loadModelCatalog() {
+      return loadCatalog()
+    },
     listCommands() {
       return commandCatalog
     },
     async dispose() {
+      if (noticeTimer !== undefined) {
+        clearTimeout(noticeTimer)
+        noticeTimer = undefined
+      }
       questionsDispose?.()
       await current.handle.dispose()
     },

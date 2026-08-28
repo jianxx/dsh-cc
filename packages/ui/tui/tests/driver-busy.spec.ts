@@ -80,21 +80,36 @@ describe('createDriver busy input semantics', () => {
     else process.env.DSH_HOME = prevHome
   })
 
-  it('submit while busy routes through agent.steer (not followup) and enqueues without a user row', async () => {
+  /**
+   * Extract the joined text blocks from a captured createUserMessage argument
+   * so the followup/steer call order is assertable.
+   */
+  const sentTexts = (calls: readonly unknown[][]): string[] =>
+    calls.map(call => {
+      const message = call[0] as { content?: readonly { type?: string; text?: string }[] }
+      return (message.content ?? [])
+        .filter(block => block.type === 'text')
+        .map(block => block.text ?? '')
+        .join('')
+    })
+
+  it('submit while busy parks the text in the outbox without steering or a user row', async () => {
     const agent = makeFakeAgent('running')
     const { ctx } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
     expect(driver.state.busy).toBe(true)
 
     await driver.submit('steer me')
-    expect(agent.steer).toHaveBeenCalledOnce()
+    // Outbox semantics: a busy submit queues only — nothing is injected into
+    // the running turn until turn/end (or an explicit Ctrl+S).
+    expect(agent.steer).not.toHaveBeenCalled()
     expect(agent.followup).not.toHaveBeenCalled()
     expect(driver.state.queued).toEqual(['steer me'])
-    // No optimistic user row on the steer path.
+    // No optimistic user row on the queue path.
     expect(driver.state.rows.filter(r => r.kind === 'user')).toHaveLength(0)
   })
 
-  it('submit while idle routes through agent.followup, enqueues, and sets busy without an optimistic user row', async () => {
+  it('submit while idle routes through agent.followup without enqueueing', async () => {
     const agent = makeFakeAgent('idle')
     const { ctx } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
@@ -103,14 +118,15 @@ describe('createDriver busy input semantics', () => {
     await driver.submit('hello')
     expect(agent.followup).toHaveBeenCalledOnce()
     expect(agent.steer).not.toHaveBeenCalled()
-    expect(driver.state.queued).toEqual(['hello'])
+    // Idle sends bypass the outbox entirely — nothing to recall once sent.
+    expect(driver.state.queued).toEqual([])
     expect(driver.state.busy).toBe(true)
     // No optimistic user row; the row lands on the durable event.
     expect(driver.state.rows.filter(r => r.kind === 'user')).toHaveLength(0)
   })
 
-  it('a subsequent user/message event clears the matching queue entry and adds the user row', async () => {
-    const agent = makeFakeAgent('idle')
+  it('a durable user/message adds the user row and leaves queued chips untouched', async () => {
+    const agent = makeFakeAgent('running')
     const { ctx, emitSession } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
 
@@ -118,8 +134,91 @@ describe('createDriver busy input semantics', () => {
     expect(driver.state.queued).toEqual(['hello'])
 
     emitSession({ type: 'user/message', data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } } })
-    expect(driver.state.queued).toEqual([])
+    // The fold only renders the row; chip clearing is driver-side and
+    // synchronous (flush / Ctrl+S / interrupt / recall), never event-driven.
+    expect(driver.state.queued).toEqual(['hello'])
     expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'hello' })
+  })
+
+  it('turn/end flushes the outbox FIFO through followup and optimistically sets busy', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('one')
+    await driver.submit('two')
+    expect(driver.state.queued).toEqual(['one', 'two'])
+
+    emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['one', 'two'])
+    expect(agent.steer).not.toHaveBeenCalled()
+    // Dispatched and cleared in the same synchronous stroke.
+    expect(driver.state.queued).toEqual([])
+    // Optimistic busy: the flushed followups start a new turn immediately.
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('an errored turn/end still flushes the outbox', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('retry me')
+    emitSession({
+      type: 'turn/end',
+      data: { reason: { kind: 'error', error: { message: 'boom' } } },
+    })
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['retry me'])
+    expect(driver.state.queued).toEqual([])
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('steerQueued injects every queued entry through agent.steer and clears the queue', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('one')
+    await driver.submit('two')
+    driver.steerQueued()
+    // Queue-jump: steer, not followup, and cleared synchronously.
+    expect(sentTexts(agent.steer.mock.calls)).toEqual(['one', 'two'])
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.queued).toEqual([])
+  })
+
+  it('a turn/end after interrupt finds an empty queue and does not flush', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('doomed entry')
+    driver.interrupt()
+    expect(driver.state.queued).toEqual([])
+
+    emitSession({ type: 'turn/end', data: { reason: { kind: 'aborted' } } })
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.queued).toEqual([])
+  })
+
+  it('recallQueued pops the most recent queued entry for editing', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('one')
+    await driver.submit('two')
+    expect(driver.recallQueued()).toBe('two')
+    expect(driver.state.queued).toEqual(['one'])
+  })
+
+  it('recallQueued on an empty queue returns undefined and leaves the state alone', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    expect(driver.recallQueued()).toBeUndefined()
+    expect(driver.state.queued).toEqual([])
   })
 
   it('interrupt calls agent.cancel({kind:"user"}), clears queued, sets busy false, and notes the interruption', async () => {

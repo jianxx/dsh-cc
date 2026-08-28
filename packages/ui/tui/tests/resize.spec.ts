@@ -7,7 +7,9 @@ import {
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
+  clearQueue,
   createInitialState,
+  popQueued,
   upsertRow,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
@@ -80,6 +82,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return [] },
     subscribe(listener: (s: TuiState) => void) {
@@ -99,6 +102,17 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     questionBackspace() {},
     questionSubmit() {},
     questionCancel() {},
+    steerQueued() {
+      state = clearQueue(state)
+      for (const l of listeners) l(state)
+    },
+    recallQueued() {
+      const popped = popQueued(state)
+      if (popped.text === undefined) return undefined
+      state = popped.state
+      for (const l of listeners) l(state)
+      return popped.text
+    },
     listCommands() { return [] },
     async dispose() {},
     setState(next: TuiState) {

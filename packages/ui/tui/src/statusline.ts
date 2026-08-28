@@ -14,6 +14,12 @@ export interface StatusLineInput {
   branch?: string
   /** Context occupancy percent, 0-100 (rounded here when fractional). */
   contextPercent?: number
+  /**
+   * Raw occupancy backing `contextPercent`, rendered as the exact
+   * `ctx NN% (used/window)` detail when the window is known. The numerator is
+   * the projected token count — never back-derived from the rounded percent.
+   */
+  contextTokens?: { readonly used: number; readonly window?: number }
   /** Cumulative token totals for the session. */
   tokens?: { input: number; output: number }
   busy: boolean
@@ -58,25 +64,40 @@ export function formatTokens(tokens: number): string {
  * Compact footer: `cwd [branch] · session · mode · model · ctx NN% ·
  * ↑in ↓out tok` plus the busy marker and key hints. Absent optional fields
  * drop their segments; the function is pure and total on undefined inputs.
+ *
+ * When the context window is known the ctx segment grows an exact
+ * `(used/window)` detail. `opts.width` is a terminal-width hint: when the
+ * assembled line would overflow it, only that parenthetical detail is dropped
+ * and the bare `ctx NN%` survives (other segments are never elided).
  */
-export function formatStatusLine(input: StatusLineInput): string {
+export function formatStatusLine(input: StatusLineInput, opts?: { width?: number }): string {
   const left = input.branch === undefined || input.branch.length === 0
     ? shortenCwd(input.cwd)
     : `${shortenCwd(input.cwd)} [${input.branch}]`
-  const parts = [
-    left,
-    shortenSession(input.sessionId),
-    input.permissionMode,
-  ]
-  if (input.model !== undefined && input.model.length > 0) parts.push(input.model)
-  if (input.contextPercent !== undefined) {
-    const percent = Math.max(0, Math.min(100, Math.round(input.contextPercent)))
-    parts.push(`ctx ${percent}%`)
+  const build = (withDetail: boolean): string => {
+    const parts = [
+      left,
+      shortenSession(input.sessionId),
+      input.permissionMode,
+    ]
+    if (input.model !== undefined && input.model.length > 0) parts.push(input.model)
+    if (input.contextPercent !== undefined) {
+      const percent = Math.max(0, Math.min(100, Math.round(input.contextPercent)))
+      const tokens = input.contextTokens
+      const detail = withDetail && tokens !== undefined && tokens.window !== undefined && tokens.window > 0
+        ? ` (${formatTokens(tokens.used)}/${formatTokens(tokens.window)})`
+        : ''
+      parts.push(`ctx ${percent}%${detail}`)
+    }
+    if (input.tokens !== undefined) {
+      parts.push(`↑${formatTokens(input.tokens.input)} ↓${formatTokens(input.tokens.output)} tok`)
+    }
+    if (input.busy) parts.push('working')
+    parts.push('shift+tab', '/quit')
+    return parts.join(' · ')
   }
-  if (input.tokens !== undefined) {
-    parts.push(`↑${formatTokens(input.tokens.input)} ↓${formatTokens(input.tokens.output)} tok`)
-  }
-  if (input.busy) parts.push('working')
-  parts.push('shift+tab', '/quit')
-  return parts.join(' · ')
+  const line = build(true)
+  const width = opts?.width
+  if (width !== undefined && width > 0 && line.length > width) return build(false)
+  return line
 }

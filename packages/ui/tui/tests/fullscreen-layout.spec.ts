@@ -3,7 +3,16 @@ import { Terminal as XtermTerminal } from '@xterm/headless'
 import { type Terminal as PiTerminal } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
-import { createInitialState, upsertRow, type TuiState } from '@jianxx/dsh-cc-tui/store.ts'
+import {
+  clearQueue,
+  createInitialState,
+  markExitAttempt,
+  popQueued,
+  setNotice,
+  toggleGlobalCollapse,
+  upsertRow,
+  type TuiState,
+} from '@jianxx/dsh-cc-tui/store.ts'
 
 /**
  * Minimal pi-tui Terminal that pipes write() calls into an @xterm/headless
@@ -88,6 +97,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 	return {
 		get state() { return state },
 		get statusLine() { return 'test · status' },
+		statusLineIn: () => 'test · status',
 		get cwd() { return process.cwd() },
 		get promptHistory() { return [] },
 		subscribe(listener) {
@@ -105,6 +115,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 		interrupt() { state = { ...state, busy: false }; emit() },
 		cyclePermissionMode: noop,
 		toggleThinking() { state = { ...state, thinkingExpanded: !state.thinkingExpanded }; emit() },
+		toggleGlobalCollapse() { state = toggleGlobalCollapse(state); emit() },
 		answerApproval() { state = { ...state, approval: undefined }; emit() },
 		questionMove: noop,
 		questionToggle: noop,
@@ -121,6 +132,19 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 		sessionSwitcherMove: noop,
 		sessionSwitcherSubmit: asyncNoop,
 		sessionSwitcherCancel: noop,
+		toggleTodoPanel: noop,
+		todoPanelMove: noop,
+		todoPanelClose: noop,
+		showNotice(text) { state = setNotice(state, text); emit() },
+		markExitAttempt(now) { state = markExitAttempt(state, now ?? Date.now()); emit() },
+		steerQueued() { state = clearQueue(state); emit() },
+		recallQueued() {
+			const popped = popQueued(state)
+			if (popped.text === undefined) return undefined
+			state = popped.state
+			emit()
+			return popped.text
+		},
 		switchSession: asyncNoop,
 		async listSessions() { return [] },
 		listCommands() { return [] },
@@ -235,6 +259,29 @@ describe('fullscreen layout', () => {
 		expect(joined).toContain('replayed answer')
 		expect(joined).toContain('test · status')
 
+		root.destroy()
+	})
+
+	it('renders the transient notice line in the dock and collapses it when empty', async () => {
+		const vt = new VirtualTerminal(80, 24)
+		const driver = fakeDriver(setNotice(createInitialState(), 'Press Ctrl+C again to exit'))
+		const root = buildRoot(driver, { terminal: vt, onQuit: () => {}, uiMode: 'fullscreen', mouse: false })
+		root.tui.start()
+		await settle()
+
+		let g = vt.grid().map(stripAnsi)
+		expect(g.join('\n')).toContain('Press Ctrl+C again to exit')
+		// The dock still pins the statusline to the last row.
+		expect(g[23]).toContain('test · status')
+
+		// Clearing the notice collapses the line back to zero rows.
+		driver.setState(createInitialState())
+		await settle()
+		g = vt.grid().map(stripAnsi)
+		expect(g.join('\n')).not.toContain('Press Ctrl+C again to exit')
+		expect(g[23]).toContain('test · status')
+
+		root.stopForExit()
 		root.destroy()
 	})
 })

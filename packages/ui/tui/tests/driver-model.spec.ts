@@ -176,4 +176,14 @@ describe('createDriver /model picker overlay', () => {
     expect(last?.kind).toBe('status')
     expect((last as { text: string }).text).toMatch(/No models are advertised/)
   })
+
+  it('loadModelCatalog exposes the live catalog for argument completion', async () => {
+    const driver = await createDriver(makeModelCtx(CATALOG) as never, {})
+    const catalog = await driver.loadModelCatalog()
+    expect(catalog.map(e => `${e.provider}/${e.id}`)).toEqual([
+      'deepseek-official/deepseek-v4-flash',
+      'deepseek-official/deepseek-v4-pro',
+      'openai/gpt-5',
+    ])
+  })
 })

@@ -23,13 +23,20 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
+import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
+import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
-import { createApprovalBox, createModelPickerBox, createQuestionBox, createSessionSwitcherBox } from './overlays.ts'
+import {
+  createApprovalBox,
+  createModelPickerBox,
+  createQuestionBox,
+  createSessionSwitcherBox,
+  createTodoPanelBox,
+} from './overlays.ts'
 
 export interface BuildRootOptions {
 	terminal?: Terminal
@@ -47,6 +54,9 @@ export interface BuildRootOptions {
 
 /** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
 const TODO_ACTIVE_CAP = 60
+
+/** How long after the first idle Ctrl+C a second press still quits (ms). */
+const DOUBLE_PRESS_WINDOW_MS = 2000
 
 function truncateActive(content: string): string {
 	return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
@@ -81,7 +91,7 @@ function openSystemUrl(url: string): void {
 /**
  * Build the pi-tui render tree.
  *
- * Children order: title · transcript · queue chips · todo strip ·
+ * Children order: title · transcript · queue chips · todo strip · notice ·
  * [approval] · [question] · editor · statusline. The transcript and overlays
  * rebuild on every driver emit; the editor is persistent so it retains focus
  * and cursor state across renders.
@@ -114,6 +124,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// pattern: blank content collapses it to zero lines when no todos exist.
 	const todoLine = new Text('', 0, 0)
 
+	// Transient notice line (e.g. the "Press Ctrl+C again to exit" hint), same
+	// persistent-Text pattern: blank content collapses it to zero lines when no
+	// notice is parked.
+	const noticeLine = new Text('', 0, 0)
+
 	// Dynamic overlay slot (approval/question boxes). Cleared and rebuilt on
 	// every state change so they appear and disappear with the driver state.
 	const overlays = new Container()
@@ -140,14 +155,17 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// driver's command catalog changes identity (driver.listCommands() returns a
 	// stable reference until commands/change fires) — cheap reference compare on
 	// every state emit, rebuild only when the catalog actually moved.
+	// Argument completers (`/model`, `/resume`) are driver-backed and fetch per
+	// request, so a single map built once at mount never goes stale.
+	const argCompleters = buildArgCompleters(driver)
 	let lastCatalog = driver.listCommands()
-	let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd)
+	let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd, undefined, argCompleters)
 	editor.setAutocompleteProvider(autocompleteProvider)
 
-	const statusline = new Text(driver.statusLine, 0, 0)
+	const statusline = new Text(driver.statusLineIn(terminal.columns), 0, 0)
 
 	// Ordered chrome shared by the inline mount and the fullscreen exit replay.
-	const chrome: Component[] = [title, transcript, queueLine, todoLine, overlays, editor, statusline]
+	const chrome: Component[] = [title, transcript, queueLine, todoLine, noticeLine, overlays, editor, statusline]
 
 	if (tui instanceof TuiAltScreen) {
 		// Fullscreen (alternate screen): transcript scrolls inside the primary
@@ -164,6 +182,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		const dock = new VStack()
 		dock.addChild(queueLine, { shrink: 1, minSize: 0 })
 		dock.addChild(todoLine, { shrink: 1, minSize: 0 })
+		dock.addChild(noticeLine, { shrink: 1, minSize: 0 })
 		dock.addChild(overlays, { shrink: 1, minSize: 0 })
 		dock.addChild(editor, { shrink: 1, minSize: 1 })
 		dock.addChild(statusline, { shrink: 1, minSize: 1 })
@@ -185,7 +204,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	const removeInputListener = tui.addInputListener((data: string) => {
 		const live = driver.state
 		// Ctrl+C arrives as a raw \x03 byte in raw mode (never a SIGINT). Treat it
-		// as an escape hatch: interrupt when busy, quit when idle. When an overlay
+		// as an escape hatch: interrupt when busy; quit when idle — but only on a
+		// double press, so a stray Ctrl+C never kills the session. When an overlay
 		// is open and the agent is idle, fall through so the overlay's own key
 		// handling (esc to dismiss, etc.) owns it.
 		if (data === '\x03') {
@@ -194,10 +214,20 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				return { consume: true }
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
-				live.modelPicker !== undefined || live.sessionSwitcher !== undefined) {
+				live.modelPicker !== undefined || live.sessionSwitcher !== undefined ||
+				live.todoPanel !== undefined) {
 				return undefined
 			}
-			opts.onQuit?.()
+			const now = Date.now()
+			const lastAttempt = live.lastExitAttemptAt
+			if (lastAttempt !== undefined && now - lastAttempt <= DOUBLE_PRESS_WINDOW_MS) {
+				opts.onQuit?.()
+				return { consume: true }
+			}
+			// First press: anchor the window and hint. The window expires
+			// naturally — no per-keystroke timer resets.
+			driver.markExitAttempt(now)
+			driver.showNotice('Press Ctrl+C again to exit')
 			return { consume: true }
 		}
 		if (live.approval !== undefined) {
@@ -223,13 +253,39 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			routeSessionSwitcherInput(driver, data)
 			return { consume: true }
 		}
+		if (live.todoPanel !== undefined) {
+			// Modal todo panel: arrows/esc/ctrl+t (close) only, everything else
+			// consumed. The open path is the ctrl+t binding below, which only
+			// fires while the panel is closed.
+			routeTodoPanelInput(driver, data)
+			return { consume: true }
+		}
 		if (matchesKey(data, 'shift+tab')) {
 			driver.cyclePermissionMode()
 			return { consume: true }
 		}
 		if (matchesKey(data, Key.ctrl('o'))) {
-			driver.toggleThinking()
+			driver.toggleGlobalCollapse()
 			return { consume: true }
+		}
+		if (matchesKey(data, Key.ctrl('t'))) {
+			driver.toggleTodoPanel()
+			return { consume: true }
+		}
+		if (matchesKey(data, Key.ctrl('s'))) {
+			// Queue-jump: inject the outbox into the running turn now.
+			driver.steerQueued()
+			return { consume: true }
+		}
+		if (matchesKey(data, Key.up) && editor.getText().length === 0 && live.queued.length > 0) {
+			// Empty composer + ↑ recalls the most recent queued entry for editing.
+			// A non-empty composer (or empty queue) falls through so the editor's
+			// own history navigation keeps working.
+			const recalled = driver.recallQueued()
+			if (recalled !== undefined) {
+				editor.setText(recalled)
+				return { consume: true }
+			}
 		}
 		if (matchesKey(data, Key.escape)) {
 			if (live.busy) {
@@ -243,7 +299,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 
 	// Rebuild transcript + overlays + statusline on every driver emit.
 	const unsubscribe = driver.subscribe((state) => {
-		transcript.setRows(state.rows, { thinkingExpanded: state.thinkingExpanded })
+		transcript.setRows(state.rows, {
+			thinkingExpanded: state.thinkingExpanded,
+			toolOutputExpanded: state.toolOutputExpanded,
+		})
 
 		queueLine.setText(
 			state.queued.length === 0
@@ -260,6 +319,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		)
 		todoLine.invalidate()
 
+		noticeLine.setText(state.notice === undefined ? '' : dim(state.notice))
+		noticeLine.invalidate()
+
 		overlays.clear()
 		if (state.approval !== undefined) {
 			overlays.addChild(createApprovalBox(state.approval))
@@ -273,6 +335,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		if (state.sessionSwitcher !== undefined) {
 			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
 		}
+		if (state.todoPanel !== undefined) {
+			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused))
+		}
 		overlays.invalidate()
 
 		// Refresh the autocomplete provider when the command catalog moves
@@ -282,11 +347,13 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		const latestCatalog = driver.listCommands()
 		if (latestCatalog !== lastCatalog) {
 			lastCatalog = latestCatalog
-			autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd)
+			autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd, undefined, argCompleters)
 			editor.setAutocompleteProvider(autocompleteProvider)
 		}
 
-		statusline.setText(driver.statusLine)
+		// Known downgrade: the statusline is a fixed string, so a resize alone
+		// does not recompute it — the new width applies on the next driver emit.
+		statusline.setText(driver.statusLineIn(terminal.columns))
 		tui.requestRender()
 	})
 

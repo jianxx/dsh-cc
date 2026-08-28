@@ -11,7 +11,6 @@ import {
   type ToolResultView,
 } from './tool-card.ts'
 import {
-  dequeue,
   setBusy,
   setPermissionMode,
   upsertRow,
@@ -214,14 +213,13 @@ export function applySessionEvent(
         return state
       }
       const text = textOf(data)
-      // Clear the matching queued chip when its message lands in the trail,
-      // then upsert the user row. (Both paths — followup and steer — enqueue
-      // at submit, so the chip clears here on the durable event.) Empty or
-      // whitespace-only text adds no row (no blank `> ` lines) but still
-      // dequeues so the queue stays consistent.
-      const dequeued = dequeue(state, text)
-      if (text.trim().length === 0) return dequeued
-      return upsertRow(dequeued, { kind: 'user', text })
+      // Chip clearing is deliberately NOT event-driven: the driver clears the
+      // queue synchronously at dispatch (flush / Ctrl+S / interrupt / recall),
+      // so a late durable `user/message` can never wipe a same-text chip the
+      // user re-queued in the meantime. Empty or whitespace-only text adds no
+      // row (no blank `> ` lines).
+      if (text.trim().length === 0) return state
+      return upsertRow(state, { kind: 'user', text })
     }
     case 'assistant/chunk': {
       const chunk = unwrapChunk(data)

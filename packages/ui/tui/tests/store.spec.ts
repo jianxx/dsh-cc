@@ -2,18 +2,24 @@ import { describe, expect, it } from 'vitest'
 import {
   backspaceQuestionText,
   clearQueue,
+  closeTodoPanel,
   countRunningSubagents,
   createInitialState,
   dequeue,
   enqueue,
   focusQuestionOption,
   focusModelPicker,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
+  popQueued,
   setModelPicker,
   setQuestion,
   setTodos,
   todoSummary,
+  toggleGlobalCollapse,
   toggleQuestionOption,
   toggleThinking,
   typeQuestionText,
@@ -80,6 +86,32 @@ describe('queue helpers', () => {
     state = enqueue(state, 'two')
     state = clearQueue(state)
     expect(state.queued).toEqual([])
+  })
+
+  it('popQueued removes and returns the LAST queued entry (LIFO recall)', () => {
+    let state = createInitialState()
+    state = enqueue(state, 'one')
+    state = enqueue(state, 'two')
+    const popped = popQueued(state)
+    expect(popped.text).toBe('two')
+    expect(popped.state.queued).toEqual(['one'])
+  })
+
+  it('popQueued on an empty queue returns undefined text and the same state reference', () => {
+    const state = createInitialState()
+    const popped = popQueued(state)
+    expect(popped.text).toBeUndefined()
+    expect(popped.state).toBe(state)
+  })
+
+  it('popQueued does not mutate the original state', () => {
+    let state = createInitialState()
+    state = enqueue(state, 'one')
+    state = enqueue(state, 'two')
+    const popped = popQueued(state)
+    expect(state.queued).toEqual(['one', 'two'])
+    expect(popped.state.queued).toEqual(['one'])
+    expect(popped.state).not.toBe(state)
   })
 
   it('helpers do not mutate the original state', () => {
@@ -261,6 +293,47 @@ describe('thinkingExpanded', () => {
   })
 })
 
+describe('toolOutputExpanded / toggleGlobalCollapse', () => {
+  it('defaults toolOutputExpanded to true (tool output expanded by default)', () => {
+    expect(createInitialState().toolOutputExpanded).toBe(true)
+  })
+
+  it('collapses both flags only when everything is currently expanded', () => {
+    // Fresh state: thinking collapsed + tools expanded -> everything expanded.
+    const expanded = toggleGlobalCollapse(createInitialState())
+    expect(expanded.thinkingExpanded).toBe(true)
+    expect(expanded.toolOutputExpanded).toBe(true)
+    // Everything expanded -> everything collapsed.
+    const collapsed = toggleGlobalCollapse(expanded)
+    expect(collapsed.thinkingExpanded).toBe(false)
+    expect(collapsed.toolOutputExpanded).toBe(false)
+    // Mixed (thinking collapsed, tools expanded) -> everything expanded, not
+    // a per-flag flip.
+    const mixed = createInitialState()
+    const next = toggleGlobalCollapse(mixed)
+    expect(next.thinkingExpanded).toBe(true)
+    expect(next.toolOutputExpanded).toBe(true)
+  })
+
+  it('expands both flags from the fully-collapsed state', () => {
+    let state = toggleGlobalCollapse(createInitialState()) // all expanded
+    state = toggleGlobalCollapse(state) // all collapsed
+    state = toggleGlobalCollapse(state) // back to all expanded
+    expect(state.thinkingExpanded).toBe(true)
+    expect(state.toolOutputExpanded).toBe(true)
+  })
+
+  it('does not mutate the original state', () => {
+    const state = createInitialState()
+    const next = toggleGlobalCollapse(state)
+    expect(state.thinkingExpanded).toBe(false)
+    expect(state.toolOutputExpanded).toBe(true)
+    expect(next).not.toBe(state)
+    expect(next.thinkingExpanded).toBe(true)
+    expect(next.toolOutputExpanded).toBe(true)
+  })
+})
+
 describe('todos helpers', () => {
   const todos = (items: readonly Partial<TodoItemView>[]): readonly TodoItemView[] =>
     items.map(item => ({
@@ -318,6 +391,77 @@ describe('todos helpers', () => {
       { content: 'c', status: 'completed' },
     ]))
     expect(todoSummary(state)).toEqual({ total: 3, done: 3 })
+  })
+})
+
+describe('todo panel helpers', () => {
+  const todos: readonly TodoItemView[] = [
+    { content: 'done thing', status: 'completed' },
+    { content: 'active thing', status: 'in_progress' },
+    { content: 'later thing', status: 'pending' },
+  ]
+
+  function panelState(): TuiState {
+    return openTodoPanel(setTodos(createInitialState(), todos))
+  }
+
+  it('openTodoPanel parks the panel focused on the first row', () => {
+    const state = panelState()
+    expect(state.todoPanel).toEqual({ focused: 0 })
+    expect(state.todos).toBe(todos)
+  })
+
+  it('openTodoPanel still opens on an empty list (the panel shows a placeholder)', () => {
+    const state = openTodoPanel(createInitialState())
+    expect(state.todoPanel).toEqual({ focused: 0 })
+  })
+
+  it('closeTodoPanel drops the field entirely', () => {
+    const state = panelState()
+    const closed = closeTodoPanel(state)
+    expect(closed.todoPanel).toBeUndefined()
+    // Cleared state does not carry the dropped field at all.
+    expect('todoPanel' in closed).toBe(false)
+  })
+
+  it('closeTodoPanel on a bare state is a same-reference no-op', () => {
+    const base = createInitialState()
+    expect(closeTodoPanel(base)).toBe(base)
+  })
+
+  it('moveTodoPanelFocus moves and clamps to [0, todos.length-1] (no wrap)', () => {
+    const base = panelState()
+    expect(moveTodoPanelFocus(base, 1).todoPanel?.focused).toBe(1)
+    // Clamp at the top — does not wrap to the bottom.
+    expect(moveTodoPanelFocus(base, -1).todoPanel?.focused).toBe(0)
+    // Clamp at the bottom.
+    const atEnd = moveTodoPanelFocus(moveTodoPanelFocus(base, 1), 1)
+    expect(atEnd.todoPanel?.focused).toBe(2)
+    expect(moveTodoPanelFocus(atEnd, 1).todoPanel?.focused).toBe(2)
+  })
+
+  it('moveTodoPanelFocus is a no-op when no panel is open (same reference)', () => {
+    const base = createInitialState()
+    expect(moveTodoPanelFocus(base, 1)).toBe(base)
+  })
+
+  it('moveTodoPanelFocus is a no-op when the todo list is empty or absent', () => {
+    const empty = openTodoPanel(setTodos(createInitialState(), []))
+    expect(moveTodoPanelFocus(empty, 1)).toBe(empty)
+    const absent = openTodoPanel(createInitialState())
+    expect(moveTodoPanelFocus(absent, 1)).toBe(absent)
+  })
+
+  it('todo panel helpers never mutate the original state', () => {
+    const base = panelState()
+    const moved = moveTodoPanelFocus(base, 1)
+    expect(base.todoPanel?.focused).toBe(0)
+    expect(moved.todoPanel?.focused).toBe(1)
+    expect(moved).not.toBe(base)
+
+    const closed = closeTodoPanel(moved)
+    expect(moved.todoPanel).toEqual({ focused: 1 })
+    expect(closed.todoPanel).toBeUndefined()
   })
 })
 
@@ -432,5 +576,31 @@ describe('subagent helpers', () => {
       runId: 'r1', provider: 'p', sessionId: 's1', status: 'done', stopReason: 'end_turn',
     }
     expect(view.status === 'running' || view.status === 'done').toBe(true)
+  })
+})
+
+describe('exit-attempt tracking', () => {
+  it('markExitAttempt records the timestamp on a fresh state', () => {
+    const state = markExitAttempt(createInitialState(), 1000)
+    expect(state.lastExitAttemptAt).toBe(1000)
+  })
+
+  it('markExitAttempt overwrites a previous timestamp', () => {
+    const base = markExitAttempt(createInitialState(), 1000)
+    const next = markExitAttempt(base, 2500)
+    expect(next.lastExitAttemptAt).toBe(2500)
+  })
+
+  it('markExitAttempt does not mutate the original state', () => {
+    const base = createInitialState()
+    const next = markExitAttempt(base, 42)
+    expect(base.lastExitAttemptAt).toBeUndefined()
+    expect(next).not.toBe(base)
+    expect(next.lastExitAttemptAt).toBe(42)
+  })
+
+  it('createInitialState leaves lastExitAttemptAt undefined', () => {
+    const state: TuiState = createInitialState()
+    expect(state.lastExitAttemptAt).toBeUndefined()
   })
 })

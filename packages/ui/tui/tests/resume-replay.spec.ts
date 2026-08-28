@@ -7,6 +7,7 @@ import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   createInitialState,
+  toggleGlobalCollapse,
   type TuiState,
 } from '@jianxx/dsh-cc-tui/store.ts'
 import {
@@ -68,6 +69,7 @@ function fakeDriver(initial: TuiState): Driver {
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return [] },
     subscribe(listener: (s: TuiState) => void) {
@@ -80,6 +82,7 @@ function fakeDriver(initial: TuiState): Driver {
     interrupt() {},
     cyclePermissionMode() {},
     toggleThinking() {},
+    toggleGlobalCollapse() { state = toggleGlobalCollapse(state) },
     answerApproval() {},
     questionMove() {},
     questionToggle() {},
@@ -97,6 +100,8 @@ function fakeDriver(initial: TuiState): Driver {
     sessionSwitcherMove() {},
     async sessionSwitcherSubmit() {},
     sessionSwitcherCancel() {},
+    steerQueued() {},
+    recallQueued() { return undefined },
     async switchSession() {},
     async listSessions() { return [] },
     async dispose() {},

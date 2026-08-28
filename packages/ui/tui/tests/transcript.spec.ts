@@ -97,21 +97,22 @@ describe('applySessionEvent', () => {
     expect(state.rows).toEqual([{ kind: 'user', text: 'hello world' }])
   })
 
-  it('removes the matching queued entry when a user/message lands', () => {
+  it('leaves the queue untouched when a user/message lands (chips clear driver-side only)', () => {
     let state = createInitialState()
     state = enqueue(state, 'hello')
     state = enqueue(state, 'still here')
     expect(state.queued).toEqual(['hello', 'still here'])
     state = applySessionEvent(state, { type: 'user/message', data: { text: 'hello', source: { kind: 'user' } } })
-    expect(state.queued).toEqual(['still here'])
+    // The fold renders the row only; chip clearing happens synchronously in
+    // the driver (flush / Ctrl+S / interrupt / recall), never event-driven.
+    expect(state.queued).toEqual(['hello', 'still here'])
     expect(state.rows).toEqual([{ kind: 'user', text: 'hello' }])
   })
 
-  it('leaves non-matching queued entries untouched on user/message', () => {
+  it('adds the user row on user/message with no queue interaction', () => {
     let state = createInitialState()
-    state = enqueue(state, 'pending')
     state = applySessionEvent(state, { type: 'user/message', data: { text: 'other', source: { kind: 'user' } } })
-    expect(state.queued).toEqual(['pending'])
+    expect(state.queued).toEqual([])
     expect(state.rows).toEqual([{ kind: 'user', text: 'other' }])
   })
 
@@ -254,7 +255,7 @@ describe('applySessionEvent', () => {
       expect(next).toBe(state)
     })
 
-    it('adds no row for kind user with no text blocks but still dequeues', () => {
+    it('adds no row for kind user with no text blocks and leaves the queue alone', () => {
       let state = createInitialState()
       state = enqueue(state, '')
       expect(state.queued).toEqual([''])
@@ -265,18 +266,18 @@ describe('applySessionEvent', () => {
           source: { kind: 'user' },
         },
       })
-      expect(state.queued).toEqual([])
+      expect(state.queued).toEqual([''])
       expect(state.rows).toEqual([])
     })
 
-    it('adds no row for kind user with whitespace-only text but still dequeues', () => {
+    it('adds no row for kind user with whitespace-only text and leaves the queue alone', () => {
       let state = createInitialState()
       state = enqueue(state, '   ')
       state = applySessionEvent(state, {
         type: 'user/message',
         data: { content: [{ type: 'text', text: '   ' }], source: { kind: 'user' } },
       })
-      expect(state.queued).toEqual([])
+      expect(state.queued).toEqual(['   '])
       expect(state.rows).toEqual([])
     })
   })

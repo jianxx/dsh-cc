@@ -26,6 +26,20 @@ export interface CommandItem {
 /** A workspace walk returns relative POSIX paths (no leading ./). */
 export type WorkspaceWalk = (cwd: string, signal: AbortSignal) => string[]
 
+/**
+ * Per-command argument completer: given the current argument word (may be
+ * empty) and the request's AbortSignal, return candidate items. The provider
+ * prefix-filters the returned values against the argument word, so a completer
+ * may return the full candidate list and let the provider narrow it.
+ */
+export type ArgCompleter = (
+  prefix: string,
+  signal: AbortSignal,
+) => AutocompleteItem[] | Promise<AutocompleteItem[]>
+
+/** Argument completers keyed by slash-command name (lowercase). */
+export type ArgCompleterMap = Readonly<Record<string, ArgCompleter>>
+
 const MAX_WALK_RESULTS = 200
 const MAX_WALK_DEPTH = 8
 
@@ -154,15 +168,18 @@ export class TuiAutocompleteProvider implements AutocompleteProvider {
   private readonly commands: readonly CommandItem[]
   private readonly cwd: string
   private readonly walk: WorkspaceWalk
+  private readonly argCompleters: ArgCompleterMap
 
   constructor(
     commands: readonly CommandItem[],
     cwd: string,
     walk: WorkspaceWalk = defaultWalk,
+    argCompleters: ArgCompleterMap = {},
   ) {
     this.commands = commands
     this.cwd = cwd
     this.walk = walk
+    this.argCompleters = argCompleters
   }
 
   async getSuggestions(
@@ -211,6 +228,29 @@ export class TuiAutocompleteProvider implements AutocompleteProvider {
       return { items, prefix: before }
     }
 
+    // --- /command argument completion --------------------------------------
+    // The editor's trigger pattern requires the trigger token to end the line,
+    // so it never fires once a space follows the command — argument suggestions
+    // are reachable only through explicit Tab. Dispatch to the per-command
+    // completer when one is registered; without one, stay at null (argument
+    // territory keeps the pre-completion behavior). An argument token starting
+    // with '@' never reaches here: the @-file branch above wins by design.
+    if (cursorLine === 0) {
+      const argMatch = /^\/(\S+)\s(.*)$/.exec(before)
+      if (argMatch !== null) {
+        const completer = this.argCompleters[argMatch[1]!.toLowerCase()]
+        if (completer === undefined) return null
+        const args = argMatch[2]!
+        const argPrefix = args.slice(tokenStart(args))
+        const candidates = await completer(argPrefix, options.signal)
+        if (options.signal.aborted) return null
+        const prefixLower = argPrefix.toLowerCase()
+        const items = candidates.filter(item => item.value.toLowerCase().startsWith(prefixLower))
+        if (items.length === 0) return null
+        return { items, prefix: argPrefix }
+      }
+    }
+
     return null
   }
 
@@ -252,6 +292,23 @@ export class TuiAutocompleteProvider implements AutocompleteProvider {
         lines: newLines,
         cursorLine,
         cursorCol: beforePrefix.length + item.value.length + suffix.length,
+      }
+    }
+
+    // Slash-command argument: replace only the current argument word, keeping
+    // the command name and everything before it intact. The prefix is exactly
+    // the word being replaced (see the argument branch in getSuggestions), so
+    // the generic before/after slicing already preserves the command; only the
+    // separator differs from plain insertion.
+    if (cursorLine === 0 && currentLine.startsWith('/') && beforePrefix.includes(' ')) {
+      const separator = afterCursor.startsWith(' ') || afterCursor.startsWith('\t') ? '' : ' '
+      const newLine = `${beforePrefix}${item.value}${separator}${afterCursor}`
+      const newLines = [...lines]
+      newLines[cursorLine] = newLine
+      return {
+        lines: newLines,
+        cursorLine,
+        cursorCol: beforePrefix.length + item.value.length + separator.length,
       }
     }
 

@@ -9,16 +9,24 @@ import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
+  clearQueue,
+  closeTodoPanel,
   createInitialState,
   enqueue,
+  markExitAttempt,
   moveModelPickerFocus,
   moveQuestionFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
+  popQueued,
   setApproval,
   setBusy,
   setModelPicker,
+  setNotice,
   setQuestion,
   setSessionSwitcher,
   setTodos,
+  toggleGlobalCollapse,
   toggleQuestionOption,
   typeQuestionText,
   upsertRow,
@@ -102,6 +110,7 @@ function fakeDriver(
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return promptHistory },
     subscribe(listener: (s: TuiState) => void) {
@@ -126,6 +135,10 @@ function fakeDriver(
     cyclePermissionMode() {},
     toggleThinking() {
       state = { ...state, thinkingExpanded: !state.thinkingExpanded }
+      for (const l of listeners) l(state)
+    },
+    toggleGlobalCollapse() {
+      state = toggleGlobalCollapse(state)
       for (const l of listeners) l(state)
     },
     answerApproval(_allowed: boolean) {
@@ -194,6 +207,37 @@ function fakeDriver(
     modelPickerCancel() {
       state = setModelPicker(state, undefined)
       for (const l of listeners) l(state)
+    },
+    toggleTodoPanel() {
+      state = state.todoPanel !== undefined ? closeTodoPanel(state) : openTodoPanel(state)
+      for (const l of listeners) l(state)
+    },
+    todoPanelMove(delta) {
+      state = moveTodoPanelFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    todoPanelClose() {
+      state = closeTodoPanel(state)
+      for (const l of listeners) l(state)
+    },
+    showNotice(text: string) {
+      state = setNotice(state, text)
+      for (const l of listeners) l(state)
+    },
+    markExitAttempt(now?: number) {
+      state = markExitAttempt(state, now ?? Date.now())
+      for (const l of listeners) l(state)
+    },
+    steerQueued() {
+      state = clearQueue(state)
+      for (const l of listeners) l(state)
+    },
+    recallQueued() {
+      const popped = popQueued(state)
+      if (popped.text === undefined) return undefined
+      state = popped.state
+      for (const l of listeners) l(state)
+      return popped.text
     },
     async openSessionSwitcher() {},
     sessionSwitcherMove() {},
@@ -362,6 +406,81 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('recalls the most recent queued entry into an empty editor on ↑', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setBusy(state, true)
+    state = enqueue(state, 'first idea')
+    state = enqueue(state, 'second idea')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('⏵ queued: second idea')
+
+    vt.sendInput('\x1b[A') // ↑ with an empty composer
+    await settle()
+
+    // The newest chip lands in the composer for editing and leaves the queue.
+    expect(root.editor.getText()).toBe('second idea')
+    expect(driver.state.queued).toEqual(['first idea'])
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('⏵ queued: second idea')
+    expect(stripped).toContain('⏵ queued: first idea')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('a non-empty editor walks history on ↑ without touching the queue', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = enqueue(state, 'queued one')
+    state = enqueue(state, 'queued two')
+    const driver = fakeDriver(state, ['history entry'])
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    for (const ch of 'abc') vt.sendInput(ch)
+    await settle()
+    vt.sendInput('\x01') // ctrl+a — cursor to col 0 (the editor's history-browse precondition)
+    await settle()
+    vt.sendInput('\x1b[A') // ↑ with a non-empty composer falls through to the editor
+    await settle()
+
+    // History navigation replaced the draft; the outbox was not popped.
+    expect(root.editor.getText()).toBe('history entry')
+    expect(driver.state.queued).toEqual(['queued one', 'queued two'])
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('Ctrl+S injects the queued entries immediately and clears the chips', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setBusy(state, true)
+    state = enqueue(state, 'fix the bug')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('⏵ queued: fix the bug')
+
+    vt.sendInput('\x13') // ctrl+s — queue-jump into the running turn
+    await settle()
+
+    expect(driver.state.queued).toEqual([])
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('⏵ queued:')
 
     root.tui.stop()
     root.destroy()
@@ -577,7 +696,7 @@ describe('vt-renderer', () => {
     await settle()
 
     const stripped = stripAnsi(vt.grid().join('\n'))
-    expect(stripped).toContain('thinking (3 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('thinking (3 lines — Ctrl+O to toggle)')
     expect(stripped).toContain('▸')
     // Collapsed: the body text must NOT leak into the grid.
     expect(stripped).not.toContain('let me reason')
@@ -600,7 +719,7 @@ describe('vt-renderer', () => {
     const stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('▾')
     expect(stripped).toContain('let me reason')
-    expect(stripped).not.toContain('Ctrl+O to expand')
+    expect(stripped).not.toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -617,7 +736,7 @@ describe('vt-renderer', () => {
     await settle()
 
     let stripped = stripAnsi(vt.grid().join('\n'))
-    expect(stripped).toContain('thinking (1 lines — Ctrl+O to expand)')
+    expect(stripped).toContain('thinking (1 lines — Ctrl+O to toggle)')
     expect(stripped).not.toContain('secret reasoning')
 
     // Flip the flag WITHOUT touching the rows array reference — the cached
@@ -627,7 +746,7 @@ describe('vt-renderer', () => {
 
     stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('secret reasoning')
-    expect(stripped).not.toContain('Ctrl+O to expand')
+    expect(stripped).not.toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -652,6 +771,96 @@ describe('vt-renderer', () => {
     stripped = stripAnsi(vt.grid().join('\n'))
     expect(stripped).toContain('hidden thought')
     expect(driver.state.thinkingExpanded).toBe(true)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('ctrl+o collapses tool output into a summary and a second press restores it', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 't1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'alpha output\nbeta output\ngamma output',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Default: tool output expanded (first result line visible, no summary).
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('alpha output')
+    expect(stripped).not.toContain('▸ output')
+
+    // Press 1: fresh state is mixed (thinking collapsed, tools expanded), so
+    // everything expands — tool output is unaffected.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.thinkingExpanded).toBe(true)
+    expect(driver.state.toolOutputExpanded).toBe(true)
+    expect(stripped).toContain('alpha output')
+
+    // Press 2: everything was expanded, so everything collapses — the result
+    // body disappears behind the dim summary line.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.thinkingExpanded).toBe(false)
+    expect(driver.state.toolOutputExpanded).toBe(false)
+    expect(stripped).not.toContain('alpha output')
+    expect(stripped).not.toContain('beta output')
+    expect(stripped).toContain('▸ output (3 lines — Ctrl+O to toggle)')
+
+    // Press 3: everything expands again — the result body returns.
+    vt.sendInput('\x0f') // ctrl+o
+    await settle()
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(driver.state.toolOutputExpanded).toBe(true)
+    expect(stripped).toContain('alpha output')
+    expect(stripped).not.toContain('▸ output')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('collapses a diff-card tool row on ctrl+o without leaving hunk lines behind', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = upsertRow(state, {
+      kind: 'tool',
+      callId: 'd1',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Press 1 expands everything (mixed start), press 2 collapses everything.
+    vt.sendInput('\x0f') // ctrl+o — expand
+    await settle()
+    vt.sendInput('\x0f') // ctrl+o — collapse
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('- old line')
+    expect(stripped).not.toContain('+ new line')
+    expect(stripped).toContain('Edit foo.ts')
+    expect(stripped).toContain('▸ output (')
+    expect(stripped).toContain('Ctrl+O to toggle')
 
     root.tui.stop()
     root.destroy()
@@ -1007,6 +1216,84 @@ describe('vt-renderer', () => {
     expect(rendered).not.toContain('\x1b[31m')
   })
 
+  it('hides tool output behind a dim summary when toolOutputExpanded is false', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c1',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'file one\nfile two\nfile three',
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    // Head line survives; the result body is dropped.
+    expect(stripped).toContain('ls -la ✓')
+    expect(stripped).not.toContain('file one')
+    expect(stripped).toContain('▸ output (3 lines — Ctrl+O to toggle)')
+  })
+
+  it('collapses diff hunks to the summary line when toolOutputExpanded is false', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c2',
+      name: 'Edit',
+      args: '{}',
+      title: 'Edit foo.ts',
+      running: false,
+      diffs: [{ path: 'foo.ts', oldText: 'old line\n', newText: 'new line\n' }],
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    expect(stripped).toContain('Edit foo.ts')
+    expect(stripped).not.toContain('- old line')
+    expect(stripped).not.toContain('+ new line')
+    expect(stripped).toContain('▸ output (')
+    expect(stripped).toContain('Ctrl+O to toggle')
+  })
+
+  it('omits the summary line for a collapsed tool row with no output at all', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c3',
+      name: 'bash',
+      args: '',
+      title: 'noop',
+      running: false,
+    }
+    const rendered = renderRowText(row, { toolOutputExpanded: false })
+    expect(rendered).not.toContain('▸ output')
+    expect(rendered).toContain('noop')
+  })
+
+  it('keeps tool output expanded by default (toolOutputExpanded defaults to true)', () => {
+    const row = {
+      kind: 'tool' as const,
+      callId: 'c4',
+      name: 'bash',
+      args: '{}',
+      title: 'ls -la',
+      running: false,
+      result: 'file one\nfile two',
+    }
+    // No options at all, and an options object without the flag — both must
+    // keep the existing expanded rendering so old callers stay compatible.
+    for (const options of [undefined, { thinkingExpanded: true }]) {
+      const rendered = renderRowText(row, options)
+      expect(rendered).toContain('file one')
+      expect(rendered).not.toContain('▸ output')
+    }
+  })
+
+  it('renders the collapsed thinking hint with toggle wording (not expand)', () => {
+    const row = { kind: 'thinking' as const, text: 'a\nb\nc' }
+    const rendered = renderRowText(row)
+    const stripped = rendered.replace(/\x1b\[[0-9;]*m/g, '')
+    expect(stripped).toContain('▸ thinking (3 lines — Ctrl+O to toggle)')
+    expect(stripped).not.toContain('Ctrl+O to expand')
+  })
+
   it('clears the editor text after submitting on Enter (regression — ff49148)', async () => {
     const vt = new VirtualTerminal(80, 24)
     const driver = fakeDriver()
@@ -1051,7 +1338,7 @@ describe('vt-renderer', () => {
     root.destroy()
   })
 
-  it('Ctrl+C (\\x03) when idle calls onQuit and does not interrupt', async () => {
+  it('a single idle Ctrl+C shows the exit hint and does not quit', async () => {
     const vt = new VirtualTerminal(80, 24)
     const driver = fakeDriver(createInitialState())
     let interrupted = 0
@@ -1064,8 +1351,198 @@ describe('vt-renderer', () => {
     vt.sendInput('\x03')
     await settle()
 
+    // First press only anchors the double-press window and hints.
+    expect(quitCalled).toBe(false)
+    expect(interrupted).toBe(0)
+    expect(driver.state.notice).toBe('Press Ctrl+C again to exit')
+    expect(driver.state.lastExitAttemptAt).toBeDefined()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('Press Ctrl+C again to exit')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('a second Ctrl+C within the double-press window quits', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+    let interrupted = 0
+    driver.interrupt = () => { interrupted++ }
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+    vt.sendInput('\x03')
+    await settle()
+
     expect(quitCalled).toBe(true)
     expect(interrupted).toBe(0)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('an idle Ctrl+C after the double-press window expired hints again instead of quitting', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    // Seed a stale exit attempt well outside the double-press window.
+    const driver = fakeDriver(markExitAttempt(createInitialState(), Date.now() - 10_000))
+    let quitCalled = false
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => { quitCalled = true } })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x03')
+    await settle()
+
+    expect(quitCalled).toBe(false)
+    expect(driver.state.notice).toBe('Press Ctrl+C again to exit')
+    // The stale anchor was replaced with a fresh one.
+    expect(driver.state.lastExitAttemptAt).toBeGreaterThan(Date.now() - 10_000)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('opens the todo panel on ctrl+t with status icons, focus marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'done thing', status: 'completed' },
+      { content: 'active thing', status: 'in_progress' },
+      { content: 'later thing', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t
+    await settle()
+
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Todos')
+    expect(stripped).toContain('☑ done thing')
+    expect(stripped).toContain('◐ active thing')
+    expect(stripped).toContain('☐ later thing')
+    // Focus marker sits on the first row.
+    expect(stripped).toContain('❯ ☑ done thing')
+    // Footer hint.
+    expect(stripped).toContain('↑↓ navigate')
+    expect(stripped).toContain('Esc close')
+    // The one-line todo strip is unaffected while the panel is open.
+    expect(stripped).toContain('☐ 1/3 · active thing')
+    // Modal: printable keys are consumed by the panel, never the editor.
+    vt.sendInput('x')
+    await settle()
+    expect(root.editor.getText()).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('closes the todo panel on a second ctrl+t (toggle)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [{ content: 'only task', status: 'pending' }])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    vt.sendInput('\x14') // ctrl+t — close
+    await settle()
+    expect(driver.state.todoPanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('↑↓ navigate')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('moves the todo panel focus with arrow keys (clamped, no wrap)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'first', status: 'pending' },
+      { content: 'second', status: 'in_progress' },
+      { content: 'third', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    vt.sendInput('\x1b[B') // arrow down
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 1 })
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ ◐ second')
+    expect(stripped).not.toContain('❯ ☐ first')
+
+    vt.sendInput('\x1b[A') // arrow up
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ ☐ first')
+
+    // Clamp at the top — does not wrap.
+    vt.sendInput('\x1b[A')
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('closes the todo panel on escape', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [{ content: 'a task', status: 'pending' }])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    vt.sendInput('\x1b') // escape — close
+    await settle()
+    expect(driver.state.todoPanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('↑↓ navigate')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('shows a placeholder when the todo panel opens with no todos', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Todos')
+    expect(stripped).toContain('No todos')
 
     root.tui.stop()
     root.destroy()

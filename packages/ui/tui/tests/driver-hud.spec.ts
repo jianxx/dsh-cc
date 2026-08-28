@@ -147,6 +147,48 @@ describe('createDriver hud (sessionProjections feed)', () => {
     expect(driver.state.hud?.contextPercent).toBe(25)
   })
 
+  it('exposes raw occupancy tokens next to the percent (anchor-adjusted)', async () => {
+    const projections = makeProjections()
+    const { ctx } = makeHudCtx({ projections })
+    const driver = await createDriver(ctx as never, { cwd: '/w/proj', branchProbe: async () => undefined })
+
+    projections.fire('s-a', 'contextPressure', {
+      contextWindow: 200_000,
+      pressureTokens: 85_000,
+      surfaceTokens: 3_000,
+      sampledSurfaceTokens: 2_000,
+    })
+    // Numerator is the raw projected count (sample + surface movement), never
+    // back-derived from the rounded percent.
+    expect(driver.state.hud?.contextTokens).toEqual({ used: 86_000, window: 200_000 })
+    expect(driver.state.hud?.contextPercent).toBe(43)
+    expect(driver.statusLine).toContain('ctx 43% (86k/200k)')
+  })
+
+  it('falls back to the bare sample for raw tokens when no anchor exists', async () => {
+    const projections = makeProjections()
+    const { ctx } = makeHudCtx({ projections })
+    const driver = await createDriver(ctx as never, { cwd: '/w/proj', branchProbe: async () => undefined })
+
+    projections.fire('s-a', 'contextPressure', {
+      contextWindow: 100_000,
+      pressureTokens: 41_500,
+    })
+    expect(driver.state.hud?.contextTokens).toEqual({ used: 41_500, window: 100_000 })
+    expect(driver.state.hud?.contextPercent).toBe(42)
+  })
+
+  it('keeps raw tokens without a window and omits the percent', async () => {
+    const projections = makeProjections()
+    const { ctx } = makeHudCtx({ projections })
+    const driver = await createDriver(ctx as never, { cwd: '/w/proj', branchProbe: async () => undefined })
+
+    projections.fire('s-a', 'contextPressure', { pressureTokens: 500 })
+    expect(driver.state.hud?.contextTokens).toEqual({ used: 500, window: undefined })
+    expect(driver.state.hud?.contextPercent).toBeUndefined()
+    expect(driver.statusLine).not.toContain('ctx')
+  })
+
   it('ignores projection changes for another session id', async () => {
     const projections = makeProjections()
     const { ctx } = makeHudCtx({ projections })

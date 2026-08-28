@@ -5,11 +5,18 @@
  * @module @jianxx/dsh-cc-tui/state/driver-types
  */
 
+import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
 
 export interface Driver {
   readonly state: TuiState
   readonly statusLine: string
+  /**
+   * Width-aware status line: same content as {@link Driver.statusLine}, but
+   * the parenthetical context detail is omitted when the line would not fit
+   * `width` columns. Without a width the full line is returned.
+   */
+  statusLineIn(width?: number): string
   /** Session working directory, used for `@`-path completion. */
   readonly cwd: string
   /**
@@ -22,7 +29,27 @@ export interface Driver {
   setDraft(draft: string): void
   submit(text?: string): Promise<void>
   interrupt(): void
+  /**
+   * Queue-jump (Ctrl+S): inject every queued outbox entry into the running
+   * turn immediately — FIFO `agent.steer` per entry, with the queue cleared
+   * in the same synchronous stroke as the dispatch. A no-op when the queue
+   * is empty.
+   */
+  steerQueued(): void
+  /**
+   * Pop the LAST queued entry (LIFO — the most recent submit) back out of
+   * the outbox for editing (empty-composer ↑). Returns the text, or
+   * `undefined` when the queue is empty (same-reference no-op).
+   */
+  recallQueued(): string | undefined
   cyclePermissionMode(): void
+  /**
+   * Flip the global collapse state (Ctrl+O): thinking rows and tool output
+   * collapse together, or both expand back. Supersedes {@link Driver.toggleThinking},
+   * which is retained for compatibility.
+   */
+  toggleGlobalCollapse(): void
+  /** Legacy thinking-only flip; kept for compatibility with Ctrl+O's old behavior. */
   toggleThinking(): void
   answerApproval(allowed: boolean): void
   /**
@@ -82,6 +109,29 @@ export interface Driver {
   /** Close the overlay without switching. */
   sessionSwitcherCancel(): void
   /**
+   * Toggle the Ctrl+T todo panel: open it focused on the first row when
+   * closed (rendering a placeholder when the session has no todos), or close
+   * it when open. Pure store evolution — no harness calls.
+   */
+  toggleTodoPanel(): void
+  /** Move the todo-panel focus by one row (clamped; no wrap). */
+  todoPanelMove(delta: -1 | 1): void
+  /** Close the todo panel. */
+  todoPanelClose(): void
+  /**
+   * Show a one-line transient notice above the composer. The notice clears
+   * itself after `ttlMs` (default 3000); a newer notice replaces the pending
+   * clear timer of the previous one.
+   */
+  showNotice(text: string, ttlMs?: number): void
+  /**
+   * Record the moment of an idle Ctrl+C press — the anchor for the
+   * double-press-to-exit window. Pure state evolution; callers pass the
+   * timestamp they compared against so anchor and comparison share one clock
+   * read. Defaults to `Date.now()`.
+   */
+  markExitAttempt(now?: number): void
+  /**
    * Switch the live agent to a different persisted session in-process: dispose
    * the current handle, resume the target, replay its history through the same
    * fold the boot path uses, and reset the transcript. No-op when `id` matches
@@ -91,6 +141,12 @@ export interface Driver {
   switchSession(id: string): Promise<void>
   /** List persisted sessions (newest-first absent — the caller sorts). */
   listSessions(): Promise<readonly { id: string; cwd?: string; createdAt: number }[]>
+  /**
+   * Live LLM model catalog (`provider`/`id`/`name` per advertised model), the
+   * same list `/model` resolves its argument against. Used by slash argument
+   * completion; fetched per call so it never goes stale.
+   */
+  loadModelCatalog(): Promise<readonly CatalogEntry[]>
   /**
    * Merged slash-command catalog: TUI-local commands first, then harness
    * commands (deduped by name, local wins). The array identity is stable

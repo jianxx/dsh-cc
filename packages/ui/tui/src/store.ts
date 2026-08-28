@@ -138,6 +138,12 @@ export interface HudView {
   contextPercent?: number
   /** Cumulative provider-reported token totals. */
   tokens?: { input: number; output: number }
+  /**
+   * Raw occupancy behind `contextPercent` for exact rendering. The numerator
+   * is the projected token count — never back-derived from the rounded
+   * percent. `window` is absent when the projection does not report one.
+   */
+  contextTokens?: { readonly used: number; readonly window?: number }
 }
 
 /**
@@ -147,6 +153,14 @@ export interface HudView {
 export interface TodoItemView {
   content: string
   status: 'pending' | 'in_progress' | 'completed'
+}
+
+/**
+ * Live view of the Ctrl+T todo panel overlay: only the interaction state the
+ * panel mutates (the focused row index); the rows come from `state.todos`.
+ */
+export interface TodoPanelView {
+  focused: number
 }
 
 export interface TuiState {
@@ -159,16 +173,33 @@ export interface TuiState {
   question?: QuestionView
   modelPicker?: ModelPickerView
   sessionSwitcher?: SessionSwitcherView
-  /** Texts submitted while the agent was busy (pending steering). */
+  /**
+   * Outbox of texts submitted while the agent was busy: rendered as pending
+   * chips, flushed into the next turn on durable `turn/end` (or injected
+   * immediately via Ctrl+S). Idle submits bypass the outbox entirely.
+   */
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
   thinkingExpanded: boolean
+  /**
+   * Whether tool rows render their output (body/result/diffs) expanded
+   * (Ctrl+O). Expanded by default — collapsing is opt-in via the toggle.
+   */
+  toolOutputExpanded: boolean
   /** Observed subagent runs (newest appended; capped at 20). */
   subagents: readonly SubagentRunView[]
   /** Statusline HUD (context %, token totals) from the projections feed. */
   hud?: HudView
   /** Session todo list (whole-list last-wins; absent before the first write). */
   todos?: readonly TodoItemView[]
+  /** Open Ctrl+T todo panel; absent while closed. */
+  todoPanel?: TodoPanelView
+  /**
+   * Timestamp (`Date.now()`) of the last idle Ctrl+C press — the anchor for
+   * the double-press-to-exit window. Never cleared: a stale anchor simply
+   * falls outside the window, so the next press starts a new attempt.
+   */
+  lastExitAttemptAt?: number
 }
 
 /** Empty composer + idle agent. */
@@ -180,6 +211,7 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     permissionMode,
     queued: [],
     thinkingExpanded: false,
+    toolOutputExpanded: true,
     subagents: [],
   }
 }
@@ -343,6 +375,15 @@ export function setNotice(state: TuiState, notice: string | undefined): TuiState
   return notice === undefined ? rest : { ...rest, notice }
 }
 
+/**
+ * Record the moment of an idle Ctrl+C press (the double-press-to-exit window
+ * anchor). Pure state evolution — the window comparison itself lives at the
+ * input layer.
+ */
+export function markExitAttempt(state: TuiState, at: number): TuiState {
+  return { ...state, lastExitAttemptAt: at }
+}
+
 /** Park a submitted text as pending steering while the agent is busy. */
 export function enqueue(state: TuiState, text: string): TuiState {
   return { ...state, queued: [...state.queued, text] }
@@ -350,14 +391,25 @@ export function enqueue(state: TuiState, text: string): TuiState {
 
 /**
  * Remove the FIRST queued entry strictly equal to `text`. No-op (returns the
- * same reference) when the text is absent — so the matching chip clears the
- * instant its durable `user/message` lands in the transcript.
+ * same reference) when the text is absent. Kept for outbox bookkeeping and
+ * tests — chip clearing in the live driver is synchronous (flush / Ctrl+S /
+ * interrupt / recall), never event-driven.
  */
 export function dequeue(state: TuiState, text: string): TuiState {
   const index = state.queued.findIndex(entry => entry === text)
   if (index < 0) return state
   const queued = state.queued.slice(0, index).concat(state.queued.slice(index + 1))
   return { ...state, queued }
+}
+
+/**
+ * Remove and return the LAST queued entry — LIFO, so an editor recall hands
+ * back the most recent submit. Same reference and `undefined` text on an
+ * empty queue; callers treat that as "nothing to recall" and fall through.
+ */
+export function popQueued(state: TuiState): { state: TuiState; text: string | undefined } {
+  if (state.queued.length === 0) return { state, text: undefined }
+  return { state: { ...state, queued: state.queued.slice(0, -1) }, text: state.queued.at(-1) }
 }
 
 /** Drop every queued chip (e.g. on interrupt — matches cancel's inbox clear). */
@@ -369,6 +421,21 @@ export function clearQueue(state: TuiState): TuiState {
 /** Flip the thinking-accordion expansion flag (Ctrl+O). */
 export function toggleThinking(state: TuiState): TuiState {
   return { ...state, thinkingExpanded: !state.thinkingExpanded }
+}
+
+/**
+ * Flip the global collapse state (Ctrl+O): everything expanded collapses,
+ * anything else expands. Only the all-expanded state counts as "open" so the
+ * toggle is a clean two-way switch between fully expanded and fully
+ * collapsed, regardless of how the individual flags got there.
+ */
+export function toggleGlobalCollapse(state: TuiState): TuiState {
+  const allExpanded = state.thinkingExpanded && state.toolOutputExpanded
+  return {
+    ...state,
+    thinkingExpanded: !allExpanded,
+    toolOutputExpanded: !allExpanded,
+  }
 }
 
 /** Maximum subagent runs retained in state; oldest done drops first. */
@@ -430,6 +497,7 @@ export function setHud(state: TuiState, patch: Partial<HudView> | undefined): Tu
     ...base,
     ...patch.contextPercent === undefined ? {} : { contextPercent: patch.contextPercent },
     ...patch.tokens === undefined ? {} : { tokens: patch.tokens },
+    ...patch.contextTokens === undefined ? {} : { contextTokens: patch.contextTokens },
   }
   return { ...state, hud: merged }
 }
@@ -446,6 +514,41 @@ export function setTodos(state: TuiState, todos: readonly TodoItemView[] | undef
     return rest
   }
   return { ...state, todos }
+}
+
+/** Park or clear the Ctrl+T todo panel overlay. */
+export function setTodoPanel(state: TuiState, panel: TodoPanelView | undefined): TuiState {
+  if (panel === undefined) {
+    if (state.todoPanel === undefined) return state
+    const { todoPanel: _dropped, ...rest } = state
+    return rest
+  }
+  return { ...state, todoPanel: panel }
+}
+
+/** Open the todo panel, focused on the first row (empty list included). */
+export function openTodoPanel(state: TuiState): TuiState {
+  return setTodoPanel(state, { focused: 0 })
+}
+
+/** Close the todo panel. */
+export function closeTodoPanel(state: TuiState): TuiState {
+  return setTodoPanel(state, undefined)
+}
+
+/**
+ * Move the todo-panel focus by one row, clamped to [0, todos.length-1]
+ * (no wrap). A no-op when the panel is closed or the todo list is empty or
+ * absent — those return the same state reference.
+ */
+export function moveTodoPanelFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const panel = state.todoPanel
+  const todos = state.todos
+  if (panel === undefined || todos === undefined || todos.length === 0) return state
+  const max = todos.length - 1
+  const focused = Math.max(0, Math.min(panel.focused + delta, max))
+  if (focused === panel.focused) return state
+  return setTodoPanel(state, { focused })
 }
 
 /**
