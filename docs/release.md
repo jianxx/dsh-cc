@@ -1,6 +1,6 @@
 # Release (npm) runbook
 
-本文面向 dsh-cc-plugins 的维护者。tag 推送自动发布全部非 private 包到 npmjs;
+本文面向 dsh-cc 的维护者。tag 推送自动发布全部非 private 包到 npmjs;
 版本走 lockstep(所有可发布包同版号)。发布由本仓 `.github/workflows/publish.yml`
 驱动,presubmit 不做发布。
 
@@ -31,7 +31,7 @@ npmjs 并打 GitHub Release。CI 校验 tag 与版本清单一致(`scripts/check
 发布脚本带 dry-run:
 
 ```bash
-pnpm release <x.y.z[-rc.N>] --dry-run   # 先看会改哪些版本、改哪个 tag,不改任何文件
+pnpm release <x.y.z[-rc.N]> --dry-run   # 先看会改哪些版本、改哪个 tag,不改任何文件
 pnpm release <x.y.z[-rc.N]>             # 改写所有可发布包版本 → 提交 → 打 tag
 ```
 
@@ -67,7 +67,7 @@ git push origin main vX.Y.Z
 把静态 token 换成 OIDC 短时凭据;发布 workflow 已内置兼容,无需改文件。
 
 1. npmjs 里对**每个包**:Settings → Trusted Publisher ➜ 新增 trusted publisher,
-   填 `jianxx` / `dsh-cc-plugins` / `publish.yml` / `npm-publish`。
+   填 `jianxx` / `dsh-cc` / `publish.yml` / `npm-publish`。
 2. 全部包配完后,删除 GitHub 的 `NPM_TOKEN` secret。
 3. 用**下一个 rc tag** 验证 OIDC 路径确能发布,再切换日常流程。
 4. 若 OIDC 失败,回退 = 重新补上 `NPM_TOKEN` secret(不必动别的)。

@@ -1,5 +1,5 @@
 # =============================================================================
-# Publish (npm) — dsh-cc-plugins
+# Publish (npm) — dsh-cc
 #
 # v* tag 推送触发:执行与 presubmit 等价的完整检查链(另加发布专属门禁),
 # 再把全部非 private 包发布到 npmjs。presubmit 不监听 tag,故本 workflow
@@ -12,7 +12,7 @@
 #
 # 认证两阶段:bootstrap 期在仓库 secret 配置 NPM_TOKEN(granular)走 token;
 # 升级为 npm Trusted Publishing(OIDC)时在 npmjs 为每个包配置 trusted
-# publisher(org=jianxx, repo=dsh-cc-plugins, workflow=publish.yml,
+# publisher(org=jianxx, repo=dsh-cc, workflow=publish.yml,
 # environment=npm-publish),然后删除 NPM_TOKEN secret —— 本文件无需改动。
 # =============================================================================
 name: Publish (npm)
@@ -49,13 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: dsh-cc-plugins
+          path: dsh-cc
           ref: ${{ env.TAG }}
           fetch-depth: 0   # merge-base 祖先门禁需要全历史
 
       # 廉价门禁放最前:失败时不必等装依赖/构建 harness
       - name: Tag gates (ancestor of main; versions match tag)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: |
           git fetch origin main --quiet
           git merge-base --is-ancestor "${TAG}^{commit}" origin/main || { echo "::error::tag $TAG 不在 origin/main 上 —— 先把 main 推上去:git push origin main $TAG(或仅对已推送的 main 提交重新打 tag)"; exit 1; }
@@ -63,7 +63,7 @@ jobs:
 
       # 与 presubmit.yml 单一事实源:锚定 env 块里唯一的 SHA 行,0 个或 2+ 个匹配即失败
       - name: Derive DSH_HARNESS_REF from presubmit.yml
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: |
           hits=$(grep -cE '^\s*DSH_HARNESS_REF:\s*[0-9a-f]{40}' .github/workflows/presubmit.yml)
           [ "$hits" = "1" ] || { echo "::error::presubmit.yml 中 DSH_HARNESS_REF 不唯一($hits 处)"; exit 1; }
@@ -86,24 +86,24 @@ jobs:
           node-version: 22   # 特意不配 registry-url:token/OIDC 在发布步显式区分
           cache: pnpm
           cache-dependency-path: |
-            dsh-cc-plugins/pnpm-lock.yaml
+            dsh-cc/pnpm-lock.yaml
             deepseek-harness/pnpm-lock.yaml
 
       - name: Spec dependency declarations (check:spec-deps)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: node scripts/check-spec-deps.mjs
 
       - name: Publishable manifest invariants (check:publish)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: node scripts/check-publish-manifests.mjs
 
       # 与 presubmit 保持一致:纯静态扫描,挡 vendor 污染与 harness 边界突破
       - name: TUI boundary (check:tui-boundary)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: node scripts/check-tui-boundary.mjs
 
       - name: Vendored pi-tui purity (check:vendor-purity)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: node scripts/check-vendor-purity.mjs
 
       # harness lib 缓存只 restore 不 save:缓存在 presubmit 侧生产,发布只消费
@@ -126,30 +126,30 @@ jobs:
         working-directory: deepseek-harness
         run: pnpm run build:lib
 
-      - name: Install dsh-cc-plugins deps
-        working-directory: dsh-cc-plugins
+      - name: Install dsh-cc deps
+        working-directory: dsh-cc
         env:
           HUSKY: 0
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck ≡ Build (tsc -b project references)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: pnpm typecheck
 
       - name: Bundle client (tsdown → lib/client.js)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: pnpm run bundle:client
 
       - name: Export targets (check:exports)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: pnpm check:exports
 
       - name: Unit tests (vitest)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: pnpm test
 
       - name: check:subagent-paste
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         run: pnpm check:subagent-paste
 
       - name: Resolve dist-tag (prerelease → next; stable → latest)
@@ -181,13 +181,13 @@ jobs:
       # and dies mid-set with E429. The script skips versions already on
       # the registry, so reruns only attempt the remainder.
       - name: Publish all packages (skips versions already on the registry)
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         env:
           PUBLISH_DELAY_MS: 8000
         run: node scripts/publish-packages.mjs --tag "$DIST_TAG" --provenance --no-git-checks
 
       - name: GitHub Release
-        working-directory: dsh-cc-plugins
+        working-directory: dsh-cc
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
