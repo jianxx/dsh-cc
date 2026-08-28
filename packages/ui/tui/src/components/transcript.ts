@@ -17,6 +17,7 @@ import type { TranscriptRow } from '../store.ts'
 import { toolVerb } from '../tool-verbs.ts'
 import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
+import { groupReadRows, readGroupCacheKey, renderReadGroup } from './read-group.ts'
 import { cyan, dim, italic, red, yellow } from './theme.ts'
 
 /** Drop oldest rows once the total source-line count exceeds this. */
@@ -93,12 +94,19 @@ function buildChild(row: TranscriptRow, options?: RowRenderOptions): Component {
 }
 
 /**
+ * Cache key space for child reuse. Plain rows key by their object reference
+ * (the store only replaces changed row objects); read-group items key by
+ * their member callId list, since the collapsed summary is independent of
+ * result payloads and member rows are replaced on every result arrival.
+ */
+type ChildCacheKey = TranscriptRow | string
+
+/**
  * Container that renders transcript rows as stacked Text/Markdown components.
  * Call `setRows` whenever the driver emits a new state.
  */
 export class TranscriptView extends Container {
-  private prevRows: readonly TranscriptRow[] = []
-  private prevChildren: Component[] = []
+  private prevCache = new Map<ChildCacheKey, Component>()
   private prevThinkingExpanded = false
 
   setRows(rows: readonly TranscriptRow[], options?: RowRenderOptions): void {
@@ -106,7 +114,9 @@ export class TranscriptView extends Container {
     const thinkingFlagChanged = thinkingExpanded !== this.prevThinkingExpanded
 
     // Apply the line budget: drop oldest rows until under budget (always keep
-    // at least one row so a single huge paste is not emptied entirely).
+    // at least one row so a single huge paste is not emptied entirely). The
+    // budget counts RAW rows; read grouping happens strictly after clipping
+    // and only affects rendering.
     const clipped = Array.from(rows)
     let dropped = 0
     let total = clipped.reduce((sum, r) => sum + rowSourceLines(r), 0)
@@ -116,25 +126,28 @@ export class TranscriptView extends Container {
       dropped++
     }
 
-    // Build children with per-row identity caching. The store's immutable
-    // updates only replace changed row objects, so reference equality at the
-    // same index lets us reuse the existing component (and its render cache).
-    // Thinking rows are the exception: their rendering depends on the
-    // thinkingExpanded flag, so a flag change forces a rebuild even when the
-    // row reference is unchanged (toggleThinking does not touch the rows array).
+    // Build children with identity caching. The store's immutable updates
+    // only replace changed row objects, so reference-keyed reuse keeps the
+    // existing component (and its render cache) for unchanged rows. Thinking
+    // rows are the exception: their rendering depends on the thinkingExpanded
+    // flag, so a flag change forces a rebuild even when the row reference is
+    // unchanged (toggleThinking does not touch the rows array).
+    const cache = new Map<ChildCacheKey, Component>()
     const rowChildren: Component[] = []
-    for (let i = 0; i < clipped.length; i++) {
-      const row = clipped[i]!
-      const thinkingStale = thinkingFlagChanged && row.kind === 'thinking'
-      if (
-        i < this.prevChildren.length &&
-        this.prevRows[i] === row &&
-        !thinkingStale
-      ) {
-        rowChildren.push(this.prevChildren[i]!)
-      } else {
-        rowChildren.push(buildChild(row, { thinkingExpanded }))
+    for (const item of groupReadRows(clipped)) {
+      if (item.kind === 'readGroup') {
+        const key = readGroupCacheKey(item.rows)
+        const child = this.prevCache.get(key) ?? new Text(renderReadGroup(item.rows), 0, 0)
+        cache.set(key, child)
+        rowChildren.push(child)
+        continue
       }
+      const row = item.row
+      const thinkingStale = thinkingFlagChanged && row.kind === 'thinking'
+      const child = (thinkingStale ? undefined : this.prevCache.get(row))
+        ?? buildChild(row, { thinkingExpanded })
+      cache.set(row, child)
+      rowChildren.push(child)
     }
 
     // Prepend a dim clip indicator when rows were dropped.
@@ -142,8 +155,7 @@ export class TranscriptView extends Container {
       ? [new Text(dim(`… earlier output hidden (${dropped} rows)`), 0, 0), ...rowChildren]
       : rowChildren
 
-    this.prevRows = clipped
-    this.prevChildren = rowChildren
+    this.prevCache = cache
     this.prevThinkingExpanded = thinkingExpanded
   }
 }
