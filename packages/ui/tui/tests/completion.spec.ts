@@ -67,6 +67,134 @@ describe('TuiAutocompleteProvider — slash commands', () => {
   })
 })
 
+describe('TuiAutocompleteProvider — slash argument completion (explicit Tab)', () => {
+  // The editor's trigger pattern requires the trigger token to end the line,
+  // so it never fires once a space follows the command — argument suggestions
+  // are reachable only through explicit Tab. Tab lands here as a plain
+  // getSuggestions call with the cursor right after the argument word; these
+  // tests pin that path.
+  const MODEL_ITEMS = [
+    { value: 'prov-a/m-one', label: 'prov-a/m-one' },
+    { value: 'prov-b/m-two', label: 'prov-b/m-two' },
+  ]
+
+  it('completes the argument after "/model " via the registered completer', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/model '], 0, '/model '.length, { signal: sig })
+    expect(out).not.toBeNull()
+    expect(out!.items.map(i => i.value)).toEqual(['prov-a/m-one', 'prov-b/m-two'])
+    // Empty argument word: the prefix handed to applyCompletion is ''.
+    expect(out!.prefix).toBe('')
+  })
+
+  it('prefix-filters completer output against the current argument word', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/model prov-b'], 0, '/model prov-b'.length, { signal: sig })
+    expect(out).not.toBeNull()
+    expect(out!.items.map(i => i.value)).toEqual(['prov-b/m-two'])
+    expect(out!.prefix).toBe('prov-b')
+  })
+
+  it('filters case-insensitively on the argument word', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/model PROV-B'], 0, 13, { signal: sig })
+    expect(out).not.toBeNull()
+    expect(out!.items.map(i => i.value)).toEqual(['prov-b/m-two'])
+  })
+
+  it('completes the last argument word in a multi-word argument line', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/model prov-a/m-one prov-b'], 0, 26, { signal: sig })
+    expect(out).not.toBeNull()
+    expect(out!.items.map(i => i.value)).toEqual(['prov-b/m-two'])
+    expect(out!.prefix).toBe('prov-b')
+  })
+
+  it('returns null for a command with no registered completer', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/resume '], 0, 8, { signal: sig })
+    expect(out).toBeNull()
+  })
+
+  it('returns null when the completer yields no prefix matches', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const sig = new AbortController().signal
+    const out = await provider.getSuggestions(['/model zzz'], 0, 10, { signal: sig })
+    expect(out).toBeNull()
+  })
+
+  it('forwards the AbortSignal to the completer', async () => {
+    let seen: AbortSignal | undefined
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async (_prefix, signal) => {
+        seen = signal
+        return MODEL_ITEMS
+      },
+    })
+    const ctrl = new AbortController()
+    await provider.getSuggestions(['/model '], 0, 7, { signal: ctrl.signal })
+    expect(seen).toBe(ctrl.signal)
+  })
+
+  it('returns null when the signal is already aborted', async () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const ctrl = new AbortController()
+    ctrl.abort()
+    const out = await provider.getSuggestions(['/model '], 0, 7, { signal: ctrl.signal })
+    expect(out).toBeNull()
+  })
+
+  it('applyCompletion replaces only the argument word (command name untouched)', () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const item = { value: 'prov-a/m-one', label: 'prov-a/m-one' }
+    const out = provider.applyCompletion(['/model pr'], 0, 9, item, 'pr')
+    expect(out.lines).toEqual(['/model prov-a/m-one '])
+    expect(out.cursorLine).toBe(0)
+    expect(out.cursorCol).toBe('/model prov-a/m-one '.length)
+  })
+
+  it('applyCompletion inserts at the cursor when the argument word is empty', () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const item = { value: 'prov-a/m-one', label: 'prov-a/m-one' }
+    const out = provider.applyCompletion(['/model '], 0, 7, item, '')
+    expect(out.lines).toEqual(['/model prov-a/m-one '])
+    expect(out.cursorCol).toBe('/model prov-a/m-one '.length)
+  })
+
+  it('applyCompletion preserves text after the cursor without doubling spaces', () => {
+    const provider = new TuiAutocompleteProvider(COMMANDS, '/unused', undefined, {
+      model: async () => MODEL_ITEMS,
+    })
+    const item = { value: 'prov-a/m-one', label: 'prov-a/m-one' }
+    const out = provider.applyCompletion(['/model pr tail'], 0, 9, item, 'pr')
+    expect(out.lines).toEqual(['/model prov-a/m-one tail'])
+    expect(out.cursorCol).toBe('/model prov-a/m-one'.length)
+  })
+})
+
 describe('TuiAutocompleteProvider — @ file completion (injected walk)', () => {
   // Directories carry a trailing '/' — matching defaultWalk's contract.
   const TREE = ['src/ten.js', 'src/text.js', 'src/deep/', 'src/deep/inner.ts', 'README.md']

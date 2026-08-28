@@ -1185,6 +1185,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     async listSessions() {
       return listSessions()
     },
+    async loadModelCatalog() {
+      return loadCatalog()
+    },
     listCommands() {
       return commandCatalog
     },

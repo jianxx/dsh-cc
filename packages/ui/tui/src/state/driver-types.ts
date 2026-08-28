@@ -5,6 +5,7 @@
  * @module @jianxx/dsh-cc-tui/state/driver-types
  */
 
+import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
 
 export interface Driver {
@@ -91,6 +92,12 @@ export interface Driver {
   switchSession(id: string): Promise<void>
   /** List persisted sessions (newest-first absent — the caller sorts). */
   listSessions(): Promise<readonly { id: string; cwd?: string; createdAt: number }[]>
+  /**
+   * Live LLM model catalog (`provider`/`id`/`name` per advertised model), the
+   * same list `/model` resolves its argument against. Used by slash argument
+   * completion; fetched per call so it never goes stale.
+   */
+  loadModelCatalog(): Promise<readonly CatalogEntry[]>
   /**
    * Merged slash-command catalog: TUI-local commands first, then harness
    * commands (deduped by name, local wins). The array identity is stable

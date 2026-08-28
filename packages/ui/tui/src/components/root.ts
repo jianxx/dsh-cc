@@ -26,6 +26,7 @@ import type { Driver } from '../state/driver-types.ts'
 import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
+import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
@@ -140,8 +141,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// driver's command catalog changes identity (driver.listCommands() returns a
 	// stable reference until commands/change fires) — cheap reference compare on
 	// every state emit, rebuild only when the catalog actually moved.
+	// Argument completers (`/model`, `/resume`) are driver-backed and fetch per
+	// request, so a single map built once at mount never goes stale.
+	const argCompleters = buildArgCompleters(driver)
 	let lastCatalog = driver.listCommands()
-	let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd)
+	let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd, undefined, argCompleters)
 	editor.setAutocompleteProvider(autocompleteProvider)
 
 	const statusline = new Text(driver.statusLine, 0, 0)
@@ -282,7 +286,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		const latestCatalog = driver.listCommands()
 		if (latestCatalog !== lastCatalog) {
 			lastCatalog = latestCatalog
-			autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd)
+			autocompleteProvider = new TuiAutocompleteProvider(latestCatalog, driver.cwd, undefined, argCompleters)
 			editor.setAutocompleteProvider(autocompleteProvider)
 		}
 
