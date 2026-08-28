@@ -40,11 +40,14 @@ import {
   backspaceQuestionText,
   clearQueue,
   clearRows,
+  closeTodoPanel,
   createInitialState,
   enqueue,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveSessionSwitcherFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
   setApproval,
   setBusy,
   setDraft,
@@ -881,6 +884,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setApproval(state, undefined))
     emit(setQuestion(state, undefined))
     emit(setModelPicker(state, undefined))
+    emit(closeTodoPanel(state))
     emit(clearQueue(setBusy(state, false)))
 
     // Resume first: keeps the old session alive if resume throws. The harness
@@ -1212,6 +1216,19 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     sessionSwitcherCancel() {
       emit(setSessionSwitcher(state, undefined))
+    },
+    toggleTodoPanel() {
+      if (state.todoPanel !== undefined) {
+        emit(closeTodoPanel(state))
+        return
+      }
+      emit(openTodoPanel(state))
+    },
+    todoPanelMove(delta) {
+      emit(moveTodoPanelFocus(state, delta))
+    },
+    todoPanelClose() {
+      emit(closeTodoPanel(state))
     },
     async switchSession(id) {
       await switchSession(id)

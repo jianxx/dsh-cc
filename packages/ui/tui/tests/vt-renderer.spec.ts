@@ -9,10 +9,13 @@ import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
+  closeTodoPanel,
   createInitialState,
   enqueue,
   moveModelPickerFocus,
   moveQuestionFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
   setApproval,
   setBusy,
   setModelPicker,
@@ -194,6 +197,18 @@ function fakeDriver(
     },
     modelPickerCancel() {
       state = setModelPicker(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    toggleTodoPanel() {
+      state = state.todoPanel !== undefined ? closeTodoPanel(state) : openTodoPanel(state)
+      for (const l of listeners) l(state)
+    },
+    todoPanelMove(delta) {
+      state = moveTodoPanelFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    todoPanelClose() {
+      state = closeTodoPanel(state)
       for (const l of listeners) l(state)
     },
     async openSessionSwitcher() {},
@@ -1067,6 +1082,149 @@ describe('vt-renderer', () => {
 
     expect(quitCalled).toBe(true)
     expect(interrupted).toBe(0)
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('opens the todo panel on ctrl+t with status icons, focus marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'done thing', status: 'completed' },
+      { content: 'active thing', status: 'in_progress' },
+      { content: 'later thing', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t
+    await settle()
+
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Todos')
+    expect(stripped).toContain('☑ done thing')
+    expect(stripped).toContain('◐ active thing')
+    expect(stripped).toContain('☐ later thing')
+    // Focus marker sits on the first row.
+    expect(stripped).toContain('❯ ☑ done thing')
+    // Footer hint.
+    expect(stripped).toContain('↑↓ navigate')
+    expect(stripped).toContain('Esc close')
+    // The one-line todo strip is unaffected while the panel is open.
+    expect(stripped).toContain('☐ 1/3 · active thing')
+    // Modal: printable keys are consumed by the panel, never the editor.
+    vt.sendInput('x')
+    await settle()
+    expect(root.editor.getText()).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('closes the todo panel on a second ctrl+t (toggle)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [{ content: 'only task', status: 'pending' }])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    vt.sendInput('\x14') // ctrl+t — close
+    await settle()
+    expect(driver.state.todoPanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('↑↓ navigate')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('moves the todo panel focus with arrow keys (clamped, no wrap)', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [
+      { content: 'first', status: 'pending' },
+      { content: 'second', status: 'in_progress' },
+      { content: 'third', status: 'pending' },
+    ])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    vt.sendInput('\x1b[B') // arrow down
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 1 })
+    let stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ ◐ second')
+    expect(stripped).not.toContain('❯ ☐ first')
+
+    vt.sendInput('\x1b[A') // arrow up
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('❯ ☐ first')
+
+    // Clamp at the top — does not wrap.
+    vt.sendInput('\x1b[A')
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('closes the todo panel on escape', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setTodos(state, [{ content: 'a task', status: 'pending' }])
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+
+    vt.sendInput('\x1b') // escape — close
+    await settle()
+    expect(driver.state.todoPanel).toBeUndefined()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('↑↓ navigate')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('shows a placeholder when the todo panel opens with no todos', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    const driver = fakeDriver(createInitialState())
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x14') // ctrl+t — open
+    await settle()
+
+    expect(driver.state.todoPanel).toEqual({ focused: 0 })
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Todos')
+    expect(stripped).toContain('No todos')
 
     root.tui.stop()
     root.destroy()

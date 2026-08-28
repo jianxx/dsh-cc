@@ -23,14 +23,20 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput } from '../input.ts'
+import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { bold, dim, editorTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
-import { createApprovalBox, createModelPickerBox, createQuestionBox, createSessionSwitcherBox } from './overlays.ts'
+import {
+  createApprovalBox,
+  createModelPickerBox,
+  createQuestionBox,
+  createSessionSwitcherBox,
+  createTodoPanelBox,
+} from './overlays.ts'
 
 export interface BuildRootOptions {
 	terminal?: Terminal
@@ -198,7 +204,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				return { consume: true }
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
-				live.modelPicker !== undefined || live.sessionSwitcher !== undefined) {
+				live.modelPicker !== undefined || live.sessionSwitcher !== undefined ||
+				live.todoPanel !== undefined) {
 				return undefined
 			}
 			opts.onQuit?.()
@@ -227,12 +234,23 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			routeSessionSwitcherInput(driver, data)
 			return { consume: true }
 		}
+		if (live.todoPanel !== undefined) {
+			// Modal todo panel: arrows/esc/ctrl+t (close) only, everything else
+			// consumed. The open path is the ctrl+t binding below, which only
+			// fires while the panel is closed.
+			routeTodoPanelInput(driver, data)
+			return { consume: true }
+		}
 		if (matchesKey(data, 'shift+tab')) {
 			driver.cyclePermissionMode()
 			return { consume: true }
 		}
 		if (matchesKey(data, Key.ctrl('o'))) {
 			driver.toggleThinking()
+			return { consume: true }
+		}
+		if (matchesKey(data, Key.ctrl('t'))) {
+			driver.toggleTodoPanel()
 			return { consume: true }
 		}
 		if (matchesKey(data, Key.escape)) {
@@ -276,6 +294,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		}
 		if (state.sessionSwitcher !== undefined) {
 			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
+		}
+		if (state.todoPanel !== undefined) {
+			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused))
 		}
 		overlays.invalidate()
 

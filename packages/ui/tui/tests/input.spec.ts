@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { handleComposerInput, type InputSink } from '@jianxx/dsh-cc-tui/input.ts'
 import {
   createInitialState,
+  openTodoPanel,
   setApproval,
   setBusy,
   setModelPicker,
   setQuestion,
   setSessionSwitcher,
+  setTodos,
   type CatalogEntryView,
   type ModelPickerView,
   type QuestionView,
@@ -37,6 +39,12 @@ interface SessionSwitcherCalls {
   cancelled: number
 }
 
+interface TodoPanelCalls {
+  moved: number[]
+  closed: number
+  toggled: number
+}
+
 function sink(initial: TuiState = createInitialState()): InputSink & {
   disposed: boolean
   interrupted: boolean
@@ -45,6 +53,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   questionCalls: QuestionCalls
   modelPickerCalls: ModelPickerCalls
   sessionSwitcherCalls: SessionSwitcherCalls
+  todoPanelCalls: TodoPanelCalls
 } {
   let state = initial
   const questionCalls: QuestionCalls = {
@@ -66,6 +75,11 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     submitted: 0,
     cancelled: 0,
   }
+  const todoPanelCalls: TodoPanelCalls = {
+    moved: [],
+    closed: 0,
+    toggled: 0,
+  }
   return {
     disposed: false,
     interrupted: false,
@@ -74,6 +88,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     questionCalls,
     modelPickerCalls,
     sessionSwitcherCalls,
+    todoPanelCalls,
     get state() {
       return state
     },
@@ -126,6 +141,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     sessionSwitcherCancel() {
       sessionSwitcherCalls.cancelled += 1
+    },
+    toggleTodoPanel() {
+      todoPanelCalls.toggled += 1
+    },
+    todoPanelMove(delta) {
+      todoPanelCalls.moved.push(delta)
+    },
+    todoPanelClose() {
+      todoPanelCalls.closed += 1
     },
     async dispose() {
       this.disposed = true
@@ -479,5 +503,78 @@ describe('handleComposerInput session switcher routing', () => {
     handleComposerInput(driver, '\x1b')
     expect(driver.interrupted).toBe(false)
     expect(driver.sessionSwitcherCalls.cancelled).toBe(1)
+  })
+})
+
+function todoPanelState(): TuiState {
+  return openTodoPanel(setTodos(createInitialState(), [
+    { content: 'a', status: 'pending' },
+    { content: 'b', status: 'pending' },
+  ]))
+}
+
+describe('handleComposerInput todo panel routing', () => {
+  it('arrow up routes todoPanelMove(-1) while the panel is open', () => {
+    const driver = sink(todoPanelState())
+    const action = handleComposerInput(driver, '\x1b[A')
+    expect(driver.todoPanelCalls.moved).toEqual([-1])
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('arrow down routes todoPanelMove(+1) while the panel is open', () => {
+    const driver = sink(todoPanelState())
+    handleComposerInput(driver, '\x1b[B')
+    expect(driver.todoPanelCalls.moved).toEqual([1])
+  })
+
+  it('escape closes the panel', () => {
+    const driver = sink(todoPanelState())
+    handleComposerInput(driver, '\x1b')
+    expect(driver.todoPanelCalls.closed).toBe(1)
+  })
+
+  it('ctrl+t on the global path toggles the panel open', () => {
+    const driver = sink()
+    const action = handleComposerInput(driver, '\x14') // ctrl+t
+    expect(driver.todoPanelCalls.toggled).toBe(1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('ctrl+t while the panel is open routes into the panel (close), not the toggle path', () => {
+    const driver = sink(todoPanelState())
+    handleComposerInput(driver, '\x14')
+    expect(driver.todoPanelCalls.closed).toBe(1)
+    expect(driver.todoPanelCalls.toggled).toBe(0)
+  })
+
+  it('all other keys are consumed and never reach the editor (modal)', () => {
+    const driver = sink(todoPanelState())
+    for (const key of ['h', ' ', '2', '\x7f', 'abc', '\x0f', '\x1b[Z']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('does not interrupt on escape while the panel is open and the agent is busy (close wins)', () => {
+    const driver = sink(setBusy(todoPanelState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.todoPanelCalls.closed).toBe(1)
+  })
+
+  it('a session switcher outranks the todo panel (overlay precedence)', () => {
+    let state = todoPanelState()
+    state = setSessionSwitcher(state, {
+      sessions: SESSION_ENTRIES,
+      focused: 0,
+      switching: false,
+      currentId: 's-first',
+    })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.sessionSwitcherCalls.submitted).toBe(1)
+    expect(driver.todoPanelCalls.closed).toBe(0)
   })
 })

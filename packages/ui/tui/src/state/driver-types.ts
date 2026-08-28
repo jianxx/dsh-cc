@@ -89,6 +89,16 @@ export interface Driver {
   /** Close the overlay without switching. */
   sessionSwitcherCancel(): void
   /**
+   * Toggle the Ctrl+T todo panel: open it focused on the first row when
+   * closed (rendering a placeholder when the session has no todos), or close
+   * it when open. Pure store evolution — no harness calls.
+   */
+  toggleTodoPanel(): void
+  /** Move the todo-panel focus by one row (clamped; no wrap). */
+  todoPanelMove(delta: -1 | 1): void
+  /** Close the todo panel. */
+  todoPanelClose(): void
+  /**
    * Switch the live agent to a different persisted session in-process: dispose
    * the current handle, resume the target, replay its history through the same
    * fold the boot path uses, and reset the transcript. No-op when `id` matches

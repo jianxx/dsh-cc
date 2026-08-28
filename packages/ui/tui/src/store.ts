@@ -155,6 +155,14 @@ export interface TodoItemView {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+/**
+ * Live view of the Ctrl+T todo panel overlay: only the interaction state the
+ * panel mutates (the focused row index); the rows come from `state.todos`.
+ */
+export interface TodoPanelView {
+  focused: number
+}
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -175,6 +183,8 @@ export interface TuiState {
   hud?: HudView
   /** Session todo list (whole-list last-wins; absent before the first write). */
   todos?: readonly TodoItemView[]
+  /** Open Ctrl+T todo panel; absent while closed. */
+  todoPanel?: TodoPanelView
 }
 
 /** Empty composer + idle agent. */
@@ -453,6 +463,41 @@ export function setTodos(state: TuiState, todos: readonly TodoItemView[] | undef
     return rest
   }
   return { ...state, todos }
+}
+
+/** Park or clear the Ctrl+T todo panel overlay. */
+export function setTodoPanel(state: TuiState, panel: TodoPanelView | undefined): TuiState {
+  if (panel === undefined) {
+    if (state.todoPanel === undefined) return state
+    const { todoPanel: _dropped, ...rest } = state
+    return rest
+  }
+  return { ...state, todoPanel: panel }
+}
+
+/** Open the todo panel, focused on the first row (empty list included). */
+export function openTodoPanel(state: TuiState): TuiState {
+  return setTodoPanel(state, { focused: 0 })
+}
+
+/** Close the todo panel. */
+export function closeTodoPanel(state: TuiState): TuiState {
+  return setTodoPanel(state, undefined)
+}
+
+/**
+ * Move the todo-panel focus by one row, clamped to [0, todos.length-1]
+ * (no wrap). A no-op when the panel is closed or the todo list is empty or
+ * absent — those return the same state reference.
+ */
+export function moveTodoPanelFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const panel = state.todoPanel
+  const todos = state.todos
+  if (panel === undefined || todos === undefined || todos.length === 0) return state
+  const max = todos.length - 1
+  const focused = Math.max(0, Math.min(panel.focused + delta, max))
+  if (focused === panel.focused) return state
+  return setTodoPanel(state, { focused })
 }
 
 /**

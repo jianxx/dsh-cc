@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   backspaceQuestionText,
   clearQueue,
+  closeTodoPanel,
   countRunningSubagents,
   createInitialState,
   dequeue,
@@ -10,6 +11,8 @@ import {
   focusModelPicker,
   moveModelPickerFocus,
   moveQuestionFocus,
+  moveTodoPanelFocus,
+  openTodoPanel,
   setModelPicker,
   setQuestion,
   setTodos,
@@ -318,6 +321,77 @@ describe('todos helpers', () => {
       { content: 'c', status: 'completed' },
     ]))
     expect(todoSummary(state)).toEqual({ total: 3, done: 3 })
+  })
+})
+
+describe('todo panel helpers', () => {
+  const todos: readonly TodoItemView[] = [
+    { content: 'done thing', status: 'completed' },
+    { content: 'active thing', status: 'in_progress' },
+    { content: 'later thing', status: 'pending' },
+  ]
+
+  function panelState(): TuiState {
+    return openTodoPanel(setTodos(createInitialState(), todos))
+  }
+
+  it('openTodoPanel parks the panel focused on the first row', () => {
+    const state = panelState()
+    expect(state.todoPanel).toEqual({ focused: 0 })
+    expect(state.todos).toBe(todos)
+  })
+
+  it('openTodoPanel still opens on an empty list (the panel shows a placeholder)', () => {
+    const state = openTodoPanel(createInitialState())
+    expect(state.todoPanel).toEqual({ focused: 0 })
+  })
+
+  it('closeTodoPanel drops the field entirely', () => {
+    const state = panelState()
+    const closed = closeTodoPanel(state)
+    expect(closed.todoPanel).toBeUndefined()
+    // Cleared state does not carry the dropped field at all.
+    expect('todoPanel' in closed).toBe(false)
+  })
+
+  it('closeTodoPanel on a bare state is a same-reference no-op', () => {
+    const base = createInitialState()
+    expect(closeTodoPanel(base)).toBe(base)
+  })
+
+  it('moveTodoPanelFocus moves and clamps to [0, todos.length-1] (no wrap)', () => {
+    const base = panelState()
+    expect(moveTodoPanelFocus(base, 1).todoPanel?.focused).toBe(1)
+    // Clamp at the top — does not wrap to the bottom.
+    expect(moveTodoPanelFocus(base, -1).todoPanel?.focused).toBe(0)
+    // Clamp at the bottom.
+    const atEnd = moveTodoPanelFocus(moveTodoPanelFocus(base, 1), 1)
+    expect(atEnd.todoPanel?.focused).toBe(2)
+    expect(moveTodoPanelFocus(atEnd, 1).todoPanel?.focused).toBe(2)
+  })
+
+  it('moveTodoPanelFocus is a no-op when no panel is open (same reference)', () => {
+    const base = createInitialState()
+    expect(moveTodoPanelFocus(base, 1)).toBe(base)
+  })
+
+  it('moveTodoPanelFocus is a no-op when the todo list is empty or absent', () => {
+    const empty = openTodoPanel(setTodos(createInitialState(), []))
+    expect(moveTodoPanelFocus(empty, 1)).toBe(empty)
+    const absent = openTodoPanel(createInitialState())
+    expect(moveTodoPanelFocus(absent, 1)).toBe(absent)
+  })
+
+  it('todo panel helpers never mutate the original state', () => {
+    const base = panelState()
+    const moved = moveTodoPanelFocus(base, 1)
+    expect(base.todoPanel?.focused).toBe(0)
+    expect(moved.todoPanel?.focused).toBe(1)
+    expect(moved).not.toBe(base)
+
+    const closed = closeTodoPanel(moved)
+    expect(moved.todoPanel).toEqual({ focused: 1 })
+    expect(closed.todoPanel).toBeUndefined()
   })
 })
 

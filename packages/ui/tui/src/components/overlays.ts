@@ -6,7 +6,13 @@
  */
 
 import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
-import type { ApprovalView, ModelPickerView, QuestionView, SessionSwitcherView } from '../store.ts'
+import type {
+  ApprovalView,
+  ModelPickerView,
+  QuestionView,
+  SessionSwitcherView,
+  TodoItemView,
+} from '../store.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { bold, dim, yellow } from './theme.ts'
 
@@ -189,5 +195,57 @@ export function createSessionSwitcherBox(sw: SessionSwitcherView): Container {
     sw.switching ? dim('Switching…') : dim('↑↓ move · enter switch · esc cancel'),
     0, 0,
   ))
+  return box
+}
+
+/**
+ * Maximum todo-panel rows rendered at once. A longer list is windowed around
+ * the focus (mirroring the model picker cap) so the box can never overflow
+ * the frame.
+ */
+const TODO_PANEL_VISIBLE_ROWS = 12
+
+/**
+ * Status icon for one todo row: checked for completed, half-full for the
+ * in-progress item, empty for pending.
+ */
+function todoIcon(status: TodoItemView['status']): string {
+  if (status === 'completed') return '☑'
+  if (status === 'in_progress') return '◐'
+  return '☐'
+}
+
+/**
+ * Todo panel box: the session todo list with status icons, a `❯` focus
+ * marker, and a key hint footer, windowed to {@link TODO_PANEL_VISIBLE_ROWS}
+ * rows around the focus. An empty (or absent) todo list renders a dim
+ * placeholder instead of rows; the panel still opens so Ctrl+T is a stable
+ * toggle either way.
+ */
+export function createTodoPanelBox(todos: readonly TodoItemView[], focused: number): Container {
+  const box = new Container()
+  box.addChild(new Text(bold('Todos'), 0, 0))
+
+  const total = todos.length
+  if (total === 0) {
+    box.addChild(new Text(dim('No todos'), 0, 0))
+    box.addChild(new Text(dim('↑↓ navigate · Esc close'), 0, 0))
+    return box
+  }
+
+  const cap = TODO_PANEL_VISIBLE_ROWS
+  let start = 0
+  if (total > cap) {
+    start = Math.max(0, Math.min(focused - Math.floor(cap / 2), total - cap))
+  }
+  const end = Math.min(start + cap, total)
+
+  for (let index = start; index < end; index += 1) {
+    const todo = todos[index]!
+    const marker = focused === index ? '❯ ' : '  '
+    box.addChild(new Text(`${marker}${todoIcon(todo.status)} ${todo.content}`, 0, 0))
+  }
+
+  box.addChild(new Text(dim('↑↓ navigate · Esc close'), 0, 0))
   return box
 }

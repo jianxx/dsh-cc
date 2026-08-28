@@ -28,6 +28,12 @@ export interface InputSink {
   sessionSwitcherMove(delta: -1 | 1): void
   sessionSwitcherSubmit(): Promise<void>
   sessionSwitcherCancel(): void
+  /** Toggle the Ctrl+T todo panel: close it when open, open it when closed. */
+  toggleTodoPanel(): void
+  /** Move the todo-panel focus by one row (clamped; no wrap). */
+  todoPanelMove(delta: -1 | 1): void
+  /** Close the todo panel. */
+  todoPanelClose(): void
   dispose(): Promise<void>
 }
 
@@ -142,6 +148,33 @@ export function routeSessionSwitcherInput(driver: InputSink, data: string): void
 }
 
 /**
+ * Route one raw keypress into the open todo panel. Only arrows, escape, and
+ * ctrl+t (toggle closed) are recognized; everything else is dropped — the
+ * panel is modal and the composer editor must never see keystrokes while it
+ * is open. Opening is owned by the ctrl+t binding in the global listener,
+ * which only fires while the panel is closed.
+ */
+export function routeTodoPanelInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.ctrl('t'))) {
+    driver.todoPanelClose()
+    return
+  }
+  if (matchesKey(data, Key.escape)) {
+    driver.todoPanelClose()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.todoPanelMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.todoPanelMove(1)
+    return
+  }
+  // All other keys consumed and ignored (modal).
+}
+
+/**
  * Apply one raw keypress against the live driver. Returns whether the app
  * should exit. Called from the pi-tui global input listener before the editor
  * receives the keystroke.
@@ -173,6 +206,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
     return { kind: 'none' }
   }
 
+  if (live.todoPanel !== undefined) {
+    routeTodoPanelInput(driver, data)
+    return { kind: 'none' }
+  }
+
   if (matchesKey(data, 'shift+tab')) {
     driver.cyclePermissionMode()
     return { kind: 'none' }
@@ -180,6 +218,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (matchesKey(data, Key.ctrl('o'))) {
     driver.toggleThinking()
+    return { kind: 'none' }
+  }
+
+  if (matchesKey(data, Key.ctrl('t'))) {
+    driver.toggleTodoPanel()
     return { kind: 'none' }
   }
 
