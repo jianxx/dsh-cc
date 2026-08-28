@@ -28,7 +28,7 @@ import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
-import { bold, dim, editorTheme } from './theme.ts'
+import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import {
   createApprovalBox,
@@ -50,6 +50,13 @@ export interface BuildRootOptions {
 	uiMode?: TuiMode
 	/** Fullscreen-only: mouse capture for wheel scrolling and app-owned selection. Default true. */
 	mouse?: boolean
+	/**
+	 * Per-role palette overrides for the terminal theme. Every role accepts a
+	 * basic ANSI color name or a raw SGR code string; invalid values keep the
+	 * built-in default, so an absent (or partial) override renders exactly like
+	 * the historical fixed palette.
+	 */
+	theme?: ThemeOverrides
 }
 
 /** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
@@ -106,6 +113,7 @@ function openSystemUrl(url: string): void {
 export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHandle {
 	const terminal = opts.terminal ?? new ProcessTerminal()
 	const mode: TuiMode = opts.uiMode ?? 'regular'
+	const theme = createTheme(opts.theme)
 	const tui: TUI = mode === 'fullscreen'
 		? new TuiAltScreen(terminal, undefined, undefined, {
 			mouse: opts.mouse ?? true,
@@ -113,8 +121,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		})
 		: new TuiMainScreen(terminal)
 
-	const title = new Text(bold('dsh cc-mode'), 0, 0)
-	const transcript = new TranscriptView()
+	const title = new Text(theme.bold('dsh cc-mode'), 0, 0)
+	const transcript = new TranscriptView(theme)
 
 	// Pending-steer chip line. Collapses to zero lines when the queue is empty
 	// (Text.render returns [] for blank content), so it takes no vertical space.
@@ -133,7 +141,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// every state change so they appear and disappear with the driver state.
 	const overlays = new Container()
 
-	const editor = new Editor(tui, editorTheme)
+	const editor = new Editor(tui, createEditorTheme(theme))
 	// Seed the editor's ↑/↓ recall from persisted history (oldest first —
 	// addToHistory unshifts, so the last-seeded/newest becomes index 0 and is
 	// recalled on the first ↑ press).
@@ -308,7 +316,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		queueLine.setText(
 			state.queued.length === 0
 				? ''
-				: state.queued.map(text => dim(`⏵ queued: ${text}`)).join('\n'),
+				: state.queued.map(text => theme.muted(`⏵ queued: ${text}`)).join('\n'),
 		)
 		queueLine.invalidate()
 
@@ -316,28 +324,28 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		todoLine.setText(
 			summary === undefined
 				? ''
-				: dim(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
+				: theme.muted(`☐ ${summary.done}/${summary.total}${summary.active === undefined ? '' : ` · ${truncateActive(summary.active)}`}`),
 		)
 		todoLine.invalidate()
 
-		noticeLine.setText(state.notice === undefined ? '' : dim(state.notice))
+		noticeLine.setText(state.notice === undefined ? '' : theme.muted(state.notice))
 		noticeLine.invalidate()
 
 		overlays.clear()
 		if (state.approval !== undefined) {
-			overlays.addChild(createApprovalBox(state.approval))
+			overlays.addChild(createApprovalBox(state.approval, theme))
 		}
 		if (state.question !== undefined) {
-			overlays.addChild(createQuestionBox(state.question))
+			overlays.addChild(createQuestionBox(state.question, theme))
 		}
 		if (state.modelPicker !== undefined) {
-			overlays.addChild(createModelPickerBox(state.modelPicker))
+			overlays.addChild(createModelPickerBox(state.modelPicker, theme))
 		}
 		if (state.sessionSwitcher !== undefined) {
-			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher))
+			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher, theme))
 		}
 		if (state.todoPanel !== undefined) {
-			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused))
+			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused, theme))
 		}
 		overlays.invalidate()
 

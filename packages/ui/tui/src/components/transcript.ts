@@ -18,15 +18,15 @@ import { toolVerb } from '../tool-verbs.ts'
 import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { groupReadRows, readGroupCacheKey, renderReadGroup } from './read-group.ts'
-import { cyan, dim, italic, red, yellow } from './theme.ts'
+import { defaultTheme, type Theme } from './theme.ts'
 
 /** Drop oldest rows once the total source-line count exceeds this. */
 export const TRANSCRIPT_LINE_BUDGET = 2000
 
 /** Cheap source-line count for a row (NOT rendered lines). */
-function rowSourceLines(row: TranscriptRow): number {
+function rowSourceLines(row: TranscriptRow, theme: Theme): number {
   if (row.kind === 'tool') {
-    return 1 + toolOutputLines(row)
+    return 1 + toolOutputLines(row, theme)
   }
   return row.text.split('\n').length
 }
@@ -36,10 +36,10 @@ function rowSourceLines(row: TranscriptRow): number {
  * diff card is present, otherwise the summary body/result (args as the last
  * fallback, matching the expanded renderer). 0 when there is nothing to hide.
  */
-function toolOutputLines(row: Extract<TranscriptRow, { kind: 'tool' }>): number {
+function toolOutputLines(row: Extract<TranscriptRow, { kind: 'tool' }>, theme: Theme): number {
   if (row.diffs !== undefined && row.diffs.length > 0) {
     // Diff hunks replace the summary body; count their rendered lines.
-    return renderDiffLines(row.diffs).length
+    return renderDiffLines(row.diffs, undefined, theme).length
   }
   const body = row.body ?? row.result ?? row.args
   if (body === undefined || body.length === 0) return 0
@@ -57,64 +57,64 @@ export interface RowRenderOptions {
   toolOutputExpanded?: boolean
 }
 
-export function renderRowText(row: TranscriptRow, options?: RowRenderOptions): string {
+export function renderRowText(row: TranscriptRow, options?: RowRenderOptions, theme: Theme = defaultTheme): string {
   switch (row.kind) {
     case 'user':
-      return cyan(`> ${row.text}`)
+      return theme.accent(`> ${row.text}`)
     case 'assistant':
       return row.text
     case 'thinking': {
       const expanded = options?.thinkingExpanded ?? false
       if (!expanded) {
         const lines = row.text.split('\n').length
-        return dim(italic(`▸ thinking (${lines} lines — Ctrl+O to toggle)`))
+        return theme.muted(theme.italic(`▸ thinking (${lines} lines — Ctrl+O to toggle)`))
       }
-      return dim(italic(`▾ ${row.text}`))
+      return theme.muted(theme.italic(`▾ ${row.text}`))
     }
     case 'tool': {
-      // Running rows lead with a dim present-tense verb (Running/Reading/…);
+      // Running rows lead with a muted present-tense verb (Running/Reading/…);
       // completed rows drop the verb and show only a result glyph.
       const status = row.running ? '…' : (row.error === true ? '✗' : '✓')
-      const verbPrefix = row.running ? `${dim(toolVerb(row.name))} ` : ''
-      const head = yellow(`⏺ ${verbPrefix}${row.title} ${status}`)
-      const headLine = row.error === true ? red(head) : head
+      const verbPrefix = row.running ? `${theme.muted(toolVerb(row.name))} ` : ''
+      const head = theme.warning(`⏺ ${verbPrefix}${row.title} ${status}`)
+      const headLine = row.error === true ? theme.error(head) : head
 
       // Collapsed: drop the output entirely (diff hunks, body, or result) and
       // point at the toggle. Rows with no output keep the bare head line.
       if (!(options?.toolOutputExpanded ?? true)) {
-        const lines = toolOutputLines(row)
+        const lines = toolOutputLines(row, theme)
         return lines > 0
-          ? `${headLine}\n${dim(`▸ output (${lines} lines — Ctrl+O to toggle)`)}`
+          ? `${headLine}\n${theme.muted(`▸ output (${lines} lines — Ctrl+O to toggle)`)}`
           : headLine
       }
 
       // When structured diffs are present, render real hunks beneath the head.
       // The one-line summary body is replaced to avoid duplicating the path info.
       if (row.diffs !== undefined && row.diffs.length > 0) {
-        const diffLines = renderDiffLines(row.diffs)
+        const diffLines = renderDiffLines(row.diffs, undefined, theme)
         return diffLines.length > 0 ? `${headLine}\n${diffLines.join('\n')}` : headLine
       }
 
       const body = row.body ?? row.result ?? row.args
       if (body !== undefined && body.length > 0) {
         const firstLine = body.split('\n')[0] ?? ''
-        return `${headLine}\n  ⎿ ${row.error === true ? red(firstLine) : firstLine}`
+        return `${headLine}\n  ⎿ ${row.error === true ? theme.error(firstLine) : firstLine}`
       }
       return headLine
     }
     case 'status':
-      // Error status rows (turn/end failures) render red; plain status notices
-      // stay dim.
-      return row.error === true ? red(row.text) : dim(row.text)
+      // Error status rows (turn/end failures) render in the error role; plain
+      // status notices stay muted.
+      return row.error === true ? theme.error(row.text) : theme.muted(row.text)
   }
 }
 
 /** Build the pi-tui component for a single row. */
-function buildChild(row: TranscriptRow, options?: RowRenderOptions): Component {
+function buildChild(row: TranscriptRow, options: RowRenderOptions, theme: Theme): Component {
   if (row.kind === 'assistant') {
-    return new Markdown(row.text, 0, 0, createMarkdownTheme())
+    return new Markdown(row.text, 0, 0, createMarkdownTheme(theme))
   }
-  return new Text(renderRowText(row, options), 0, 0)
+  return new Text(renderRowText(row, options, theme), 0, 0)
 }
 
 /**
@@ -127,12 +127,19 @@ type ChildCacheKey = TranscriptRow | string
 
 /**
  * Container that renders transcript rows as stacked Text/Markdown components.
- * Call `setRows` whenever the driver emits a new state.
+ * Call `setRows` whenever the driver emits a new state. Styling comes from the
+ * injected `theme` (default: the built-in palette).
  */
 export class TranscriptView extends Container {
+  private readonly theme: Theme
   private prevCache = new Map<ChildCacheKey, Component>()
   private prevThinkingExpanded = false
   private prevToolOutputExpanded = true
+
+  constructor(theme: Theme = defaultTheme) {
+    super()
+    this.theme = theme
+  }
 
   setRows(rows: readonly TranscriptRow[], options?: RowRenderOptions): void {
     const thinkingExpanded = options?.thinkingExpanded ?? false
@@ -146,9 +153,9 @@ export class TranscriptView extends Container {
     // and only affects rendering.
     const clipped = Array.from(rows)
     let dropped = 0
-    let total = clipped.reduce((sum, r) => sum + rowSourceLines(r), 0)
+    let total = clipped.reduce((sum, r) => sum + rowSourceLines(r, this.theme), 0)
     while (total > TRANSCRIPT_LINE_BUDGET && clipped.length > 1) {
-      total -= rowSourceLines(clipped[0]!)
+      total -= rowSourceLines(clipped[0]!, this.theme)
       clipped.shift()
       dropped++
     }
@@ -176,14 +183,14 @@ export class TranscriptView extends Container {
         (thinkingFlagChanged && row.kind === 'thinking') ||
         (toolFlagChanged && row.kind === 'tool')
       const child = (stale ? undefined : this.prevCache.get(row))
-        ?? buildChild(row, { thinkingExpanded, toolOutputExpanded })
+        ?? buildChild(row, { thinkingExpanded, toolOutputExpanded }, this.theme)
       cache.set(row, child)
       rowChildren.push(child)
     }
 
-    // Prepend a dim clip indicator when rows were dropped.
+    // Prepend a muted clip indicator when rows were dropped.
     this.children = dropped > 0
-      ? [new Text(dim(`… earlier output hidden (${dropped} rows)`), 0, 0), ...rowChildren]
+      ? [new Text(this.theme.muted(`… earlier output hidden (${dropped} rows)`), 0, 0), ...rowChildren]
       : rowChildren
 
     this.prevCache = cache

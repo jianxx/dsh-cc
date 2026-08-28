@@ -72,6 +72,7 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     onQuit: shutdown,
     ...(config.uiMode === undefined ? {} : { uiMode: config.uiMode }),
     ...(config.mouse === undefined ? {} : { mouse: config.mouse }),
+    ...(config.theme === undefined ? {} : { theme: config.theme }),
   })
 
   root.tui.start()

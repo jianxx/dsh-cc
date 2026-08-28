@@ -14,35 +14,37 @@
  */
 
 import hljs from 'highlight.js/lib/common'
-import { bold, cyan, dim, italic, yellow } from './theme.ts'
+import { defaultTheme, type Theme } from './theme.ts'
 
 /** ANSI style applied to a text run, or undefined for unstyled. */
 type AnsiStyle = (text: string) => string
 
 /**
  * Map of highlight.js scope (the class name with the `hljs-` prefix stripped)
- * to an SGR style. Kept intentionally small — this is a terminal, not an IDE.
- * Unmapped scopes render unstyled.
+ * to an SGR style, derived from the injected theme. Kept intentionally small —
+ * this is a terminal, not an IDE. Unmapped scopes render unstyled.
  */
-const STYLE_BY_SCOPE: Record<string, AnsiStyle> = {
-  keyword: yellow,
-  literal: cyan,
-  number: cyan,
-  // No green in the palette → strings fall back to cyan.
-  string: cyan,
-  comment: dim,
-  title: bold,
-  function: bold,
-  'function_': bold,
-  'title.function_': bold,
-  built_in: cyan,
-  attr: italic,
-  attribute: italic,
-  type: cyan,
-  class: bold,
-  meta: italic,
-  regexp: cyan,
-  variable: italic,
+function styleByScope(theme: Theme): Record<string, AnsiStyle> {
+  return {
+    keyword: theme.warning,
+    literal: theme.accent,
+    number: theme.accent,
+    // No dedicated string color → strings fall back to the accent.
+    string: theme.accent,
+    comment: theme.muted,
+    title: theme.bold,
+    function: theme.bold,
+    'function_': theme.bold,
+    'title.function_': theme.bold,
+    built_in: theme.accent,
+    attr: theme.italic,
+    attribute: theme.italic,
+    type: theme.accent,
+    class: theme.bold,
+    meta: theme.italic,
+    regexp: theme.accent,
+    variable: theme.italic,
+  }
 }
 
 /** Decode the HTML entities highlight.js emits back to raw source characters. */
@@ -62,13 +64,13 @@ function decodeEntities(s: string): string {
 }
 
 /** Resolve the innermost open span to an SGR style (undefined = unstyled). */
-function styleForStackTop(stack: readonly string[]): AnsiStyle | undefined {
+function styleForStackTop(stack: readonly string[], styles: Record<string, AnsiStyle>): AnsiStyle | undefined {
   for (let i = stack.length - 1; i >= 0; i--) {
     const attr = stack[i]
     if (!attr) continue
     for (const part of attr.split(/\s+/)) {
       const scope = part.startsWith('hljs-') ? part.slice(5) : part
-      const style = STYLE_BY_SCOPE[scope]
+      const style = styles[scope]
       if (style) return style
     }
   }
@@ -80,7 +82,7 @@ function styleForStackTop(stack: readonly string[]): AnsiStyle | undefined {
  * entity-escaped text) into ANSI-styled lines. The returned array length
  * always equals the number of source lines; ANSI codes never span lines.
  */
-function htmlToAnsiLines(html: string): string[] {
+function htmlToAnsiLines(html: string, styles: Record<string, AnsiStyle>): string[] {
   const lines: string[] = []
   let current = ''
   const stack: string[] = []
@@ -109,7 +111,7 @@ function htmlToAnsiLines(html: string): string[] {
       }
       const seg = segs[i]
       if (!seg) continue
-      const style = styleForStackTop(stack)
+      const style = styleForStackTop(stack, styles)
       current += style ? style(seg) : seg
     }
   }
@@ -120,16 +122,17 @@ function htmlToAnsiLines(html: string): string[] {
 /**
  * Highlight `code` (written in `lang`) and return ANSI-styled lines.
  *
+ * - Styles come from the injected `theme` (default: the built-in palette).
  * - Unknown or unsupported `lang` → plain `code.split('\n')` (never throws).
  * - Empty `code` → `['']`.
  * - The returned array length always matches `code.split('\n').length`.
  */
-export function highlightCodeAnsi(code: string, lang?: string): string[] {
+export function highlightCodeAnsi(code: string, lang?: string, theme: Theme = defaultTheme): string[] {
   if (code === '') return ['']
   if (!lang || !hljs.getLanguage(lang)) return code.split('\n')
   try {
     const result = hljs.highlight(code, { language: lang, ignoreIllegals: true })
-    return htmlToAnsiLines(result.value)
+    return htmlToAnsiLines(result.value, styleByScope(theme))
   } catch {
     return code.split('\n')
   }
