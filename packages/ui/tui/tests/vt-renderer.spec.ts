@@ -422,6 +422,48 @@ describe('vt-renderer', () => {
     root.destroy()
   })
 
+  it('queued approvals render the queue position and answering advances FIFO', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'echo one' }, pendingCount: 1 })
+    const driver = fakeDriver(state)
+    // The driver owns the queue; answering the head promotes the next entry.
+    const queue: { toolName: string; preview: { kind: 'command'; command: string } }[] = [
+      { toolName: 'Bash', preview: { kind: 'command', command: 'echo one' } },
+      { toolName: 'Write', preview: { kind: 'command', command: 'echo two' } },
+    ]
+    driver.answerApproval = () => {
+      queue.shift()
+      const head = queue[0]
+      driver.setState(head === undefined
+        ? setApproval(driver.state, undefined)
+        : setApproval(driver.state, {
+          ...head,
+          ...queue.length <= 1 ? {} : { pendingCount: queue.length - 1 },
+        }))
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    // Head of two: the title carries the queue position.
+    expect(vt.grid().join('\n')).toContain('Approval (1 of 2)')
+
+    vt.sendInput('1')
+    await settle()
+    // The queued approval is promoted and is now a lone head.
+    expect(vt.grid().join('\n')).toContain('Approve Write?')
+    expect(vt.grid().join('\n')).not.toContain('1 of')
+
+    vt.sendInput('2')
+    await settle()
+    expect(vt.grid().join('\n')).not.toContain('Approve')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
   it('keeps the composer visible when the transcript overflows the terminal', async () => {
     const vt = new VirtualTerminal(80, 10)
     let state = createInitialState()

@@ -69,8 +69,10 @@ import {
   upsertRow,
   upsertSubagent,
   type ApprovalPreview,
+  type ApprovalView,
   type CatalogEntryView,
   type HudView,
+  type QuestionView,
   type SessionEntryView,
   type SubagentRunView,
   type TodoItemView,
@@ -746,32 +748,85 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   })
 
+  // --- Modal pipeline: approvals + questions share one FIFO ------------------
+  // Concurrent approval requests used to overwrite a single slot (leaving the
+  // first request's promise hanging) and a question arriving mid-approval
+  // rendered both boxes while input routing favored the approval. Instead,
+  // every modal enters one FIFO; only the head renders (exactly one of the
+  // approval and question slots is set), answering or aborting the head
+  // promotes the next entry, and `ask()` during an active modal queues behind
+  // it instead of stacking a second box.
+  type ApprovalEntry = {
+    kind: 'approval'
+    view: ApprovalView
+    resolve: (outcome: ApprovalOutcome) => void
+    signal?: AbortSignal
+  }
+  type QuestionEntry = {
+    kind: 'question'
+    id: string
+    view: QuestionView
+    resolve: (answer: AskUserQuestionAnswer) => void
+    reject: (error: unknown) => void
+    signal?: AbortSignal
+  }
+  type ModalEntry = ApprovalEntry | QuestionEntry
+  const modalQueue: ModalEntry[] = []
+
+  /** Publish the queue head into exactly one of the two modal slots. */
+  const publishHead = (): void => {
+    const head = modalQueue[0]
+    const behind = modalQueue.length - 1
+    if (head === undefined || head.kind !== 'approval') emit(setApproval(state, undefined))
+    if (head === undefined || head.kind !== 'question') emit(setQuestion(state, undefined))
+    if (head === undefined) return
+    if (head.kind === 'approval') {
+      emit(setApproval(state, { ...head.view, ...behind === 0 ? {} : { pendingCount: behind } }))
+    } else {
+      emit(setQuestion(state, head.view))
+    }
+  }
+
+  /** Remove an entry from the queue (no-op if already gone) and republish. */
+  const dequeueModal = (entry: ModalEntry): void => {
+    const index = modalQueue.indexOf(entry)
+    if (index < 0) return
+    modalQueue.splice(index, 1)
+    publishHead()
+  }
+
   // --- Approvals ------------------------------------------------------------
-  // The open approval prompt is parked in state.approval together with the
+  // The head approval is parked in state.approval together with the
   // recoverable payload preview. The "always" answer resolves the current call
   // like a one-shot grant AND persists a derived permission rule through the
   // settings provider (see writeAllowRule). Already-queued requests are decided
   // one by one even after a rule lands — grants never apply retroactively.
-  let pendingApproval: {
-    resolve: (outcome: ApprovalOutcome) => void
-    toolName: string
-    preview: ApprovalPreview | undefined
-  } | undefined
+  // Requests from the current agent and from tracked subagents (their session
+  // id was seen on `subagent/start`, which fires before a subagent's first
+  // approval) queue here; anything else passes through to the next provider.
   ctx.on('approval/request', async (req: ApprovalRequest, next) => {
-    if (req.agent.id !== current.agent.id) return next()
+    const ownSessions = new Set(state.subagents.map(run => run.sessionId))
+    ownSessions.add(String(current.agent.session.id))
+    if (!ownSessions.has(String(req.agent.session.id))) return next()
     const preview = payloadOf(req)
-    emit(setApproval(state, {
+    const view: ApprovalView = {
       toolName: req.toolName,
       ...req.reason === undefined ? {} : { reason: req.reason },
       ...preview.kind === 'none' ? {} : { preview },
-    }))
+    }
     return await new Promise<ApprovalOutcome>(resolve => {
-      pendingApproval = { resolve, toolName: req.toolName, preview: preview.kind === 'none' ? undefined : preview }
+      const entry: ApprovalEntry = {
+        kind: 'approval',
+        view,
+        resolve,
+        ...req.signal === undefined ? {} : { signal: req.signal },
+      }
+      modalQueue.push(entry)
       req.signal?.addEventListener('abort', () => {
-        pendingApproval = undefined
-        emit(setApproval(state, undefined))
+        dequeueModal(entry)
         resolve('cancelled')
       }, { once: true })
+      publishHead()
     })
   })
 
@@ -818,11 +873,6 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
-  let pendingQuestion: {
-    id: string
-    resolve: (answer: AskUserQuestionAnswer) => void
-    reject: (error: unknown) => void
-  } | undefined
   const userQuestions = ctx.get('userQuestions') as
     | { registerProvider(provider: { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
     | undefined
@@ -832,7 +882,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       questionsDispose = userQuestions.registerProvider({
         ask: async (request: AskUserQuestionRequest) => {
           const first = request.questions[0]
-          emit(setQuestion(state, {
+          const view: QuestionView = {
             header: first?.header ?? 'Question',
             question: first?.question ?? '',
             ...first?.detail === undefined ? {} : { detail: first.detail },
@@ -845,10 +895,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
             focused: 0,
             selected: [],
             custom: '',
-          }))
+          }
+          // Queue behind any active modal; when the pipeline is empty this
+          // entry becomes the head and renders immediately.
           return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-            pendingQuestion = {
+            const entry: QuestionEntry = {
+              kind: 'question',
               id: first?.id ?? '',
+              view,
               resolve: (answer) => resolve({
                 answers: answer.answers.map((item, index) => ({
                   id: request.questions[index]?.id ?? item.id,
@@ -857,12 +911,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
                 })),
               }),
               reject,
+              ...request.signal === undefined ? {} : { signal: request.signal },
             }
+            modalQueue.push(entry)
             request.signal?.addEventListener('abort', () => {
-              pendingQuestion = undefined
-              emit(setQuestion(state, undefined))
+              dequeueModal(entry)
               reject(new UserQuestionError('question cancelled', 'CANCELLED'))
             }, { once: true })
+            publishHead()
           })
         },
       })
@@ -872,18 +928,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   /**
-   * Resolve the open question and dismiss the overlay. Labels are echoed
+   * Resolve the head question and advance the modal queue. Labels are echoed
    * verbatim — the plan-review `intent.approve` contract requires the exact
    * label string, never an inferred or re-indexed one.
    */
   const resolveQuestion = (selected: readonly string[], custom?: string): void => {
-    const pending = pendingQuestion
-    if (pending === undefined) return
-    pendingQuestion = undefined
-    emit(setQuestion(state, undefined))
-    pending.resolve({
+    const head = modalQueue[0]
+    if (head === undefined || head.kind !== 'question') return
+    modalQueue.shift()
+    publishHead()
+    head.resolve({
       answers: [{
-        id: pending.id,
+        id: head.id,
         selected: [...selected],
         ...custom === undefined ? {} : { custom },
       }],
@@ -1071,15 +1127,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // No-op guard: same id → stay.
     if (id === String(current.agent.session.id)) return
 
-    // Clear pending overlays and queue (mirror the abort paths). The session
-    // switcher overlay itself is managed by the caller (sessionSwitcherSubmit).
-    if (pendingApproval !== undefined) {
-      pendingApproval.resolve('cancelled')
-      pendingApproval = undefined
-    }
-    if (pendingQuestion !== undefined) {
-      pendingQuestion.reject(new UserQuestionError('session switching', 'CANCELLED'))
-      pendingQuestion = undefined
+    // Clear pending overlays and the modal queue (mirror the abort paths):
+    // every parked approval resolves cancelled and every parked question
+    // rejects cancelled. The session switcher overlay itself is managed by the
+    // caller (sessionSwitcherSubmit).
+    for (const entry of modalQueue.splice(0)) {
+      if (entry.kind === 'approval') entry.resolve('cancelled')
+      else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
     }
     emit(setApproval(state, undefined))
     emit(setQuestion(state, undefined))
@@ -1379,15 +1433,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(toggleThinking(state))
     },
     answerApproval(kind: ApprovalAnswerKind) {
-      const pending = pendingApproval
-      if (pending === undefined) return
-      pendingApproval = undefined
-      emit(setApproval(state, undefined))
-      pending.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
+      const head = modalQueue[0]
+      if (head === undefined || head.kind !== 'approval') return
+      // Advance the queue BEFORE resolving: a resolution can immediately fire
+      // the next approval/request, which must enqueue behind the survivors.
+      modalQueue.shift()
+      publishHead()
+      head.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
       if (kind === 'always') {
         // Fire-and-forget: the call proceeds while the rule persists; a write
         // failure surfaces as a notice, never as an answer error.
-        void writeAllowRule(pending.toolName, pending.preview).catch((error: unknown) => {
+        void writeAllowRule(head.view.toolName, head.view.preview).catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
           showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
         })

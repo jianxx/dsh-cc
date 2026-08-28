@@ -30,13 +30,17 @@ const APPROVAL_PREVIEW_MAX_LINES = 8
 const APPROVAL_DIFF_MAX_LINES = 16
 
 /**
- * Approval box: "Approve <tool>?" + optional reason + the structured payload
- * preview (command block, diff card, or raw-arguments JSON block) + an
- * explicit key→outcome hint including the always-allow option.
+ * Approval box: the title ("Approve <tool>?", or "Approval (1 of N)" when
+ * other modals wait behind this one) + optional reason + the structured
+ * payload preview (command block, diff card, or raw-arguments JSON block) +
+ * an explicit key→outcome hint including the always-allow option.
  */
 export function createApprovalBox(approval: ApprovalView): Container {
   const box = new Container()
-  box.addChild(new Text(yellow(`Approve ${approval.toolName}?`), 0, 0))
+  const title = approval.pendingCount === undefined
+    ? `Approve ${approval.toolName}?`
+    : `Approval (1 of ${approval.pendingCount + 1})`
+  box.addChild(new Text(yellow(title), 0, 0))
   if (approval.reason !== undefined) {
     box.addChild(new Text(dim(approval.reason), 0, 0))
   }
