@@ -19,7 +19,8 @@ import {
   type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { ruleString } from '@jianxx/dsh-cc-permission-rules/src/parser.ts'
 import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'
@@ -36,6 +37,7 @@ import {
   type ToolPresenters,
 } from '../transcript.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
+import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
   backspaceQuestionText,
   clearQueue,
@@ -66,6 +68,7 @@ import {
   typeQuestionText,
   upsertRow,
   upsertSubagent,
+  type ApprovalPreview,
   type CatalogEntryView,
   type HudView,
   type SessionEntryView,
@@ -344,7 +347,28 @@ function liveMode(agent: Agent, fallback: string): string {
   return foldPermissionMode(agent.session.events) ?? fallback
 }
 
-function commandOf(req: ApprovalRequest): string | undefined {
+/**
+ * Character cap for the pretty-printed raw-arguments preview of an approval
+ * prompt (non-shell, non-file-edit tools).
+ */
+const ARGS_PREVIEW_MAX_CHARS = 500
+
+/**
+ * The restored arguments of an approved call: a parsed JSON object, or the
+ * raw stored text when the arguments are not a JSON object (malformed JSON,
+ * a bare scalar) so the preview degrades to the literal payload instead of
+ * nothing.
+ */
+type RestoredArgs = { args: Record<string, unknown> } | { raw: string }
+
+/**
+ * Restore the approved call's arguments by scanning the session log backwards
+ * for the `tool/call` event carrying the request's callId (`appendToolCall`
+ * lands before the pre-execute approval, so the event is always present).
+ * Returns undefined when the callId is missing, unpaired, or its arguments
+ * are not stored as a string.
+ */
+function argsOf(req: ApprovalRequest): RestoredArgs | undefined {
   if (req.callId === undefined) return undefined
   const events = req.agent.session.events
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -355,16 +379,111 @@ function commandOf(req: ApprovalRequest): string | undefined {
     if (typeof raw !== 'string') return undefined
     try {
       const parsed: unknown = JSON.parse(raw)
-      if (parsed !== null && typeof parsed === 'object' && 'command' in parsed) {
-        const command = (parsed as { command: unknown }).command
-        return typeof command === 'string' ? command : undefined
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { args: parsed as Record<string, unknown> }
       }
     } catch {
-      return raw.slice(0, 500)
+      // Not JSON — fall through to the raw-text preview.
     }
-    return raw.slice(0, 500)
+    return { raw }
   }
   return undefined
+}
+
+/**
+ * Build the approval prompt's structured payload preview from the restored
+ * call arguments: shell-style `command` arguments map to the command kind;
+ * Edit/MultiEdit/Write arguments map to per-file diffs (rendered with the
+ * transcript's multi-hunk diff renderer); anything else pretty-prints the raw
+ * arguments, and a failed recovery degrades to tool name + reason only.
+ */
+export function payloadOf(req: ApprovalRequest): ApprovalPreview {
+  const restored = argsOf(req)
+  if (restored === undefined) return { kind: 'none' }
+  if ('raw' in restored) {
+    return { kind: 'args', json: restored.raw.slice(0, ARGS_PREVIEW_MAX_CHARS) }
+  }
+  const args = restored.args
+  if (typeof args.command === 'string') {
+    return { kind: 'command', command: args.command }
+  }
+  const diffs = diffsOf(req.toolName.toLowerCase(), args)
+  if (diffs !== undefined) return { kind: 'diff', diffs }
+  return { kind: 'args', json: JSON.stringify(args, null, 2).slice(0, ARGS_PREVIEW_MAX_CHARS) }
+}
+
+/**
+ * Extract per-file diffs from file-edit tool arguments, or undefined when the
+ * arguments do not carry the expected shape (the preview then degrades to the
+ * raw-arguments kind).
+ */
+function diffsOf(name: string, args: Record<string, unknown>): readonly { path: string; oldText: string | null; newText: string }[] | undefined {
+  const path = typeof args.file_path === 'string' ? args.file_path : undefined
+  if (name === 'write') {
+    if (path === undefined || typeof args.content !== 'string') return undefined
+    return [{ path, oldText: null, newText: args.content }]
+  }
+  if (name === 'edit') {
+    if (path === undefined || typeof args.old_string !== 'string' || typeof args.new_string !== 'string') return undefined
+    return [{ path, oldText: args.old_string, newText: args.new_string }]
+  }
+  if (name === 'multiedit' || name === 'multi_edit') {
+    if (path === undefined || !Array.isArray(args.edits)) return undefined
+    const diffs: { path: string; oldText: string | null; newText: string }[] = []
+    for (const edit of args.edits) {
+      if (edit === null || typeof edit !== 'object') continue
+      const { old_string: oldText, new_string: newText } = edit as Record<string, unknown>
+      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
+      diffs.push({ path, oldText, newText })
+    }
+    return diffs.length > 0 ? diffs : undefined
+  }
+  return undefined
+}
+
+/**
+ * Derive the permission rule an "always" answer persists for the approved
+ * call. Shell commands get a trailing-space first-word prefix rule
+ * (`Bash(npm )` matches `npm install …` but not `npmx …` — the deliberate
+ * trailing space replaces the colon-carrying `:*` legacy form, which would
+ * otherwise embed the colon in the prefix and never match). Every other tool
+ * gets a whole-tool rule. Undefined (stay once-only) when nothing usable
+ * remains, e.g. a blank command.
+ */
+export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
+  const name = toolName.trim()
+  if (name === '') return undefined
+  if (preview?.kind === 'command') {
+    const firstWord = preview.command.trim().split(/\s+/)[0] ?? ''
+    if (firstWord === '') return undefined
+    // ruleString escapes parens/backslashes so a subshell-opening first word
+    // round-trips through parseRuleString.
+    return ruleString(name, `${firstWord} `)
+  }
+  return name
+}
+
+/**
+ * Structural seam for the deployment settings provider: the pieces the
+ * always-allow write path needs (namespace descriptors and whole-section
+ * replace). Declared locally — the tui package does not import the settings
+ * package, mirroring the other `*Like` seams.
+ */
+type SettingsProviderLike = {
+  readonly writable?: boolean
+  describe(options?: { redactSecrets?: boolean }): readonly {
+    ns: unknown
+    revision: number
+    user?: unknown
+  }[]
+  replace(ns: unknown, section: object, expectedRevision?: number): Promise<void>
+}
+
+/** Whether an error is the settings provider's revision-conflict rejection. */
+function isSettingsConflict(error: unknown): boolean {
+  const candidate = error as { name?: unknown; code?: unknown } | null
+  if (candidate === null || typeof candidate !== 'object') return false
+  return candidate.code === 'SETTINGS_CONFLICT' || candidate.name === 'SettingsConflictError'
 }
 
 /**
@@ -627,17 +746,27 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   })
 
-  let pendingApproval: { resolve: (outcome: ApprovalOutcome) => void } | undefined
+  // --- Approvals ------------------------------------------------------------
+  // The open approval prompt is parked in state.approval together with the
+  // recoverable payload preview. The "always" answer resolves the current call
+  // like a one-shot grant AND persists a derived permission rule through the
+  // settings provider (see writeAllowRule). Already-queued requests are decided
+  // one by one even after a rule lands — grants never apply retroactively.
+  let pendingApproval: {
+    resolve: (outcome: ApprovalOutcome) => void
+    toolName: string
+    preview: ApprovalPreview | undefined
+  } | undefined
   ctx.on('approval/request', async (req: ApprovalRequest, next) => {
     if (req.agent.id !== current.agent.id) return next()
-    const command = commandOf(req)
+    const preview = payloadOf(req)
     emit(setApproval(state, {
       toolName: req.toolName,
       ...req.reason === undefined ? {} : { reason: req.reason },
-      ...command === undefined ? {} : { command },
+      ...preview.kind === 'none' ? {} : { preview },
     }))
     return await new Promise<ApprovalOutcome>(resolve => {
-      pendingApproval = { resolve }
+      pendingApproval = { resolve, toolName: req.toolName, preview: preview.kind === 'none' ? undefined : preview }
       req.signal?.addEventListener('abort', () => {
         pendingApproval = undefined
         emit(setApproval(state, undefined))
@@ -645,6 +774,49 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       }, { once: true })
     })
   })
+
+  /**
+   * Persist the allow rule an "always" answer grants: read the `permissions`
+   * namespace descriptor, merge the rule into the raw user section's allow
+   * list (re-attaching every passthrough field — `replace` overwrites the
+   * whole section), and write it back at the observed revision. One retry on
+   * a revision conflict (re-describe, re-merge, replace). Degradations
+   * (provider missing, namespace unregistered, write failure) leave the call
+   * allowed once and say so in a notice — never a crash after the fact.
+   */
+  const writeAllowRule = async (toolName: string, preview: ApprovalPreview | undefined): Promise<void> => {
+    const rule = allowRuleOf(toolName, preview)
+    if (rule === undefined) return
+    const settings = ctx.get('settings') as SettingsProviderLike | undefined
+    if (settings === undefined || settings.writable === false || typeof settings.describe !== 'function') {
+      showNotice('Allowed once only — no writable settings provider is mounted.')
+      return
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const descriptor = settings.describe().find(
+        entry => String(entry.ns) === String(PERMISSION_SETTINGS_NAMESPACE),
+      )
+      if (descriptor === undefined) {
+        showNotice('Allowed once only — the "permissions" settings namespace is not mounted.')
+        return
+      }
+      const user = descriptor.user !== null && typeof descriptor.user === 'object'
+        ? descriptor.user as Record<string, unknown>
+        : {}
+      const current = Array.isArray(user.allow) ? [...user.allow as unknown[]] : []
+      const allow = current.includes(rule) ? current : [...current, rule]
+      try {
+        await settings.replace(PERMISSION_SETTINGS_NAMESPACE, { ...user, allow }, descriptor.revision)
+        showNotice(`Always allow: ${rule}`)
+        return
+      } catch (error) {
+        if (attempt === 0 && isSettingsConflict(error)) continue
+        const message = error instanceof Error ? error.message : String(error)
+        showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
+        return
+      }
+    }
+  }
 
   let pendingQuestion: {
     id: string
@@ -1206,10 +1378,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     toggleThinking() {
       emit(toggleThinking(state))
     },
-    answerApproval(allowed) {
-      pendingApproval?.resolve(allowed ? 'allowed-once' : 'rejected')
+    answerApproval(kind: ApprovalAnswerKind) {
+      const pending = pendingApproval
+      if (pending === undefined) return
       pendingApproval = undefined
       emit(setApproval(state, undefined))
+      pending.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
+      if (kind === 'always') {
+        // Fire-and-forget: the call proceeds while the rule persists; a write
+        // failure surfaces as a notice, never as an answer error.
+        void writeAllowRule(pending.toolName, pending.preview).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
+        })
+      }
     },
     questionMove(delta) {
       emit(moveQuestionFocus(state, delta))

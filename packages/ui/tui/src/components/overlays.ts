@@ -13,12 +13,26 @@ import type {
   SessionSwitcherView,
   TodoItemView,
 } from '../store.ts'
+import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { bold, dim, yellow } from './theme.ts'
 
 /**
- * Approval box: "Approve <tool>?" + optional reason + optional command
- * preview (capped at three lines) + an explicit key→outcome hint.
+ * Cap on command/JSON preview lines in an approval box so a long payload
+ * cannot push the composer off-screen; a trailing `…` marks the cut.
+ */
+const APPROVAL_PREVIEW_MAX_LINES = 8
+
+/**
+ * Cap on diff lines in an approval box, passed to the transcript's diff
+ * renderer (which cuts on a hunk boundary and appends its own dim trailer).
+ */
+const APPROVAL_DIFF_MAX_LINES = 16
+
+/**
+ * Approval box: "Approve <tool>?" + optional reason + the structured payload
+ * preview (command block, diff card, or raw-arguments JSON block) + an
+ * explicit key→outcome hint including the always-allow option.
  */
 export function createApprovalBox(approval: ApprovalView): Container {
   const box = new Container()
@@ -26,21 +40,30 @@ export function createApprovalBox(approval: ApprovalView): Container {
   if (approval.reason !== undefined) {
     box.addChild(new Text(dim(approval.reason), 0, 0))
   }
-  if (approval.command !== undefined) {
-    for (const line of commandPreviewLines(approval.command)) {
+  const preview = approval.preview
+  if (preview?.kind === 'command') {
+    for (const line of previewLines(preview.command, APPROVAL_PREVIEW_MAX_LINES)) {
+      box.addChild(new Text(dim(line), 0, 0))
+    }
+  } else if (preview?.kind === 'diff') {
+    for (const line of renderDiffLines(preview.diffs, APPROVAL_DIFF_MAX_LINES)) {
+      box.addChild(new Text(dim(line), 0, 0))
+    }
+  } else if (preview?.kind === 'args') {
+    for (const line of previewLines(preview.json, APPROVAL_PREVIEW_MAX_LINES)) {
       box.addChild(new Text(dim(line), 0, 0))
     }
   }
-  box.addChild(new Text(dim('1 Yes, allow once · 2 No, reject'), 0, 0))
+  box.addChild(new Text(dim('1 once · 2 no · 3 always'), 0, 0))
   return box
 }
 
 /**
- * Cap a command preview at three lines; a trailing `…` marks the cut so a
- * long multi-line script cannot push the composer off-screen.
+ * Cap a multi-line preview at `maxLines`; a trailing `…` marks the cut so a
+ * long payload cannot push the composer off-screen.
  */
-function commandPreviewLines(command: string, maxLines = 3): string[] {
-  const lines = command.split('\n')
+function previewLines(text: string, maxLines: number): string[] {
+  const lines = text.split('\n')
   if (lines.length <= maxLines) return lines
   return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1]!} …`]
 }

@@ -23,7 +23,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { buildArgCompleters } from './arg-completers.ts'
@@ -231,8 +231,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			return { consume: true }
 		}
 		if (live.approval !== undefined) {
-			if (data === '1' || data === 'y' || data === 'Y') driver.answerApproval(true)
-			else if (data === '2' || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) driver.answerApproval(false)
+			// Approval keys route through the shared router in input.ts — the same
+			// single source of truth the headless composer path uses.
+			routeApprovalInput(driver, data)
 			return { consume: true }
 		}
 		if (live.question !== undefined) {

@@ -141,7 +141,7 @@ function fakeDriver(
       state = toggleGlobalCollapse(state)
       for (const l of listeners) l(state)
     },
-    answerApproval(_allowed: boolean) {
+    answerApproval(_kind: 'once' | 'always' | 'reject') {
       state = setApproval(state, undefined)
       for (const l of listeners) l(state)
     },
@@ -305,7 +305,10 @@ describe('vt-renderer', () => {
     state = setApproval(state, {
       toolName: 'Bash',
       reason: 'destructive git operation',
-      command: 'set -e\necho one\necho two\necho three',
+      preview: {
+        kind: 'command',
+        command: 'set -e\necho one\necho two\necho three\necho four\necho five\necho six\necho seven\necho eight\necho nine',
+      },
     })
     const driver = fakeDriver(state)
 
@@ -316,30 +319,56 @@ describe('vt-renderer', () => {
     const joined = vt.grid().join('\n')
     expect(joined).toContain('Approve Bash')
     expect(joined).toContain('destructive git operation')
-    // First three command lines render; the fourth is cut with a … trailer.
+    // First eight command lines render; the rest is cut with a … trailer.
     expect(joined).toContain('set -e')
-    expect(joined).toContain('echo one')
-    expect(joined).toContain('echo two')
+    expect(joined).toContain('echo seven')
     expect(joined).toContain('…')
-    expect(joined).not.toContain('echo three')
-    // Explicit key → outcome mapping, not a bare yes/no.
-    expect(joined).toContain('1 Yes, allow once')
-    expect(joined).toContain('2 No, reject')
+    expect(joined).not.toContain('echo eight')
+    expect(joined).not.toContain('echo nine')
+    // Explicit key → outcome mapping, including the always-allow option.
+    expect(joined).toContain('1 once · 2 no · 3 always')
 
     root.tui.stop()
     root.destroy()
   })
 
-  it('approval box: 1 resolves allow, 2 resolves reject, other keys never reach the editor', async () => {
+  it('approval box renders a diff preview for file-edit tools', async () => {
     const vt = new VirtualTerminal(80, 24)
     let state = createInitialState()
-    state = setApproval(state, { toolName: 'Bash', command: 'rm -rf /tmp/x' })
+    state = setApproval(state, {
+      toolName: 'Edit',
+      preview: {
+        kind: 'diff',
+        diffs: [{ path: 'src/a.ts', oldText: 'const a = 1\n', newText: 'const a = 2\n' }],
+      },
+    })
     const driver = fakeDriver(state)
-    const answers: boolean[] = []
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const joined = vt.grid().join('\n')
+    expect(joined).toContain('Approve Edit')
+    expect(joined).toContain('src/a.ts')
+    expect(joined).toContain('- const a = 1')
+    expect(joined).toContain('+ const a = 2')
+    expect(joined).toContain('1 once · 2 no · 3 always')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 1 answers once, 2 answers reject, other keys never reach the editor', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'rm -rf /tmp/x' } })
+    const driver = fakeDriver(state)
+    const answers: string[] = []
     const baseAnswer = driver.answerApproval.bind(driver)
-    driver.answerApproval = (allowed: boolean) => {
-      answers.push(allowed)
-      baseAnswer(allowed)
+    driver.answerApproval = (kind: 'once' | 'always' | 'reject') => {
+      answers.push(kind)
+      baseAnswer(kind)
     }
 
     const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
@@ -354,16 +383,40 @@ describe('vt-renderer', () => {
 
     vt.sendInput('1')
     await settle()
-    expect(answers).toEqual([true])
+    expect(answers).toEqual(['once'])
     expect(vt.grid().join('\n')).not.toContain('Approve Bash')
 
     // Reopen and reject with 2.
-    driver.setState(setApproval(driver.state, { toolName: 'Bash', command: 'rm -rf /tmp/x' }))
+    driver.setState(setApproval(driver.state, { toolName: 'Bash', preview: { kind: 'command', command: 'rm -rf /tmp/x' } }))
     await settle()
     vt.sendInput('2')
     await settle()
-    expect(answers).toEqual([true, false])
+    expect(answers).toEqual(['once', 'reject'])
     expect(root.editor.getText()).toBe('')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('approval box: 3 answers always and the allow-rule notice is echoed', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setApproval(state, { toolName: 'Bash', preview: { kind: 'command', command: 'npm install foo' } })
+    const driver = fakeDriver(state)
+    const baseAnswer = driver.answerApproval.bind(driver)
+    driver.answerApproval = (kind: 'once' | 'always' | 'reject') => {
+      if (kind === 'always') driver.showNotice('Always allow: Bash(npm )')
+      baseAnswer(kind)
+    }
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('3')
+    await settle()
+    expect(vt.grid().join('\n')).toContain('Always allow: Bash(npm )')
+    expect(vt.grid().join('\n')).not.toContain('Approve Bash')
 
     root.tui.stop()
     root.destroy()

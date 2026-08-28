@@ -90,7 +90,7 @@ describe('createDriver approval dialog contract', () => {
     else process.env.DSH_HOME = prevHome
   })
 
-  it('parks an approval carrying the command folded from the paired tool/call event', async () => {
+  it('parks an approval carrying the command preview folded from the paired tool/call event', async () => {
     const { ctx, agent, request } = makeApprovalCtx([
       { type: 'tool/call', data: { callId: 'c1', arguments: JSON.stringify({ command: 'git push --force origin main' }) } },
     ])
@@ -105,15 +105,15 @@ describe('createDriver approval dialog contract', () => {
     expect(driver.state.approval).toEqual({
       toolName: 'Bash',
       reason: 'destructive git operation',
-      command: 'git push --force origin main',
+      preview: { kind: 'command', command: 'git push --force origin main' },
     })
 
-    driver.answerApproval(true)
+    driver.answerApproval('once')
     await expect(pending).resolves.toBe('allowed-once')
     expect(driver.state.approval).toBeUndefined()
   })
 
-  it('parks without a command when the callId has no paired tool/call (no throw)', async () => {
+  it('parks without a preview when the callId has no paired tool/call (no throw)', async () => {
     const { ctx, agent, request } = makeApprovalCtx([
       { type: 'tool/call', data: { callId: 'other', arguments: JSON.stringify({ command: 'ls' }) } },
     ])
@@ -121,9 +121,9 @@ describe('createDriver approval dialog contract', () => {
 
     const pending = request({ agent: agent as { id: string }, toolName: 'Bash', callId: 'missing' })
     expect(driver.state.approval).toEqual({ toolName: 'Bash' })
-    expect(driver.state.approval?.command).toBeUndefined()
+    expect(driver.state.approval?.preview).toBeUndefined()
 
-    driver.answerApproval(false)
+    driver.answerApproval('reject')
     await expect(pending).resolves.toBe('rejected')
     expect(driver.state.approval).toBeUndefined()
   })

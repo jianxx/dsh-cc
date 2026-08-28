@@ -171,28 +171,43 @@ function questionState(overrides: Partial<QuestionView> = {}): TuiState {
 }
 
 describe('handleComposerInput', () => {
-  it('answers an approval overlay with yes on 1 or y/Y', () => {
-    let allowed: boolean | undefined
+  it('answers an approval overlay with once on 1 or y/Y', () => {
+    const answers: string[] = []
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     for (const key of ['1', 'y', 'Y']) {
       handleComposerInput(driver, key)
-      expect(allowed).toBe(true)
+      expect(answers.at(-1)).toBe('once')
     }
+    expect(answers).toHaveLength(3)
   })
 
-  it('answers an approval overlay with no on 2, n/N, or escape', () => {
-    let allowed: boolean | undefined
+  it('answers an approval overlay with reject on 2, n/N, or escape', () => {
+    const answers: string[] = []
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     for (const key of ['2', 'n', 'N', '\x1b']) {
       handleComposerInput(driver, key)
-      expect(allowed).toBe(false)
+      expect(answers.at(-1)).toBe('reject')
     }
+    expect(answers).toHaveLength(4)
+  })
+
+  it('answers an approval overlay with always on 3 or a/A', () => {
+    const answers: string[] = []
+    const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
+    driver.answerApproval = kind => {
+      answers.push(kind)
+    }
+    for (const key of ['3', 'a', 'A']) {
+      handleComposerInput(driver, key)
+      expect(answers.at(-1)).toBe('always')
+    }
+    expect(answers).toHaveLength(3)
   })
 
   it('does not toggle thinking while an approval overlay is open (overlay wins)', () => {
@@ -202,7 +217,7 @@ describe('handleComposerInput', () => {
   })
 
   it('an approval overlay outranks an open question (input goes to the approval)', () => {
-    let allowed: boolean | undefined
+    const answers: string[] = []
     let state = setApproval(createInitialState(), { toolName: 'Bash' })
     state = setQuestion(state, {
       header: 'Pick',
@@ -214,11 +229,11 @@ describe('handleComposerInput', () => {
       custom: '',
     })
     const driver = sink(state)
-    driver.answerApproval = value => {
-      allowed = value
+    driver.answerApproval = kind => {
+      answers.push(kind)
     }
     handleComposerInput(driver, '1')
-    expect(allowed).toBe(true)
+    expect(answers).toEqual(['once'])
     expect(driver.questionCalls.submitted).toBe(0)
     expect(driver.questionCalls.picked).toEqual([])
   })

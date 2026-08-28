@@ -8,6 +8,9 @@
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
 
+/** The three approval answers: grant once, grant persistently, reject. */
+export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
+
 export interface Driver {
   readonly state: TuiState
   readonly statusLine: string
@@ -51,7 +54,13 @@ export interface Driver {
   toggleGlobalCollapse(): void
   /** Legacy thinking-only flip; kept for compatibility with Ctrl+O's old behavior. */
   toggleThinking(): void
-  answerApproval(allowed: boolean): void
+  /**
+   * Answer the open approval prompt: `'once'` grants this call only;
+   * `'always'` additionally derives a permission rule from the prompt's
+   * preview and persists it into the settings `permissions.allow` list;
+   * `'reject'` refuses the call.
+   */
+  answerApproval(kind: ApprovalAnswerKind): void
   /**
    * While a question overlay is open: move the focus one row across the
    * options and the trailing free-text ("Other") row.

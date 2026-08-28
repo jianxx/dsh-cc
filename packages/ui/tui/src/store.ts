@@ -33,10 +33,24 @@ export type TranscriptRow =
     error?: boolean
   }
 
+/**
+ * Structured payload preview attached to an approval prompt, recovered from
+ * the paired tool/call event: the shell command, the affected file diffs, or
+ * the pretty-printed raw arguments. `none` degrades to tool name + reason.
+ */
+export type ApprovalPreview =
+  | { kind: 'command'; command: string }
+  | { kind: 'diff'; diffs: readonly FileDiff[] }
+  | { kind: 'args'; json: string }
+  | { kind: 'none' }
+
 export interface ApprovalView {
   toolName: string
   reason?: string
-  command?: string
+  /** Structured payload preview for the call under review. */
+  preview?: ApprovalPreview
+  /** Modal entries waiting behind this one in the approval queue; absent for a lone head. */
+  pendingCount?: number
 }
 
 export interface QuestionOptionView {

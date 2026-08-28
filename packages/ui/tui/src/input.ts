@@ -7,6 +7,7 @@
  */
 
 import { Key, decodeKittyPrintable, matchesKey } from '@jianxx/dsh-cc-pi-tui'
+import type { ApprovalAnswerKind } from './state/driver-types.ts'
 import type { TuiState } from './store.ts'
 
 export interface InputSink {
@@ -14,7 +15,7 @@ export interface InputSink {
   interrupt(): void
   cyclePermissionMode(): void
   toggleThinking(): void
-  answerApproval(allowed: boolean): void
+  answerApproval(kind: ApprovalAnswerKind): void
   questionMove(delta: -1 | 1): void
   questionToggle(): void
   questionPick(index: number): void
@@ -54,6 +55,30 @@ function printableOf(data: string): string | undefined {
     if (code >= 32 && code !== 127) return data
   }
   return undefined
+}
+
+/**
+ * Route one raw keypress into the open approval overlay: `1`/`y`/`Y` grant
+ * once, `2`/`n`/`N`/escape reject, `3`/`a`/`A` grant always (once + persist a
+ * derived allow rule). Every other key is consumed and ignored — the overlay
+ * is modal and the composer editor must never see keystrokes while it is open.
+ * Shared by the headless composer path and the mounted root listener so the
+ * key map has a single source of truth.
+ */
+export function routeApprovalInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, '1') || data === 'y' || data === 'Y') {
+    driver.answerApproval('once')
+    return
+  }
+  if (matchesKey(data, '2') || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) {
+    driver.answerApproval('reject')
+    return
+  }
+  if (matchesKey(data, '3') || data === 'a' || data === 'A') {
+    driver.answerApproval('always')
+    return
+  }
+  // All other keys consumed and ignored (modal).
 }
 
 /**
@@ -183,11 +208,7 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
   const live = driver.state
 
   if (live.approval !== undefined) {
-    if (matchesKey(data, '1') || data === 'y' || data === 'Y') {
-      driver.answerApproval(true)
-    } else if (matchesKey(data, '2') || data === 'n' || data === 'N' || matchesKey(data, Key.escape)) {
-      driver.answerApproval(false)
-    }
+    routeApprovalInput(driver, data)
     return { kind: 'none' }
   }
 
