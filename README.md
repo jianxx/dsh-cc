@@ -170,6 +170,19 @@ inherit -> parent agent route
 
 Aliases are configuration, not hard-coded vendor bindings. This lets you preserve familiar agent definitions while choosing the models that fit your own environment.
 
+### Dogfooding dsh-cc
+
+`dsh-cc` is now developed with `dsh-cc` itself. The project's current development setup uses the same model-alias routing described above, with this mapping:
+
+| Alias | Model |
+| --- | --- |
+| `fable` | `kimi-k3` |
+| `opus` | `glm-5.3` |
+| `sonnet` | `glm-5.3-flash` |
+| `haiku` | `deepseek-v4-flash-0731` |
+
+This is a real project configuration rather than a required default: users can map the aliases to any provider/model combination supported by their DeepSeek Harness deployment.
+
 ## How this is different
 
 ### vs. Claude Code
