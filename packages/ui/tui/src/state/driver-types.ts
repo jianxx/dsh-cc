@@ -29,6 +29,19 @@ export interface Driver {
   setDraft(draft: string): void
   submit(text?: string): Promise<void>
   interrupt(): void
+  /**
+   * Queue-jump (Ctrl+S): inject every queued outbox entry into the running
+   * turn immediately — FIFO `agent.steer` per entry, with the queue cleared
+   * in the same synchronous stroke as the dispatch. A no-op when the queue
+   * is empty.
+   */
+  steerQueued(): void
+  /**
+   * Pop the LAST queued entry (LIFO — the most recent submit) back out of
+   * the outbox for editing (empty-composer ↑). Returns the text, or
+   * `undefined` when the queue is empty (same-reference no-op).
+   */
+  recallQueued(): string | undefined
   cyclePermissionMode(): void
   /**
    * Flip the global collapse state (Ctrl+O): thinking rows and tool output

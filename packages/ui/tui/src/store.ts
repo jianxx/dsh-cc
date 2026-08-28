@@ -173,7 +173,11 @@ export interface TuiState {
   question?: QuestionView
   modelPicker?: ModelPickerView
   sessionSwitcher?: SessionSwitcherView
-  /** Texts submitted while the agent was busy (pending steering). */
+  /**
+   * Outbox of texts submitted while the agent was busy: rendered as pending
+   * chips, flushed into the next turn on durable `turn/end` (or injected
+   * immediately via Ctrl+S). Idle submits bypass the outbox entirely.
+   */
   queued: readonly string[]
   /** Whether thinking rows render expanded (Ctrl+O). Collapsed by default. */
   thinkingExpanded: boolean
@@ -387,14 +391,25 @@ export function enqueue(state: TuiState, text: string): TuiState {
 
 /**
  * Remove the FIRST queued entry strictly equal to `text`. No-op (returns the
- * same reference) when the text is absent — so the matching chip clears the
- * instant its durable `user/message` lands in the transcript.
+ * same reference) when the text is absent. Kept for outbox bookkeeping and
+ * tests — chip clearing in the live driver is synchronous (flush / Ctrl+S /
+ * interrupt / recall), never event-driven.
  */
 export function dequeue(state: TuiState, text: string): TuiState {
   const index = state.queued.findIndex(entry => entry === text)
   if (index < 0) return state
   const queued = state.queued.slice(0, index).concat(state.queued.slice(index + 1))
   return { ...state, queued }
+}
+
+/**
+ * Remove and return the LAST queued entry — LIFO, so an editor recall hands
+ * back the most recent submit. Same reference and `undefined` text on an
+ * empty queue; callers treat that as "nothing to recall" and fall through.
+ */
+export function popQueued(state: TuiState): { state: TuiState; text: string | undefined } {
+  if (state.queued.length === 0) return { state, text: undefined }
+  return { state: { ...state, queued: state.queued.slice(0, -1) }, text: state.queued.at(-1) }
 }
 
 /** Drop every queued chip (e.g. on interrupt — matches cancel's inbox clear). */

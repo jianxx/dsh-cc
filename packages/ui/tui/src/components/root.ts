@@ -272,6 +272,21 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			driver.toggleTodoPanel()
 			return { consume: true }
 		}
+		if (matchesKey(data, Key.ctrl('s'))) {
+			// Queue-jump: inject the outbox into the running turn now.
+			driver.steerQueued()
+			return { consume: true }
+		}
+		if (matchesKey(data, Key.up) && editor.getText().length === 0 && live.queued.length > 0) {
+			// Empty composer + ↑ recalls the most recent queued entry for editing.
+			// A non-empty composer (or empty queue) falls through so the editor's
+			// own history navigation keeps working.
+			const recalled = driver.recallQueued()
+			if (recalled !== undefined) {
+				editor.setText(recalled)
+				return { consume: true }
+			}
+		}
 		if (matchesKey(data, Key.escape)) {
 			if (live.busy) {
 				driver.interrupt()

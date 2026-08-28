@@ -4,8 +4,10 @@ import { type Terminal as PiTerminal } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
+  clearQueue,
   createInitialState,
   markExitAttempt,
+  popQueued,
   setNotice,
   toggleGlobalCollapse,
   upsertRow,
@@ -135,6 +137,14 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
 		todoPanelClose: noop,
 		showNotice(text) { state = setNotice(state, text); emit() },
 		markExitAttempt(now) { state = markExitAttempt(state, now ?? Date.now()); emit() },
+		steerQueued() { state = clearQueue(state); emit() },
+		recallQueued() {
+			const popped = popQueued(state)
+			if (popped.text === undefined) return undefined
+			state = popped.state
+			emit()
+			return popped.text
+		},
 		switchSession: asyncNoop,
 		async listSessions() { return [] },
 		listCommands() { return [] },

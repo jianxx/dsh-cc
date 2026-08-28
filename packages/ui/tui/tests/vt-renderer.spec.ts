@@ -9,6 +9,7 @@ import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
   backspaceQuestionText,
+  clearQueue,
   closeTodoPanel,
   createInitialState,
   enqueue,
@@ -17,6 +18,7 @@ import {
   moveQuestionFocus,
   moveTodoPanelFocus,
   openTodoPanel,
+  popQueued,
   setApproval,
   setBusy,
   setModelPicker,
@@ -226,6 +228,17 @@ function fakeDriver(
       state = markExitAttempt(state, now ?? Date.now())
       for (const l of listeners) l(state)
     },
+    steerQueued() {
+      state = clearQueue(state)
+      for (const l of listeners) l(state)
+    },
+    recallQueued() {
+      const popped = popQueued(state)
+      if (popped.text === undefined) return undefined
+      state = popped.state
+      for (const l of listeners) l(state)
+      return popped.text
+    },
     async openSessionSwitcher() {},
     sessionSwitcherMove() {},
     async sessionSwitcherSubmit() {},
@@ -393,6 +406,81 @@ describe('vt-renderer', () => {
 
     const joined = vt.grid().join('\n')
     expect(joined).toContain('⏵ queued: fix the bug')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('recalls the most recent queued entry into an empty editor on ↑', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setBusy(state, true)
+    state = enqueue(state, 'first idea')
+    state = enqueue(state, 'second idea')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('⏵ queued: second idea')
+
+    vt.sendInput('\x1b[A') // ↑ with an empty composer
+    await settle()
+
+    // The newest chip lands in the composer for editing and leaves the queue.
+    expect(root.editor.getText()).toBe('second idea')
+    expect(driver.state.queued).toEqual(['first idea'])
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).not.toContain('⏵ queued: second idea')
+    expect(stripped).toContain('⏵ queued: first idea')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('a non-empty editor walks history on ↑ without touching the queue', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = enqueue(state, 'queued one')
+    state = enqueue(state, 'queued two')
+    const driver = fakeDriver(state, ['history entry'])
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    for (const ch of 'abc') vt.sendInput(ch)
+    await settle()
+    vt.sendInput('\x01') // ctrl+a — cursor to col 0 (the editor's history-browse precondition)
+    await settle()
+    vt.sendInput('\x1b[A') // ↑ with a non-empty composer falls through to the editor
+    await settle()
+
+    // History navigation replaced the draft; the outbox was not popped.
+    expect(root.editor.getText()).toBe('history entry')
+    expect(driver.state.queued).toEqual(['queued one', 'queued two'])
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('Ctrl+S injects the queued entries immediately and clears the chips', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = createInitialState()
+    state = setBusy(state, true)
+    state = enqueue(state, 'fix the bug')
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).toContain('⏵ queued: fix the bug')
+
+    vt.sendInput('\x13') // ctrl+s — queue-jump into the running turn
+    await settle()
+
+    expect(driver.state.queued).toEqual([])
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('⏵ queued:')
 
     root.tui.stop()
     root.destroy()

@@ -14,6 +14,7 @@ import {
   moveQuestionFocus,
   moveTodoPanelFocus,
   openTodoPanel,
+  popQueued,
   setModelPicker,
   setQuestion,
   setTodos,
@@ -85,6 +86,32 @@ describe('queue helpers', () => {
     state = enqueue(state, 'two')
     state = clearQueue(state)
     expect(state.queued).toEqual([])
+  })
+
+  it('popQueued removes and returns the LAST queued entry (LIFO recall)', () => {
+    let state = createInitialState()
+    state = enqueue(state, 'one')
+    state = enqueue(state, 'two')
+    const popped = popQueued(state)
+    expect(popped.text).toBe('two')
+    expect(popped.state.queued).toEqual(['one'])
+  })
+
+  it('popQueued on an empty queue returns undefined text and the same state reference', () => {
+    const state = createInitialState()
+    const popped = popQueued(state)
+    expect(popped.text).toBeUndefined()
+    expect(popped.state).toBe(state)
+  })
+
+  it('popQueued does not mutate the original state', () => {
+    let state = createInitialState()
+    state = enqueue(state, 'one')
+    state = enqueue(state, 'two')
+    const popped = popQueued(state)
+    expect(state.queued).toEqual(['one', 'two'])
+    expect(popped.state.queued).toEqual(['one'])
+    expect(popped.state).not.toBe(state)
   })
 
   it('helpers do not mutate the original state', () => {

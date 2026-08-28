@@ -49,6 +49,7 @@ import {
   moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
+  popQueued,
   setApproval,
   setBusy,
   setDraft,
@@ -616,6 +617,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       emit(setPermissionMode(state, liveMode(current.agent, state.permissionMode)))
     }
+    // Outbox flush anchor: the durable `turn/end` fires exactly once per turn
+    // (aborts and errors included). agent/status is unusable here — live
+    // events never reach the session log — and busy flips jitter per step, so
+    // turn/end is the only per-turn heartbeat. An empty queue makes the flush
+    // a no-op (e.g. after interrupt() already cleared it).
+    if (eventType === 'turn/end') {
+      flushQueue()
+    }
   })
 
   let pendingApproval: { resolve: (outcome: ApprovalOutcome) => void } | undefined
@@ -1049,6 +1058,57 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
+  /**
+   * Outbox flush, anchored to the durable `turn/end` event: snapshot the
+   * queue, dispatch every entry FIFO through `followup`, and clear the queue
+   * in the same synchronous stroke as the dispatch — so the queue never holds
+   * an entry that was already sent and ↑ recall cannot race a flush. Busy is
+   * re-asserted optimistically (the flushed followups start a new turn
+   * immediately; the fold's `turn/end` handling just set it false).
+   */
+  const flushQueue = (): void => {
+    const pending = [...state.queued]
+    if (pending.length === 0) return
+    for (const text of pending) {
+      current.agent.followup(createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      }))
+    }
+    emit(setBusy(clearQueue(state), true))
+  }
+
+  /**
+   * Ctrl+S queue-jump: inject every queued entry into the RUNNING turn
+   * immediately — same synchronous snapshot-then-clear discipline as
+   * {@link flushQueue}, but via `agent.steer` and without a busy flip (the
+   * turn is already running).
+   */
+  const steerQueued = (): void => {
+    const pending = [...state.queued]
+    if (pending.length === 0) return
+    for (const text of pending) {
+      current.agent.steer(createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      }))
+    }
+    emit(clearQueue(state))
+  }
+
+  /**
+   * Recall for editing: pop the most recent queued entry back out of the
+   * outbox and hand it to the caller (root.ts puts it into the composer).
+   * Race-free by construction — flush and steer always clear synchronously,
+   * so the queue only ever holds entries that were never sent.
+   */
+  const recallQueued = (): string | undefined => {
+    const popped = popQueued(state)
+    if (popped.text === undefined) return undefined
+    emit(popped.state)
+    return popped.text
+  }
+
   const submit = async (text?: string): Promise<void> => {
     const draft = text ?? state.draft
     if (draft.trim().length === 0) return
@@ -1066,17 +1126,16 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // prompts, and would dilute the recall signal). Consecutive duplicates
     // and the cap are handled inside saveHistory.
     history = saveHistory([...history, draft], historyDir)
-    // Always queue the text; the chip clears when the durable user/message
-    // event folds the row into the transcript (near-instant in-process).
-    // No optimistic user row — both paths surface it from the durable event.
-    emit(enqueue(state, draft))
     if (state.busy) {
-      current.agent.steer(createUserMessage({
-        content: [{ type: 'text', text: draft }],
-        source: { kind: 'user' },
-      }))
+      // Outbox: park the text as a pending chip only. It reaches the agent on
+      // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
+      // (steerQueued). No injection into the running turn here — that is what
+      // makes recall-then-edit meaningful.
+      emit(enqueue(state, draft))
       return
     }
+    // Idle sends bypass the outbox entirely — the row surfaces from the
+    // durable `user/message` event, and a sent text must not stay recallable.
     current.agent.followup(createUserMessage({
       content: [{ type: 'text', text: draft }],
       source: { kind: 'user' },
@@ -1126,11 +1185,15 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     interrupt() {
       current.agent.cancel({ kind: 'user' })
       // cancel discards queued/steering inbox items; mirror that in UI state.
+      // Clearing BEFORE the abort's turn/end lands also guarantees the flush
+      // anchor finds an empty queue — an interrupt never resurrects entries.
       emit(upsertRow(clearQueue(setBusy(state, false)), {
         kind: 'status',
         text: 'Interrupted by user.',
       }))
     },
+    steerQueued,
+    recallQueued,
     cyclePermissionMode() {
       const live = liveMode(current.agent, state.permissionMode)
       const next = nextPermissionMode(live)

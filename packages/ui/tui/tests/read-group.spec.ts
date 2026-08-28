@@ -10,7 +10,7 @@ import {
 } from '@jianxx/dsh-cc-tui/components/read-group.ts'
 import { TranscriptView } from '@jianxx/dsh-cc-tui/components/transcript.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
-import { createInitialState, toggleGlobalCollapse, upsertRow, type TuiState, type TranscriptRow } from '@jianxx/dsh-cc-tui/store.ts'
+import { clearQueue, createInitialState, popQueued, toggleGlobalCollapse, upsertRow, type TuiState, type TranscriptRow } from '@jianxx/dsh-cc-tui/store.ts'
 
 /** Build a completed Read tool row targeting `filePath`. */
 function readRow(callId: string, filePath: string, overrides: Partial<Extract<TranscriptRow, { kind: 'tool' }>> = {}): TranscriptRow {
@@ -133,6 +133,14 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     sessionSwitcherMove: noop,
     sessionSwitcherSubmit: asyncNoop,
     sessionSwitcherCancel: noop,
+    steerQueued() { state = clearQueue(state); emit() },
+    recallQueued() {
+      const popped = popQueued(state)
+      if (popped.text === undefined) return undefined
+      state = popped.state
+      emit()
+      return popped.text
+    },
     switchSession: asyncNoop,
     async listSessions() { return [] },
     listCommands() { return [] },

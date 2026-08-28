@@ -100,6 +100,8 @@ function fakeDriver(initial: TuiState): Driver {
     sessionSwitcherMove() {},
     async sessionSwitcherSubmit() {},
     sessionSwitcherCancel() {},
+    steerQueued() {},
+    recallQueued() { return undefined },
     async switchSession() {},
     async listSessions() { return [] },
     async dispose() {},
