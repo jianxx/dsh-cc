@@ -299,21 +299,35 @@ function sameTodos(
 }
 
 /**
- * Context-occupancy percent (0-100 int) from a `contextPressure` state
- * value. Uses the projection's own occupancy definition: the latest sample
- * plus the surface's movement since that sample was taken, falling back to
- * the bare sample when no anchor exists. Undefined until both numerator and
- * denominator are known.
+ * Raw context-window occupancy behind {@link percentOf}: the latest sample
+ * plus the surface's movement since that sample was taken (the projection's
+ * anchor adjustment), falling back to the bare sample when no anchor exists.
+ * `window` is undefined — the result still being usable for exact-token
+ * display — when the projection does not expose a positive window. Callers
+ * must render from these raw counts, never back-derive them from the rounded
+ * percent.
  */
-function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
-  const contextWindow = pressure?.contextWindow
+function occupancyOf(pressure: ContextPressureStateLike | undefined): { used: number; window?: number } | undefined {
   const sample = pressure?.pressureTokens
-  if (typeof contextWindow !== 'number' || contextWindow <= 0 || typeof sample !== 'number') return undefined
+  if (typeof sample !== 'number') return undefined
   const { surfaceTokens, sampledSurfaceTokens } = pressure ?? {}
-  const occupancy = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
+  const used = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
     ? Math.max(0, sample + surfaceTokens - sampledSurfaceTokens)
     : sample
-  return Math.max(0, Math.min(100, Math.round((occupancy / contextWindow) * 100)))
+  const contextWindow = pressure?.contextWindow
+  const window = typeof contextWindow === 'number' && contextWindow > 0 ? contextWindow : undefined
+  // exactOptionalPropertyTypes: `window` must be absent, not explicitly undefined.
+  return window === undefined ? { used } : { used, window }
+}
+
+/**
+ * Context-occupancy percent (0-100 int) from a `contextPressure` state
+ * value. Undefined until both numerator and denominator are known.
+ */
+function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
+  const occupancy = occupancyOf(pressure)
+  if (occupancy === undefined || occupancy.window === undefined) return undefined
+  return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
 }
 
 function liveMode(agent: Agent, fallback: string): string {
@@ -510,7 +524,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     const tokens = patch.tokens
     const tokensSame = tokens === undefined
       || (hud?.tokens !== undefined && hud.tokens.input === tokens.input && hud.tokens.output === tokens.output)
-    if (percentSame && tokensSame) return // emit only on an actual change
+    const detail = patch.contextTokens
+    const detailSame = detail === undefined
+      || (hud?.contextTokens !== undefined
+        && hud.contextTokens.used === detail.used
+        && hud.contextTokens.window === detail.window)
+    if (percentSame && tokensSame && detailSame) return // emit only on an actual change
     emit(setHud(state, patch))
   }
   const seedHud = (): void => {
@@ -518,13 +537,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (projections !== undefined) {
       const tokens = tokensOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
       if (tokens !== undefined) patch.tokens = tokens
-      const percent = percentOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined)
+      const pressure = projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined
+      const percent = percentOf(pressure)
       if (percent !== undefined) patch.contextPercent = percent
+      const occupancy = occupancyOf(pressure)
+      if (occupancy !== undefined) patch.contextTokens = occupancy
     }
     // Replace wholesale: clear first so stale fields from a previous session
     // never leak, then apply whatever the new session actually has.
     let next = setHud(state, undefined)
-    if (patch.contextPercent !== undefined || patch.tokens !== undefined) next = setHud(next, patch)
+    if (patch.contextPercent !== undefined || patch.tokens !== undefined || patch.contextTokens !== undefined) {
+      next = setHud(next, patch)
+    }
     if (next !== state) emit(next)
   }
   // Todos: same seeding contract as the HUD — stateOf at (re)bind, then the
@@ -547,8 +571,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         const tokens = tokensOf(value as TokenUsageStateLike | undefined)
         if (tokens !== undefined) applyHud({ tokens })
       } else if (key === 'contextPressure') {
-        const percent = percentOf(value as ContextPressureStateLike | undefined)
-        if (percent !== undefined) applyHud({ contextPercent: percent })
+        const pressure = value as ContextPressureStateLike | undefined
+        const percent = percentOf(pressure)
+        const occupancy = occupancyOf(pressure)
+        if (percent === undefined && occupancy === undefined) return
+        applyHud({
+          ...percent === undefined ? {} : { contextPercent: percent },
+          ...occupancy === undefined ? {} : { contextTokens: occupancy },
+        })
       } else if (key === 'todos') {
         const todos = todosOf(value)
         if (sameTodos(state.todos, todos)) return
@@ -1031,16 +1061,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setBusy(state, true))
   }
 
-  const statusLineOf = (): string => formatStatusLine({
+  const statusLineOf = (width?: number): string => formatStatusLine({
     cwd: current.agent.session.header.cwd ?? cwd,
     sessionId: String(current.agent.session.id),
     permissionMode: state.permissionMode,
     ...selection.current === undefined ? {} : { model: selection.current.model },
     ...branch === undefined ? {} : { branch },
     ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
+    ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
     ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
     busy: state.busy,
-  })
+  }, width === undefined ? {} : { width })
 
   return {
     get state() {
@@ -1048,6 +1079,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     get statusLine() {
       return statusLineOf()
+    },
+    statusLineIn(width?: number) {
+      return statusLineOf(width)
     },
     get cwd() {
       return cwd

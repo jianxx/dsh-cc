@@ -74,6 +74,52 @@ describe('formatStatusLine', () => {
     })).toContain('ctx 41%')
   })
 
+  it('appends the exact token detail when the context window is known', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      contextPercent: 43,
+      contextTokens: { used: 86_000, window: 200_000 },
+      busy: false,
+    })).toBe('/tmp · x · default · ctx 43% (86k/200k) · shift+tab · /quit')
+  })
+
+  it('keeps the bare percent when the context window is unknown', () => {
+    const base = {
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      contextPercent: 43,
+      busy: false,
+    }
+    // Raw tokens without a window: the parenthetical detail cannot be formed.
+    expect(formatStatusLine({ ...base, contextTokens: { used: 86_000 } }))
+      .toBe('/tmp · x · default · ctx 43% · shift+tab · /quit')
+    // No raw tokens at all: unchanged either.
+    expect(formatStatusLine(base)).toBe('/tmp · x · default · ctx 43% · shift+tab · /quit')
+  })
+
+  it('drops the parenthetical detail on narrow terminals but keeps the percent', () => {
+    const input = {
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      contextPercent: 43,
+      contextTokens: { used: 86_000, window: 200_000 },
+      busy: false,
+    }
+    const full = formatStatusLine(input)
+    const narrow = formatStatusLine(input, { width: 30 })
+    expect(full).toBe('/tmp · x · default · ctx 43% (86k/200k) · shift+tab · /quit')
+    expect(narrow).toBe('/tmp · x · default · ctx 43% · shift+tab · /quit')
+    // No width hint: the detail survives.
+    expect(formatStatusLine(input, {})).toBe(full)
+    // Detail already absent: a narrow width changes nothing.
+    expect(formatStatusLine({ ...input, contextTokens: undefined }, { width: 10 }))
+      .toBe('/tmp · x · default · ctx 43% · shift+tab · /quit')
+  })
+
   it('renders compact token totals with arrows', () => {
     expect(formatStatusLine({
       cwd: '/tmp',

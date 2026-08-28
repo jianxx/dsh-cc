@@ -11,6 +11,12 @@ import type { TuiState } from '../store.ts'
 export interface Driver {
   readonly state: TuiState
   readonly statusLine: string
+  /**
+   * Width-aware status line: same content as {@link Driver.statusLine}, but
+   * the parenthetical context detail is omitted when the line would not fit
+   * `width` columns. Without a width the full line is returned.
+   */
+  statusLineIn(width?: number): string
   /** Session working directory, used for `@`-path completion. */
   readonly cwd: string
   /**

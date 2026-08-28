@@ -138,6 +138,12 @@ export interface HudView {
   contextPercent?: number
   /** Cumulative provider-reported token totals. */
   tokens?: { input: number; output: number }
+  /**
+   * Raw occupancy behind `contextPercent` for exact rendering. The numerator
+   * is the projected token count — never back-derived from the rounded
+   * percent. `window` is absent when the projection does not report one.
+   */
+  contextTokens?: { readonly used: number; readonly window?: number }
 }
 
 /**
@@ -430,6 +436,7 @@ export function setHud(state: TuiState, patch: Partial<HudView> | undefined): Tu
     ...base,
     ...patch.contextPercent === undefined ? {} : { contextPercent: patch.contextPercent },
     ...patch.tokens === undefined ? {} : { tokens: patch.tokens },
+    ...patch.contextTokens === undefined ? {} : { contextTokens: patch.contextTokens },
   }
   return { ...state, hud: merged }
 }

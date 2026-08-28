@@ -102,6 +102,7 @@ function fakeDriver(
   return {
     get state() { return state },
     get statusLine() { return 'test · status' },
+    statusLineIn: () => 'test · status',
     get cwd() { return process.cwd() },
     get promptHistory() { return promptHistory },
     subscribe(listener: (s: TuiState) => void) {
