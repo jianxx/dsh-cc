@@ -3,8 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { allowRuleOf, createDriver, payloadOf } from '@jianxx/dsh-cc-tui/harness/driver.ts'
-import { PERMISSION_SETTINGS_NAMESPACE } from '@jianxx/dsh-cc-permission-rules'
-import { contentMatches, parseRuleString, ruleString } from '@jianxx/dsh-cc-permission-rules/src/parser.ts'
+import { PERMISSION_SETTINGS_NAMESPACE, contentMatches, parseRuleString, ruleString } from '@jianxx/dsh-cc-permission-rules'
 
 /**
  * Approval-as-preview + always-allow contract: the approval prompt carries a

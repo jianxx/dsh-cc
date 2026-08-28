@@ -30,6 +30,7 @@ lockfile_guard before-gates
 if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
 pnpm check:spec-deps
+pnpm check:deep-imports
 pnpm typecheck
 pnpm run bundle:client
 pnpm test
