@@ -262,3 +262,97 @@ describe('createDriver working-line turn anchors', () => {
     expect('turn' in driver.state).toBe(false)
   })
 })
+
+describe('createDriver working-line step clock (tool events reset the elapsed timer)', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-stepclock-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  it('a tool/call resets the step clock, leaving startedAt and outputBase untouched', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(50_000)
+    const projections = makeProjections()
+    const agent = makeFakeAgent('s-a', 'idle')
+    const { ctx, emitSession } = makeCtx({ agent, projections })
+    const driver = await createDriver(ctx as never, driverOpts)
+
+    await driver.submit('do work')
+    expect(driver.state.turn?.startedAt).toBe(50_000)
+    // Pin the baseline first so the assertion locks turn-cumulative tokens.
+    projections.fire('s-a', 'tokenUsage', usageState(100, 50))
+    expect(driver.state.turn?.outputBase).toBe(50)
+
+    vi.setSystemTime(52_000)
+    emitSession({ type: 'tool/call', data: { name: 'Bash', arguments: { command: 'ls' }, callId: 'c1' } })
+    // The step clock moved; the turn anchor and the token baseline did not.
+    expect(driver.state.turn?.stepStartedAt).toBe(52_000)
+    expect(driver.state.turn?.startedAt).toBe(50_000)
+    expect(driver.state.turn?.outputBase).toBe(50)
+  })
+
+  it('a tool/result resets the step clock too (the model is thinking once the tool finishes)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(50_000)
+    const projections = makeProjections()
+    const agent = makeFakeAgent('s-a', 'idle')
+    const { ctx, emitSession } = makeCtx({ agent, projections })
+    const driver = await createDriver(ctx as never, driverOpts)
+
+    await driver.submit('do work')
+    projections.fire('s-a', 'tokenUsage', usageState(100, 50))
+    vi.setSystemTime(52_000)
+    emitSession({ type: 'tool/call', data: { name: 'Bash', arguments: { command: 'ls' }, callId: 'c1' } })
+    expect(driver.state.turn?.stepStartedAt).toBe(52_000)
+
+    vi.setSystemTime(53_500)
+    emitSession({ type: 'tool/result', data: { name: 'Bash', callId: 'c1', content: 'ok' } })
+    expect(driver.state.turn?.stepStartedAt).toBe(53_500)
+    expect(driver.state.turn?.startedAt).toBe(50_000)
+    expect(driver.state.turn?.outputBase).toBe(50)
+  })
+
+  it('a tool event while idle never conjures a phantom anchor', async () => {
+    const agent = makeFakeAgent('s-a', 'idle')
+    const { ctx, emitSession } = makeCtx({ agent })
+    const driver = await createDriver(ctx as never, driverOpts)
+    expect(driver.state.turn).toBeUndefined()
+
+    emitSession({ type: 'tool/call', data: { name: 'Bash', arguments: { command: 'ls' }, callId: 'c1' } })
+    expect('turn' in driver.state).toBe(false)
+  })
+
+  it('the tokenUsage rebase pins the baseline without clobbering the step clock', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(50_000)
+    const projections = makeProjections()
+    const agent = makeFakeAgent('s-a', 'idle')
+    const { ctx, emitSession } = makeCtx({ agent, projections })
+    const driver = await createDriver(ctx as never, driverOpts)
+
+    // Submit on an unseeded HUD: the anchor carries outputBase === undefined.
+    await driver.submit('do work')
+    expect(driver.state.turn?.outputBase).toBeUndefined()
+
+    vi.setSystemTime(51_500)
+    emitSession({ type: 'tool/call', data: { name: 'Bash', arguments: { command: 'ls' }, callId: 'c1' } })
+    expect(driver.state.turn?.stepStartedAt).toBe(51_500)
+
+    // The rebase must stay a pure baseline pin: outputBase pins, the step
+    // clock survives untouched.
+    projections.fire('s-a', 'tokenUsage', usageState(200, 70))
+    expect(driver.state.turn?.outputBase).toBe(70)
+    expect(driver.state.turn?.stepStartedAt).toBe(51_500)
+    expect(driver.state.turn?.startedAt).toBe(50_000)
+  })
+})

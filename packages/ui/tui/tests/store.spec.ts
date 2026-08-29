@@ -16,6 +16,7 @@ import {
   moveTodoPanelFocus,
   openTodoPanel,
   popQueued,
+  resetTurnStep,
   setModelPicker,
   setQuestion,
   setTodos,
@@ -644,5 +645,23 @@ describe('turn anchor helpers', () => {
     const cleared = clearTurn(anchored)
     expect(anchored.turn).toBeDefined()
     expect(cleared).not.toBe(anchored)
+  })
+
+  it('resetTurnStep sets only stepStartedAt on a live turn', () => {
+    const anchored = setTurnActive(createInitialState(), { startedAt: 1_000, outputBase: 40 })
+    const reset = resetTurnStep(anchored, 5_000)
+    expect(reset.turn).toEqual({
+      startedAt: 1_000,
+      outputBase: 40,
+      verbIndex: 1_000 % VERBS.length,
+      stepStartedAt: 5_000,
+    })
+    expect(reset).not.toBe(anchored)
+    expect(anchored.turn?.stepStartedAt).toBeUndefined()
+  })
+
+  it('resetTurnStep without a live turn returns the same state reference', () => {
+    const idle = createInitialState()
+    expect(resetTurnStep(idle, 5_000)).toBe(idle)
   })
 })

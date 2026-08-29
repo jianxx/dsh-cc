@@ -316,12 +316,14 @@ export function setBusy(state: TuiState, busy: boolean): TuiState {
  * undefined when the HUD was not yet seeded — the driver's tokenUsage
  * rebase pins it later). `verbIndex` is derived deterministically from
  * `startedAt`, so re-anchoring with the same timestamp is snapshot-stable.
- * Also used as a pure baseline pin: passing the existing `startedAt` with a
- * new `outputBase` only moves the baseline.
+ * The anchor object is built fresh with no `stepStartedAt`, so anchoring a
+ * new turn also clears the step clock; the pure baseline pin may pass the
+ * existing `stepStartedAt` through (the driver's tokenUsage rebase does) so
+ * pinning the baseline does not reset a mid-step clock.
  */
 export function setTurnActive(
   state: TuiState,
-  activity: { startedAt: number; outputBase: number | undefined },
+  activity: { startedAt: number; outputBase: number | undefined; stepStartedAt?: number | undefined },
 ): TuiState {
   return {
     ...state,
@@ -329,8 +331,20 @@ export function setTurnActive(
       startedAt: activity.startedAt,
       outputBase: activity.outputBase,
       verbIndex: activity.startedAt % VERBS.length,
+      ...activity.stepStartedAt === undefined ? {} : { stepStartedAt: activity.stepStartedAt },
     },
   }
+}
+
+/**
+ * Reset the working line's step clock (new tool call, or tool finished and
+ * the model is thinking again). Turn-modifying only: with no live turn this
+ * returns the same state reference — an idle tool event must never conjure
+ * a phantom anchor. Leaves startedAt/outputBase/verbIndex untouched.
+ */
+export function resetTurnStep(state: TuiState, at: number): TuiState {
+  if (state.turn === undefined) return state
+  return { ...state, turn: { ...state.turn, stepStartedAt: at } }
 }
 
 /** Clear the turn anchor (turn ended, interrupted, or session switched). */
