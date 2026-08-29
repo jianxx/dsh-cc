@@ -157,3 +157,6 @@ packages/**/src/*.d.ts.map
 # Claude Code worktrees for isolated parallel execution (untracked machine dir).
 # Note .claude/agents/ stays tracked.
 .claude/worktrees/
+
+# Serena MCP project-local index (machine state, not source).
+.serena/
