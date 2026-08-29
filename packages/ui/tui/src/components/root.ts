@@ -24,7 +24,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeApprovalInput, routeQuestionInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
@@ -35,6 +35,7 @@ import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
 import {
   createApprovalBox,
+  createEffortPickerBox,
   createModelPickerBox,
   createQuestionBox,
   createSessionSwitcherBox,
@@ -334,7 +335,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				return { consume: true }
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
-				live.modelPicker !== undefined || live.sessionSwitcher !== undefined ||
+				live.modelPicker !== undefined || live.effortPicker !== undefined ||
+				live.sessionSwitcher !== undefined ||
 				live.todoPanel !== undefined || live.usagePanel !== undefined) {
 				return undefined
 			}
@@ -365,6 +367,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		if (live.modelPicker !== undefined) {
 			// Modal model picker: arrows/enter/esc only, everything else consumed.
 			routeModelPickerInput(driver, data)
+			return { consume: true }
+		}
+		if (live.effortPicker !== undefined) {
+			// Modal effort picker: arrows/enter/esc only, everything else consumed.
+			routeEffortPickerInput(driver, data)
 			return { consume: true }
 		}
 		if (live.sessionSwitcher !== undefined) {
@@ -494,6 +501,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		}
 		if (state.modelPicker !== undefined) {
 			overlays.addChild(createModelPickerBox(state.modelPicker, theme))
+		}
+		if (state.effortPicker !== undefined) {
+			overlays.addChild(createEffortPickerBox(state.effortPicker, theme))
 		}
 		if (state.sessionSwitcher !== undefined) {
 			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher, theme))

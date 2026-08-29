@@ -18,6 +18,7 @@ import {
   createInitialState,
   enqueue,
   markExitAttempt,
+  moveEffortPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
@@ -25,6 +26,7 @@ import {
   popQueued,
   setApproval,
   setBusy,
+  setEffortPicker,
   setModelPicker,
   setNotice,
   setQuestion,
@@ -212,6 +214,28 @@ function fakeDriver(
     },
     modelPickerCancel() {
       state = setModelPicker(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    async openEffortPicker() {},
+    effortPickerMove(delta) {
+      state = moveEffortPickerFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    async effortPickerSubmit() {
+      const picker = state.effortPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      state = setEffortPicker(state, undefined)
+      if (entry !== undefined) {
+        state = upsertRow(state, {
+          kind: 'status',
+          text: `Effort is now ${entry}.`,
+        })
+      }
+      for (const l of listeners) l(state)
+    },
+    effortPickerCancel() {
+      state = setEffortPicker(state, undefined)
       for (const l of listeners) l(state)
     },
     toggleTodoPanel() {
@@ -1232,6 +1256,67 @@ describe('vt-renderer', () => {
     expect(stripped).toContain('Model is now openai/gpt-5.')
     // Overlay dismissed.
     expect(stripped).not.toContain('Select model')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the effort picker with entries, focus marker, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setEffortPicker(createInitialState(), {
+      entries: ['minimal', 'high', 'default'],
+      focused: 1,
+      current: 'high',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Select effort')
+    expect(stripped).toContain('minimal')
+    // The trailing reserved entry is labeled with its provider-default role.
+    expect(stripped).toContain('default (provider)')
+    // Focus marker sits on the focused (index 1) entry.
+    expect(stripped).toContain('❯ high')
+    // Current-effort marker.
+    expect(stripped).toMatch(/❯ high.*\*/)
+    // Footer hint.
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    // Closed → not rendered.
+    driver.setState(setEffortPicker(state, undefined))
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('Select effort')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('arrow down on the mounted root moves the effort picker focus one row', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setEffortPicker(createInitialState(), {
+      entries: ['minimal', 'high', 'default'],
+      focused: 0,
+      current: undefined,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x1b[B') // ↓
+    await settle()
+    expect(driver.state.effortPicker?.focused).toBe(1)
+
+    vt.sendInput('\x1b') // esc closes
+    await settle()
+    expect(driver.state.effortPicker).toBeUndefined()
 
     root.tui.stop()
     root.destroy()

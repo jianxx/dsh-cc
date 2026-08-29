@@ -7,11 +7,13 @@ import {
   openUsagePanel,
   setApproval,
   setBusy,
+  setEffortPicker,
   setModelPicker,
   setQuestion,
   setSessionSwitcher,
   setTodos,
   type CatalogEntryView,
+  type EffortPickerView,
   type ModelPickerView,
   type QuestionView,
   type SessionEntryView,
@@ -30,6 +32,12 @@ interface QuestionCalls {
 }
 
 interface ModelPickerCalls {
+  moved: number[]
+  submitted: number
+  cancelled: number
+}
+
+interface EffortPickerCalls {
   moved: number[]
   submitted: number
   cancelled: number
@@ -58,6 +66,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   toggled: boolean
   questionCalls: QuestionCalls
   modelPickerCalls: ModelPickerCalls
+  effortPickerCalls: EffortPickerCalls
   sessionSwitcherCalls: SessionSwitcherCalls
   todoPanelCalls: TodoPanelCalls
   usagePanelCalls: UsagePanelCalls
@@ -73,6 +82,11 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     cancelled: 0,
   }
   const modelPickerCalls: ModelPickerCalls = {
+    moved: [],
+    submitted: 0,
+    cancelled: 0,
+  }
+  const effortPickerCalls: EffortPickerCalls = {
     moved: [],
     submitted: 0,
     cancelled: 0,
@@ -97,6 +111,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     toggled: false,
     questionCalls,
     modelPickerCalls,
+    effortPickerCalls,
     sessionSwitcherCalls,
     todoPanelCalls,
     usagePanelCalls,
@@ -143,6 +158,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     modelPickerCancel() {
       modelPickerCalls.cancelled += 1
+    },
+    effortPickerMove(delta) {
+      effortPickerCalls.moved.push(delta)
+    },
+    effortPickerSubmit() {
+      effortPickerCalls.submitted += 1
+    },
+    effortPickerCancel() {
+      effortPickerCalls.cancelled += 1
     },
     sessionSwitcherMove(delta) {
       sessionSwitcherCalls.moved.push(delta)
@@ -418,6 +442,87 @@ describe('handleComposerInput model picker routing', () => {
     handleComposerInput(driver, '\x1b')
     expect(driver.interrupted).toBe(false)
     expect(driver.modelPickerCalls.cancelled).toBe(1)
+  })
+})
+
+function effortPickerState(overrides: Partial<EffortPickerView> = {}): TuiState {
+  return setEffortPicker(createInitialState(), {
+    entries: ['minimal', 'high', 'default'],
+    focused: 0,
+    current: undefined,
+    ...overrides,
+  })
+}
+
+describe('handleComposerInput effort picker routing', () => {
+  it('arrow up moves focus up (-1)', () => {
+    const driver = sink(effortPickerState({ focused: 1 }))
+    const action = handleComposerInput(driver, '\x1b[A')
+    expect(driver.effortPickerCalls.moved).toEqual([-1])
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('arrow down moves focus down (+1)', () => {
+    const driver = sink(effortPickerState())
+    handleComposerInput(driver, '\x1b[B')
+    expect(driver.effortPickerCalls.moved).toEqual([1])
+  })
+
+  it('enter submits the focused entry', () => {
+    const driver = sink(effortPickerState())
+    handleComposerInput(driver, '\r')
+    expect(driver.effortPickerCalls.submitted).toBe(1)
+  })
+
+  it('escape cancels the picker', () => {
+    const driver = sink(effortPickerState())
+    handleComposerInput(driver, '\x1b')
+    expect(driver.effortPickerCalls.cancelled).toBe(1)
+  })
+
+  it('all other keys are consumed and never reach the editor (modal)', () => {
+    const driver = sink(effortPickerState())
+    for (const key of ['h', ' ', '2', '\x7f', 'abc']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    // Nothing routed to the effort picker handlers.
+    expect(driver.effortPickerCalls.moved).toEqual([])
+    expect(driver.effortPickerCalls.submitted).toBe(0)
+    expect(driver.effortPickerCalls.cancelled).toBe(0)
+    // Nothing routed to global handlers.
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('a question overlay outranks the effort picker (precedence: approval > question > modelPicker > effortPicker)', () => {
+    let state = setQuestion(createInitialState(), {
+      header: 'Pick',
+      question: 'Which?',
+      options: [{ label: 'a' }],
+      multiSelect: false,
+      focused: 0,
+      selected: [],
+      custom: '',
+    })
+    state = setEffortPicker(state, { entries: ['minimal', 'default'], focused: 0, current: undefined })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.questionCalls.submitted).toBe(1)
+    expect(driver.effortPickerCalls.submitted).toBe(0)
+  })
+
+  it('does not toggle thinking while an effort picker is open (overlay wins)', () => {
+    const driver = sink(effortPickerState())
+    handleComposerInput(driver, '\x0f')
+    expect(driver.toggled).toBe(false)
+  })
+
+  it('does not interrupt on escape while an effort picker is open (cancel wins)', () => {
+    const driver = sink(setBusy(effortPickerState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.effortPickerCalls.cancelled).toBe(1)
   })
 })
 

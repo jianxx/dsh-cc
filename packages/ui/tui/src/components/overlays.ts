@@ -8,6 +8,7 @@
 import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
 import type {
   ApprovalView,
+  EffortPickerView,
   ModelPickerView,
   QuestionView,
   SessionSwitcherView,
@@ -153,6 +154,45 @@ export function createModelPickerBox(picker: ModelPickerView, theme: Theme = def
     const marker = focused ? '❯ ' : '  '
     const currentMark = isCurrent ? ' *' : ''
     box.addChild(new Text(`${marker}${entry.provider}/${entry.id} — ${entry.name}${currentMark}`, 0, 0))
+  }
+
+  box.addChild(new Text(theme.muted('↑↓ move · enter select · esc cancel'), 0, 0))
+  return box
+}
+
+/**
+ * Maximum effort-picker rows rendered at once. Mirrors the model picker cap so
+ * an unexpectedly long effort list can never overflow the frame.
+ */
+const EFFORT_PICKER_VISIBLE_ROWS = 10
+
+/**
+ * Effort picker box: a modal list of the active model's reasoning-effort
+ * levels with a `❯` focus marker and a `*` on the live effort, windowed to
+ * {@link EFFORT_PICKER_VISIBLE_ROWS} rows around the focus. The trailing
+ * reserved `'default'` entry renders as `default (provider)` to make clear it
+ * restores the provider default rather than selecting a level named default.
+ */
+export function createEffortPickerBox(picker: EffortPickerView, theme: Theme = defaultTheme): Container {
+  const box = new Container()
+  box.addChild(new Text(theme.bold('Select effort'), 0, 0))
+
+  const total = picker.entries.length
+  const cap = EFFORT_PICKER_VISIBLE_ROWS
+  let start = 0
+  if (total > cap) {
+    start = Math.max(0, Math.min(picker.focused - Math.floor(cap / 2), total - cap))
+  }
+  const end = Math.min(start + cap, total)
+
+  for (let index = start; index < end; index += 1) {
+    const entry = picker.entries[index]!
+    const focused = picker.focused === index
+    const isCurrent = picker.current === entry
+    const marker = focused ? '❯ ' : '  '
+    const label = entry === 'default' ? 'default (provider)' : entry
+    const currentMark = isCurrent ? ' *' : ''
+    box.addChild(new Text(`${marker}${label}${currentMark}`, 0, 0))
   }
 
   box.addChild(new Text(theme.muted('↑↓ move · enter select · esc cancel'), 0, 0))
