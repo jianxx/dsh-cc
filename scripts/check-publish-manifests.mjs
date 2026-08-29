@@ -10,7 +10,9 @@
  *   3. repository.url, normalized, names this repo — npm's sigstore
  *      provenance check rejects any publish whose manifest does not
  *      declare the repo it was built from (v0.1.1 pi-tui incident).
- *   4. (only when a sibling checkout <repoRoot>/../deepseek-harness exists)
+ *   4. license matches the project license, except for explicit vendored
+ *      packages that must preserve their upstream license.
+ *   5. (only when a sibling checkout <repoRoot>/../deepseek-harness exists)
  *      every dependency/devDependency/peerDependency key matching
  *      /^@deepseek-ai\/dsh-/ carries a range that the harness version
  *      satisfies. Skipped silently (with a note line) when the sibling
@@ -74,7 +76,7 @@ export function compareVersions(a, b) {
     if (a.release[i] !== b.release[i]) return a.release[i] < b.release[i] ? -1 : 1;
   }
   if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0;
-  if (a.prerelease.length === 0) return 1; // final > prerelease
+  if (a.prerelease.length === 0) return 1;
   if (b.prerelease.length === 0) return -1;
   const len = Math.min(a.prerelease.length, b.prerelease.length);
   for (let i = 0; i < len; i++) {
@@ -85,7 +87,7 @@ export function compareVersions(a, b) {
     if (xn && yn) {
       if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1;
     } else if (xn !== yn) {
-      return xn ? -1 : 1; // numeric identifiers sort lower
+      return xn ? -1 : 1;
     } else if (x !== y) {
       return x < y ? -1 : 1;
     }
@@ -108,8 +110,6 @@ function sameRelease(a, b) {
  */
 export function rangeSatisfiedBy(range, version) {
   if (typeof range !== "string") return false;
-  // Compound/multi-operator shapes (e.g. ">=0.1.1 <0.2.0") are not
-  // supported — fail loudly rather than misinterpret them.
   if (/\s/.test(range)) {
     throw new Error(
       `check-publish-manifests: unrecognized range shape '${range}' — ` +
@@ -126,11 +126,6 @@ export function rangeSatisfiedBy(range, version) {
       throw new Error(
         `check-publish-manifests: malformed '>=' range '${range}' (extend the checker for new shapes)`,
       );
-    // Repo rule for '>=FLOOR' floors: a PRERELEASE of a HIGHER release
-    // tuple than the floor (e.g. 0.2.0-rc.1 against >=0.1.1-rc.2) is NOT
-    // acceptable — a floor is meant to pin the release line, so only
-    // final releases above the floor or prereleases WITHIN the floor's
-    // release tuple satisfy it.
     if (v.prerelease.length > 0 && !sameRelease(v, floor)) return false;
     return compareVersions(v, floor) >= 0;
   }
@@ -142,19 +137,14 @@ export function rangeSatisfiedBy(range, version) {
       throw new Error(
         `check-publish-manifests: malformed '^' range '${range}' (extend the checker for new shapes)`,
       );
-    // ^0.Y.Z: <0.(Y+1) when Y>0, else (<0.0.Z+1 when Z>0); standard caret.
     const [major, minor, patch] = base.release;
     let upper;
     if (major > 0) upper = { release: [major + 1, 0, 0], prerelease: [] };
     else if (minor > 0) upper = { release: [0, minor + 1, 0], prerelease: [] };
     else upper = { release: [0, 0, patch + 1], prerelease: [] };
-    return (
-      compareVersions(v, base) >= 0 &&
-      compareVersions(v, upper) < 0
-    );
+    return compareVersions(v, base) >= 0 && compareVersions(v, upper) < 0;
   }
 
-  // Bare exact version (no operator).
   const exact = parseVersion(range);
   if (exact) return compareVersions(v, exact) === 0;
 
@@ -195,7 +185,11 @@ function harnessVersion(root) {
 /* ---- repository provenance gate ---- */
 
 /** The repo every publishable package must declare as its provenance. */
-export const EXPECTED_REPOSITORY = "jianxx/dsh-cc-plugins";
+export const EXPECTED_REPOSITORY = "jianxx/dsh-cc";
+export const EXPECTED_LICENSE = "Apache-2.0";
+export const LICENSE_EXCEPTIONS = new Map([
+  ["@jianxx/dsh-cc-pi-tui", "MIT"],
+]);
 
 /**
  * Normalize a repository declaration to the bare `owner/repo` slug so the
@@ -261,6 +255,13 @@ export function findManifestViolations(root = ROOT) {
           `${EXPECTED_REPOSITORY} — npm sigstore provenance will reject the publish`,
       });
     }
+    const expectedLicense = LICENSE_EXCEPTIONS.get(json.name) ?? EXPECTED_LICENSE;
+    if (json.license !== expectedLicense) {
+      problems.push({
+        pkg: pkgName,
+        reason: `license is '${json.license ?? "<missing>"}' (expected '${expectedLicense}')`,
+      });
+    }
     if (hasHarness) {
       const hv = harnessVersion(root);
       for (const section of ["dependencies", "devDependencies", "peerDependencies"]) {
@@ -268,7 +269,7 @@ export function findManifestViolations(root = ROOT) {
           if (!/^@deepseek-ai\/dsh-/.test(key)) continue;
           const range = json[section][key];
           if (typeof range !== "string") continue;
-          if (range.startsWith("link:")) continue; // local link, not a publish range
+          if (range.startsWith("link:")) continue;
           let ok;
           try {
             ok = rangeSatisfiedBy(range, hv);

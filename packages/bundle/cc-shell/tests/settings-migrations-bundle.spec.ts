@@ -35,7 +35,7 @@ describe('cc-shell bundle — settings-migrations row', () => {
       await ctx.fiber.dispose()
 
       expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual({ migrated: true })
-      expect(SettingsMigrations.readMigrationState(join(home, 'migrations.json')))
+      await expect(SettingsMigrations.readMigrationState(join(home, 'migrations.json')))
         .resolves.toEqual({ migrationVersion: 100 })
     } finally {
       rmSync(home, { recursive: true, force: true })

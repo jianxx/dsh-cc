@@ -1,6 +1,6 @@
 # Claude Code parity matrix
 
-Single source of truth for how the dsh-cc-plugins stack (`@deepseek-ai/dsh-base` +
+Single source of truth for how the dsh-cc stack (`@deepseek-ai/dsh-base` +
 `cc-bundle-permissions` + `cc-bundle-shell`) covers Claude Code's user-facing
 features. Status legend:
 

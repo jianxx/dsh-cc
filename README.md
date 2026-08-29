@@ -1,231 +1,304 @@
-# dsh-cc-plugins
+# dsh-cc
 
-Claude Code feature-parity plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh), shipped as an out-of-repo plugin set that any dsh installation loads through its profile system.
+**A Claude Code-style coding experience for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
 
-## Layout
+`dsh-cc` adds the interactive coding-agent features developers expect — a terminal UI, slash commands, subagents, skills, MCP, hooks, permissions, memory, worktrees, resumable sessions, model aliases, and more — as composable plugins for DeepSeek Harness.
 
-```text
-packages/
-  settings/settings-cascade        5-level settings file precedence (~ enterprise/user/project/local/flags)
-  settings/settings-migrations     version-gated settings.json migrations on mount (mechanism ready; registry empty until the first format change)
-  interaction/permission-rules     allow/deny/ask rule engine + mode state (CC /permissions semantics)
-  interaction/command-status       /status
-  interaction/command-doctor       /doctor
-  interaction/command-memory       /memory — list/read CLAUDE-code-style memories
-  interaction/command-skills       /skills — list installed skills
-  interaction/command-help         /help — usage help
-  interaction/command-config       /config — inspect/set settings
-  interaction/command-permissions  /permissions — allow/deny/ask rules + mode
-  interaction/command-version      /version — show product/version info
-  interaction/command-release-notes  /release-notes — view release notes
-  interaction/command-diff         /diff — diff CLAUDE.md / settings
-  interaction/command-init         /init — scan project and scaffold CLAUDE.md
-  interaction/command-plugin       /plugin — manage plugins
-  interaction/command-mcp          /mcp — manage MCP server connections
-  interaction/command-tasks        /tasks — show open tasks / todo
-  interaction/command-resume        /resume — resume an interrupted session
-  interaction/command-branch       /branch — worktree branch management
-  mcp/mcp-client                   MCP client with OAuth 2.1 + resources + prompts (vendored superset)
-  mcp/mcp-config                   `.mcp.json` parser → mcp-client registrations (library)
-  hooks/hook-protocol              hook wire protocol incl. http executor (vendored superset)
-  hooks/hooks-claude-code          CC hook bridge — 18 of 30 events (command + http executors)
-  core/tools                       vendored tool registry + reserve()/isAdmitted() (deferred names)
-  core/tool-search                 ToolSearch tool + DeferredToolRegistry
-  core/tool-sleep                  Sleep tool (cooperative interrupt; CC SleepTool parity)
-  core/tool-structured-output      StructuredOutput tool factory (CC SyntheticOutputTool parity)
-  core/tool-notebook-edit          NotebookEdit tool (fs-seam .ipynb edits + read-before-write gate)
-  skill/skill-claude-code          SKILL.md provider reading CC dirs; CC paths conditional activation + bundled subset (debug/simplify/batch)
-  preset/claude-code-agents        `.claude/agents` → subagent providers (library)
-  preset/cc                        CC Mode agent preset (composition-only: agent.cordis.yml + preset.yml)
-  compat/cc-plugin-loader          mount a CC plugin directory (plugin.json) onto dsh seams (library)
-  compat/cc-model-aliases          CC frontmatter model aliases → {provider, model} routes (library; wired by cc-shell)
-  compat/cc-output-styles          CLAUDE.md output styles → system prompt
-  memory/memory                    CLAUDE.md memories + memory_save write channel + recall (recentTools suppression) + opt-in team memory
-  memory/memory-consolidation      background memory consolidation (structured fork output, host-side write-back)
-  workspace/tool-git-worktree      EnterWorktree / ExitWorktree tools
-  subagent/coordinator             coordinator mode (delegation-only agent surface)
-  compaction/compaction-micro      model-free stale-result microcompaction
-  session/command-cost|export|stats  /cost /export /stats
-  bundle/cc-permissions            profile bundle: settings-cascade + permission-rules
-  bundle/cc-shell                  profile bundle: everything else, plus the on-disk glue plugin (also mounts `dsh-tool-ask-user` AskUserQuestion over the base-owned `dsh-user-questions` seam and `dsh-schedule`)
-  bundle/cc-tui                    terminal surface over dsh-base (profile `tui`, CC preset default, fullscreen on entry)
-  ui/tui                            pi-tui renderer + protocol driver for the tui profile
-  launcher/tui                     optional `dsh-cc` bin → `dsh --profile tui`
-  test-support/agent-loop-mock     vendored test fixture (not a plugin)
-```
+**No permanent DeepSeek Harness fork required.**
 
-## Install (half a minute)
+> This project is not Claude Code and is not a wrapper around Claude Code. It re-creates familiar Claude Code-style workflows on top of the DeepSeek Harness runtime, where you control the models, tools, plugins, and agent composition.
 
-All plugins are published on npm under the `@jianxx` scope — `dsh plugin add` resolves them straight from the registry, no local checkout needed.
+## Why dsh-cc?
 
-Prereq: a dsh CLI installation (`dsh` on PATH, version ≥ 0.1.0-rc.5).
+DeepSeek Harness provides a flexible agent runtime and plugin system. `dsh-cc` builds a more complete interactive coding environment on top of it.
+
+With the CC profile installed, you get:
+
+- a full-screen terminal UI designed for coding-agent workflows;
+- familiar slash commands such as `/doctor`, `/memory`, `/skills`, `/permissions`, `/tasks`, `/resume`, and `/branch`;
+- `.claude/agents` subagents and `SKILL.md` skills;
+- `CLAUDE.md`-style project memory and background memory consolidation;
+- MCP tools, resources, prompts, and OAuth 2.1 support;
+- Claude Code-style hooks and permission rules;
+- worktree-aware workflows and resumable sessions;
+- deferred tool discovery with `ToolSearch`;
+- tools such as `NotebookEdit`, `StructuredOutput`, and `Sleep`;
+- configurable model aliases such as `opus`, `sonnet`, `haiku`, and `inherit`;
+- the same CC-oriented backend available from both terminal and web profiles.
+
+All of this is loaded through the native dsh profile/plugin system rather than maintained as a long-lived product fork.
+
+## Quick start
+
+Prerequisite: `dsh` on `PATH`, version **>= 0.1.0-rc.5**.
+
+Install the CC-oriented terminal profile:
 
 ```sh
-# terminal (peer of `dsh web`): CC-mode TUI
-dsh plugin --profile tui add @jianxx/dsh-cc-bundle-permissions \
-  @jianxx/dsh-cc-bundle-shell @jianxx/dsh-cc-bundle-tui
+dsh plugin --profile tui add \
+  @jianxx/dsh-cc-bundle-permissions \
+  @jianxx/dsh-cc-bundle-shell \
+  @jianxx/dsh-cc-bundle-tui
 dsh --profile tui
+```
 
-# optional shortcut (same profile):
-#   npm i -g @jianxx/dsh-cc && dsh-cc
+Or install the optional launcher:
 
-# web: same CC backend, browser surface
-dsh plugin --profile web add @jianxx/dsh-cc-bundle-permissions \
+```sh
+npm install -g @jianxx/dsh-cc
+dsh-cc
+```
+
+For the web UI, install the same backend without the TUI bundle:
+
+```sh
+dsh plugin --profile web add \
+  @jianxx/dsh-cc-bundle-permissions \
   @jianxx/dsh-cc-bundle-shell
 dsh web
 ```
 
-`dsh plugin` forwards to pnpm in `$DSH_HOME/profiles/<name>` and auto-registers every
-installed package that declares `dsh.bundle` into `dsh.profile.bundles` (append on add,
-drop on remove). Hoisted pnpm linking puts the whole plugin tree flat, while every
-in-box dsh package (peer deps like `@deepseek-ai/cordis`) resolves through the
-installer-maintained `$DSH_HOME/profiles/node_modules` symlink fallback — external
-plugins always share the installation's single cordis instance.
+The `tui` profile boots directly into the CC preset.
 
-Recommended order in `~/.dsh/profiles/tui/package.json`:
+## What you get
 
-```json
-{
-  "dependencies": {
-    "@jianxx/dsh-cc-bundle-permissions": "...",
-    "@jianxx/dsh-cc-bundle-shell": "...",
-    "@jianxx/dsh-cc-bundle-tui": "..."
-  },
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@jianxx/dsh-cc-bundle-permissions",
-        "@jianxx/dsh-cc-bundle-shell",
-        "@jianxx/dsh-cc-bundle-tui"
-      ]
-    }
-  }
-}
+| Capability | Status |
+| --- | --- |
+| Interactive terminal UI | ✅ |
+| Slash commands | ✅ |
+| `.claude/agents` subagents | 🔶 |
+| `SKILL.md` skills | ✅ |
+| `CLAUDE.md` / project memory | ✅ |
+| MCP tools, resources, prompts, OAuth 2.1 | ✅ |
+| Hooks | 🔶 |
+| Permission rules and modes | ✅ |
+| Session persistence / resume | ✅ |
+| Worktree tools | ✅ |
+| Model aliases | ✅ |
+| ToolSearch / deferred tools | ✅ |
+| NotebookEdit | ✅ |
+| StructuredOutput | ✅ |
+| Web profile support | ✅ |
+
+`✅` means implemented and mounted. `🔶` means usable with known differences from Claude Code.
+
+For the exact feature-by-feature status and known gaps, see the **[Claude Code parity matrix](docs/cc-parity-matrix.md)**.
+
+## Familiar coding-agent workflows
+
+### Subagents
+
+Project-local Claude Code-style agent definitions under `.claude/agents` can be discovered and dispatched by the CC preset.
+
+```text
+.claude/
+  agents/
+    reviewer.md
+    debugger.md
 ```
 
-Your own tweaks land in `~/.dsh/profiles/tui/cordis.patch.yml` (applied after every bundle). The `web` profile keeps the two CC host bundles without `cc-tui`.
+Agent frontmatter can continue using familiar model aliases while dsh decides which provider/model actually serves the request.
 
-### Local development without publishing
+### Skills
 
-To test unpublished changes against a real profile instead of publishing first:
+`SKILL.md`-based skills are discovered by the CC skill provider, including project-specific skills and bundled utility skills.
 
-```sh
-pnpm run build                       # emit lib/ per package
-bash scripts/sync-local-profile.sh web   # flat-copy @jianxx/* into the profile
-dsh web                             # profile bundles registration already in place, boots to a UI
+### Memory
+
+The memory layer supports `CLAUDE.md`-style context plus a dedicated write channel for durable memories. Memory is isolated by workspace, with optional shared team memory.
+
+### MCP
+
+The CC profile includes an MCP client with:
+
+- tools;
+- resources;
+- prompts;
+- OAuth 2.1 flows.
+
+Use `/mcp` to inspect and manage MCP connections.
+
+### Hooks
+
+Claude Code-style hooks can react to session, prompt, tool, permission, compaction, task, and subagent lifecycle events. Command and HTTP executors are supported, with additional prompt/agent executors available behind configuration gates.
+
+See the [parity matrix](docs/cc-parity-matrix.md) for the currently bridged event set.
+
+## Slash commands
+
+The CC preset exposes a growing command surface, including:
+
+```text
+/cost              token / cost information
+/doctor            diagnose the current setup
+/status            environment and session status
+/memory            inspect memories
+/skills            list installed skills
+/config            inspect or change settings
+/permissions       inspect or change permission mode/rules
+/mcp               manage MCP connections
+/tasks             inspect current tasks/jobs
+/resume            resume an interrupted session
+/branch            worktree branch management
+/diff              inspect CLAUDE.md / settings differences
+/init               scan a project and scaffold CLAUDE.md
+/plugin             manage plugins
+/release-notes      show release notes
+/version            show version information
 ```
 
-`scripts/sync-local-profile.sh` copies (not symlinks) the built packages into the
-profile so every `@deepseek-ai/*` import resolves through the installation's single
-cordis instance — the same way a published bundle does. Re-run it after every build.
+The TUI also provides terminal-oriented interactions such as todo inspection, approval flows, queued prompts, transcript export, usage/context display, and local shell commands.
 
-> On a network-restricted host, `pnpm install` stalls fetching per-package registry
-> attestations even with `--offline`; see `docs/dev.md` for the offline recovery.
+## Use the models you want
 
-### CC Mode preset
-
-CC Mode is dsh's **fifth** agent preset (the four built-in modes are unchanged —
-see below). It exposes the full CC-parity surface from this repo as a single
-selectable preset.
-
-Install in two steps:
-
-```sh
-bash scripts/sync-local-profile.sh web   # install the @jianxx/* packages into the profile
-bash scripts/sync-cc-preset.sh           # install the CC preset combo into ~/.dsh/.agent-presets/cc
-```
-
-The second script rsyncs `packages/preset/cc/agent.cordis.yml` and
-`packages/preset/cc/preset.yml` into `~/.dsh/.agent-presets/cc` (respecting
-`$DSH_HOME`). Re-run it whenever those files change, then restart dsh — the
-preset list is re-scanned at the next boot.
-
-On the **tui** profile the same preset is the default (`dsh --profile tui` / `dsh-cc`); the plugin copies it into `~/.dsh/.agent-presets/cc` on boot.
-
-The **tui** profile launches in **fullscreen** (alternate-screen) mode by default: the transcript scrolls inside a primary viewport while the dock (queue, todos, overlays, editor, statusline) stays pinned at the bottom, and exit replays the transcript into native scrollback. Opt out per-launch with `DSH_CCTUI_UI_MODE=regular`, or pin the mode in plugin config (`uiMode: 'regular' | 'fullscreen'`, default `regular` at the plugin level).
-
-Select the preset either through the web UI's preset selector, or by setting
-`agent-presets.default="cc"` in settings. To uninstall, delete the
-`~/.dsh/.agent-presets/cc` directory.
-
-### Model aliases
-
-CC agent frontmatter names models by alias (`model: opus`, `model: sonnet`,
-`model: inherit`). The cc-shell glue resolves those aliases per spawn against
-deployment defaults (`modelAliases` on the glue row) overlaid by the live
-`model-aliases` settings namespace (user/project/local layering, `null`
-deletes a configured entry). Unconfigured builtin aliases and `inherit` fall
-back to the parent route; anything else passes through as a literal model id.
-See `packages/compat/cc-model-aliases/README.md` for the full merge and
-resolution semantics.
-
-The four built-in modes are behaviorally unchanged: the host plane keeps only
-the tools-registry fork, the five-level settings cascade + permission rules, and
-settings migrations — none of which produces a visible change on the stock
-modes.
-
-## How the loading works (the mechanism our names rely on)
-
-1. Bundles list "rows" in `cordis.patch.yml`; each row is an entry `{id, name, config?, insert?…}` the Loader interprets.
-2. The dsh launcher resolves each bundle's `name` two-anchor: the dsh installation first, then the profile directory. This is why our packages use the `@jianxx` scope: a `@deepseek-ai/dsh-*` name would be shadowed by the in-box copy.
-3. Inside a patch, each `name:` is resolved from the profile directory as base URL; hoisted node_modules carries the whole bundle dependency tree, so one profile dependency on a bundle pulls every plugin with it.
-4. Plugins' peers (`@deepseek-ai/cordis`, service-definition packages like `@deepseek-ai/dsh-invariants`) are NOT bundled: they resolve via the installation-wide symlink fallback, keeping one cordis instance per process. Never ship them as our `dependencies`.
-
-## Vendored packages (upstream + delta)
-
-Four packages vendor upstream dsh packages plus our changes, because the deltas are invasive (not wrappable):
-
-| package                   | delta                                         | why vendored                                                                                        |
-| ------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `core/tools`              | +reserve/isAdmitted + reserved-name table     | extension-point methods on the Service Provider; free functions cannot see the private layer tables |
-| `mcp/mcp-client`          | +OAuth 2.1 flows, +resources/prompts surfaces | same-module internal plumbing throughout the client                                                 |
-| `hooks/hook-protocol`     | +http executor + dispatch options             | wire-protocol module shape                                                                          |
-| `hooks/hooks-claude-code` | full CC event/executor bridge                 | only exists at all through the fork's expansion                                                     |
-
-At runtime each sits beside its upstream peer under a different npm name. Where service identity matters, the bundle patch disables the in-box row by id and remounts ours under a **unique** id:
+Claude Code-style agent definitions often refer to models using aliases:
 
 ```yaml
-- id: tools
-  disabled: true
-- insert:
-    - id: tools-cc
-      name: "@jianxx/dsh-cc-tools"
+model: sonnet
 ```
 
-The disable marker targets the base row by its id, and the remount registers under a distinct id, because `cordis-plugin-loader` dup-checks _every_ incoming entry (a `{id, disabled: true}` marker included) — reusing the same id for the insert would throw `duplicate loader entry id` at mount. Service injection is name-keyed, not row-id-keyed, so the remount resolves the same underlying service. NOTE (upstream TODO): the id-keyed dump/compose path renders this disable+rename pattern fine, so the loader's stricter dup check diverges from it; worth splitting out an issue upstream.
+`dsh-cc` can route those aliases to provider/model pairs configured for your deployment.
 
-Subscribers type against upstream service types — the vendored runtime is a structural superset; the two nominal `ToolExecutionToken` brands are bridged by explicit casts at the 6 mixed call sites (see coordinator / hooks-claude-code sources; documented in code) — never routed at runtime because only one `tools` registration exists per scope.
+Conceptually:
 
-## Known limits (upstream vocabulary boundary)
+```text
+sonnet  -> <provider>/<general coding model>
+opus    -> <provider>/<reasoning model>
+haiku   -> <provider>/<fast model>
+inherit -> parent agent route
+```
 
-- dsh session event vocabulary is closed in-repo today (`KNOWN_SESSION_EVENT_TYPES`, and `Session.append` only accepts envelope options for surface events). Out-of-repo plugins cannot log new event types safely: readers that meet an unknown non-ignorable type refuse to replay. Consequences we chose:
-  - `permission-rules` keeps per-session mode overrides **in memory** (a WeakMap keyed by the live Session); a resumed session starts back at the deployment default mode. (The fork wrote a durable `permission/mode` event.)
-  - `compaction-micro` no longer appends its log-only decision record; the replacement nodes already carry the deterministic marker, so decisions still reconstruct from replay + code.
-- Track: ask upstream for either ignorable-aware `Session.append` or an event-registration surface; restore the durable records then.
-- `hooks-codex` and `tool-cordis` fork deltas were NOT moved: they were generated-catalog/type-hygiene noise with no behavioral need on top of upstream.
-- `tool-web-cc` mounts a fetch-capable web tool at the host plane (`fetch: true`, 60s search timeout), carrying the base `tool-web` row's caps. Because `dsh-web-app` deliberately moves `tool-web` behind agent presets and disables the base row, this host-plane insert intentionally bypasses that scoping for CC parity — watch for a duplicate/missing web tool in a UI pass.
-- The LSP trio (`dsh-lsp` / `dsh-lsp-stdio` / `dsh-tool-lsp`) and the `web-fetch-http` executor are NOT shipped by the CLI dependency tree through rc.6, so their rows cannot resolve from the installation and are removed from `bundle/cc-shell`. Re-add them once the installation carries them (they are cordis-peer packages; version-skew untested).
-- `user-questions` is owned by `dsh-base` (it has been since before rc.5), so the bundle no longer inserts it; `tool-ask-user` consumes the base-owned seam. A missing UI provider yields a graceful `NO_PROVIDER` tool error.
-- On the WEB profile the native `/export` (a browser download stub from `dsh-web-app`'s session-log-download row) holds the name; our file-writing `/export` registers only where the name is free (CLI profiles). The plugin skips registration when `/export` is already registered.
-- hooks `configPath` defaults to `$DSH_HOME/hooks.json` (resolved via `ctx.dshHomePath`); per-session project-local hook discovery remains a TODO.
-- `/cost` ships an empty price table by default (`modelTable: []` in the bundle row). The schema stays strict because composition decides pricing — deployments must supply pricing where needed.
-- Schedule (`dsh-schedule`) is session-local only: one-shot `after_seconds` delays, absolute `at` targets, and fixed-rate `every_seconds` (≥300s). Claude Code cron-expression parity is deferred upstream.
+Aliases are configuration, not hard-coded vendor bindings. This lets you preserve familiar agent definitions while choosing the models that fit your own environment.
 
-## Develop
+### Dogfooding dsh-cc
+
+`dsh-cc` is now developed with `dsh-cc` itself. The project's current development setup uses the same model-alias routing described above, with this mapping:
+
+| Alias | Model |
+| --- | --- |
+| `fable` | `kimi-k3` |
+| `opus` | `glm-5.3` |
+| `sonnet` | `glm-5.3-flash` |
+| `haiku` | `deepseek-v4-flash-0731` |
+
+This is a real project configuration rather than a required default: users can map the aliases to any provider/model combination supported by their DeepSeek Harness deployment.
+
+## How this is different
+
+### vs. Claude Code
+
+Claude Code is a complete coding-agent product. `dsh-cc` instead brings many familiar interaction patterns to the DeepSeek Harness runtime, where the deployment controls models, tools, plugins, permissions, and agent composition.
+
+### vs. a DeepSeek Harness fork
+
+This repository is designed primarily as an out-of-repo plugin stack. Most functionality is installed and composed through dsh profiles, reducing the amount of permanent fork maintenance required as upstream evolves.
+
+A small number of upstream packages are vendored where the required extension point cannot currently be expressed as a wrapper. See [Architecture notes](#architecture) below.
+
+### vs. model/API routers
+
+This is not just a model-routing proxy. It extends the agent runtime and developer experience itself: UI, commands, tools, memory, subagents, hooks, MCP, permissions, sessions, and worktree workflows.
+
+## CC Mode
+
+CC Mode is an additional dsh agent preset. The four built-in dsh modes remain behaviorally unchanged.
+
+On the `tui` profile, CC Mode is the default. On other profiles it can be selected through the preset selector or configured as the default agent preset.
+
+The terminal profile launches in fullscreen mode by default. To opt out for one invocation:
 
 ```sh
-pnpm install --frozen-lockfile    # offline-friendly: everything pins to the local dsh checkout via link:
-pnpm run typecheck                # tsc -b (emits lib/ per package)
-pnpm test                         # vitest
+DSH_CCTUI_UI_MODE=regular dsh --profile tui
 ```
 
-Upstream types resolve through `link:` devDeps into a sibling dsh checkout at
-`../deepseek-harness` (built once with `pnpm run build` there) — this keeps the
-contributor tree offline-friendly. The packages themselves are published to npm
-under the `@jianxx` scope (see `scripts/release.mjs`); `link:` devDeps only
-affect this repo, never the published artifacts.
+## Configuration
 
-> Working on `pnpm-lock.yaml` or dependency declarations on a
-> network-restricted host: see `docs/dev.md` for what the frozen-lockfile
-> check actually verifies and the test-time dependency declaration contract.
+Your profile remains ordinary dsh composition. Local tweaks can be placed in:
+
+```text
+~/.dsh/profiles/tui/cordis.patch.yml
+```
+
+They are applied after the installed bundles.
+
+Model alias configuration, permissions, settings precedence, hook behavior, memory options, and TUI behavior are exposed through the corresponding plugins/settings namespaces.
+
+For exact semantics, use the package READMEs and the [parity matrix](docs/cc-parity-matrix.md) as the source of truth.
+
+## Compatibility and known limits
+
+The goal is **useful Claude Code-style workflow compatibility**, not byte-for-byte emulation of Claude Code.
+
+Some areas are intentionally partial or depend on DeepSeek Harness extension points. Examples include parts of the hook event vocabulary, background subagent workflows, notification/IDE-shell behavior, and vendor-specific features.
+
+The project tracks those differences explicitly instead of hiding them:
+
+**[Read the full Claude Code parity matrix →](docs/cc-parity-matrix.md)**
+
+## Architecture
+
+The repository is a monorepo of small plugins and bundles grouped by responsibility:
+
+```text
+packages/
+  settings/       settings cascade and migrations
+  interaction/    permissions and slash commands
+  mcp/            MCP client and configuration
+  hooks/          hook protocol and CC bridge
+  core/           tools, ToolSearch, NotebookEdit, StructuredOutput, Sleep
+  skill/          SKILL.md support
+  preset/         CC agent preset and agent compatibility
+  compat/         plugin loader, model aliases, output styles
+  memory/         CLAUDE.md memory and consolidation
+  workspace/      worktree tools
+  subagent/       coordinator / subagent integration
+  compaction/     micro-compaction
+  session/        cost, export, and stats commands
+  bundle/         installable profile bundles
+  ui/             terminal UI
+  launcher/       optional dsh-cc executable
+```
+
+Most packages are normal out-of-repo dsh plugins.
+
+A few packages vendor upstream implementations when the required changes need private/internal extension points rather than composition. These currently include the tools registry, MCP client, hook protocol, and Claude Code hook bridge. At runtime they are mounted under distinct package names while preserving the expected service interfaces.
+
+## Local development
+
+This repository expects a sibling DeepSeek Harness checkout at `../deepseek-harness` for local `link:` development dependencies.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm test
+```
+
+To test unpublished packages against a real profile:
+
+```sh
+pnpm run build
+bash scripts/sync-local-profile.sh web
+dsh web
+```
+
+To install/update the CC preset during local development:
+
+```sh
+bash scripts/sync-cc-preset.sh
+```
+
+See **[docs/dev.md](docs/dev.md)** for offline development details and repository-specific dependency rules.
+
+## Packages and releases
+
+Published plugins use the `@jianxx` npm scope. The root monorepo package is private; installable packages are released individually through the repository release tooling.
+
+Release process details: **[docs/release.md](docs/release.md)**.
+
+## Project status
+
+`dsh-cc` is evolving alongside DeepSeek Harness. The compatibility surface can change as upstream adds new extension points or changes existing ones.
+
+If you find a workflow that works differently from Claude Code, the [parity matrix](docs/cc-parity-matrix.md) is the best place to check whether it is implemented, partial, intentionally out of scope, or still missing.
+
+Contributions, compatibility reports, and focused upstream extension proposals are welcome.

@@ -61,6 +61,7 @@ import {
   openTodoPanel,
   openUsagePanel,
   popQueued,
+  resetTurnStep,
   setApproval,
   setBusy,
   setDraft,
@@ -1019,10 +1020,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         // change pins it. Strictly turn-MODIFYING (turn must already exist) —
         // a tokenUsage emit while idle must never conjure a phantom anchor.
         // setTurnActive re-derives verbIndex deterministically from the
-        // unchanged startedAt, so this is a pure baseline pin.
+        // unchanged startedAt, so this is a pure baseline pin; the live
+        // stepStartedAt passes through so pinning never resets a mid-step
+        // clock.
         const turn = state.turn
         if (turn !== undefined && turn.outputBase === undefined && tokens !== undefined) {
-          emit(setTurnActive(state, { startedAt: turn.startedAt, outputBase: tokens.output }))
+          emit(setTurnActive(state, { startedAt: turn.startedAt, outputBase: tokens.output, stepStartedAt: turn.stepStartedAt }))
         }
       } else if (key === 'contextPressure') {
         const pressure = value as ContextPressureStateLike | undefined
@@ -1063,6 +1066,19 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       if (status?.status === 'running') {
         emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
       }
+    }
+    // Working-line step clock: each tool call (and each tool result — the model
+    // is thinking again once a tool finishes) resets the elapsed timer, so the
+    // line shows the current step's duration instead of the whole turn's.
+    // Strictly turn-modifying (resetTurnStep no-ops without a live turn) — an
+    // idle replay must never conjure a phantom anchor. Known semantics, not
+    // bugs: subagent tool events carry the subagent's session id and are
+    // filtered above (a Task step's clock spans the whole subagent run), and
+    // tool/call fires before the pre-execute approval, so approval
+    // deliberation counts as step time. outputBase is preserved — the token
+    // delta stays turn-cumulative.
+    if ((eventType === 'tool/call' || eventType === 'tool/result') && state.turn !== undefined) {
+      emit(resetTurnStep(state, Date.now()))
     }
     // Outbox flush anchor: the durable `turn/end` fires exactly once per turn
     // (aborts and errors included). agent/status is unusable here — live
