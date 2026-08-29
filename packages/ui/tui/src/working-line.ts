@@ -28,12 +28,16 @@ export const VERBS: readonly string[] = [
  * Anchor for the currently-running turn: when it started, the session's
  * cumulative output-token total at anchor time (`undefined` when the HUD was
  * not yet seeded — the first tokenUsage change pins it, see the driver's
- * rebase guard), and the deterministic spinner verb index.
+ * rebase guard), and the deterministic spinner verb index. `stepStartedAt`
+ * (optional) is the current step's clock, reset by the driver on each
+ * `tool/call`/`tool/result`; when absent the step clock falls back to
+ * `startedAt`, so elapsed time shows the whole turn.
  */
 export interface TurnAnchor {
   startedAt: number
   outputBase: number | undefined
   verbIndex: number
+  stepStartedAt?: number
 }
 
 /**
@@ -51,12 +55,15 @@ export function formatElapsed(ms: number): string {
 
 /**
  * Render the working-line message for a live turn:
- * `Galloping… (4m 23s · ↓ 5.8k tokens)`. The token segment is omitted while
- * the baseline is unseeded (`outputBase === undefined`) or the delta has not
- * yet gone positive — no `↓ 0 tokens` flicker at turn start.
+ * `Galloping… (4m 23s · ↓ 5.8k tokens)`. Elapsed time counts from the current
+ * step (`stepStartedAt`, falling back to `startedAt`) — the driver resets the
+ * step clock per tool call/result, so the line shows this step's duration.
+ * The token segment is omitted while the baseline is unseeded
+ * (`outputBase === undefined`) or the delta has not yet gone positive — no
+ * `↓ 0 tokens` flicker at turn start.
  */
 export function formatWorkingLine(turn: TurnAnchor, currentOutput: number, now: number): string {
-  const elapsed = formatElapsed(now - turn.startedAt)
+  const elapsed = formatElapsed(now - (turn.stepStartedAt ?? turn.startedAt))
   const delta = turn.outputBase === undefined ? 0 : currentOutput - turn.outputBase
   const tokens = turn.outputBase !== undefined && delta > 0
     ? ` · ↓ ${formatTokens(delta)} tokens`

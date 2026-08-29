@@ -53,6 +53,13 @@ describe('formatWorkingLine', () => {
       .toBe('Galloping… (4m 23s · ↓ 5.8k tokens)')
   })
 
+  it('counts elapsed from stepStartedAt when set (current step, not the whole turn)', () => {
+    // Turn started at t0, the step clock reset at t0+5s, now is t0+7s → 2s.
+    expect(formatWorkingLine(anchor({ stepStartedAt: 5_000 }), 0, 7_000)).toBe('Thinking… (2s)')
+    // Without a step clock the elapsed time falls back to startedAt.
+    expect(formatWorkingLine(anchor(), 0, 7_000)).toBe('Thinking… (7s)')
+  })
+
   it('derives the verb deterministically from verbIndex', () => {
     const turn = anchor({ startedAt: 12_345, verbIndex: 12_345 % VERBS.length })
     const expected = `${VERBS[12_345 % VERBS.length]}… (0s)`
