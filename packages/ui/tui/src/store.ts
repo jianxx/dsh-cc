@@ -106,6 +106,19 @@ export interface ModelPickerView {
 }
 
 /**
+ * Live view of the `/effort` picker overlay: the reasoning-effort levels of
+ * the active model plus the trailing reserved entry (the literal
+ * `'default'`), the focused index, and the current effort (if any) so the
+ * renderer can mark it. Plain strings — branding to `ReasoningEffortId`
+ * happens at the driver's write seam.
+ */
+export interface EffortPickerView {
+  entries: readonly string[]
+  focused: number
+  current: string | undefined
+}
+
+/**
  * One session entry shown in the `/resume` picker. Mirrors the harness
  * persistence header but lives in the view layer (harness-import-free).
  */
@@ -228,6 +241,8 @@ export interface TuiState {
   approval?: ApprovalView
   question?: QuestionView
   modelPicker?: ModelPickerView
+  /** Open `/effort` picker overlay; absent while closed. */
+  effortPicker?: EffortPickerView
   sessionSwitcher?: SessionSwitcherView
   /**
    * Outbox of texts submitted while the agent was busy: rendered as pending
@@ -376,6 +391,28 @@ export function moveModelPickerFocus(state: TuiState, delta: -1 | 1): TuiState {
   const picker = state.modelPicker
   if (picker === undefined) return state
   return focusModelPicker(state, picker.focused + delta)
+}
+
+/** Park or clear the `/effort` picker overlay. */
+export function setEffortPicker(state: TuiState, picker: EffortPickerView | undefined): TuiState {
+  const { effortPicker: _dropped, ...rest } = state
+  return picker === undefined ? rest : { ...rest, effortPicker: picker }
+}
+
+/** Focus an effort-picker row by index, clamped to [0, entries.length-1]. */
+export function focusEffortPicker(state: TuiState, index: number): TuiState {
+  const picker = state.effortPicker
+  if (picker === undefined || picker.entries.length === 0) return state
+  const max = picker.entries.length - 1
+  const focused = Math.max(0, Math.min(index, max))
+  return setEffortPicker(state, { ...picker, focused })
+}
+
+/** Move the effort-picker focus by one row (clamped; no wrap). */
+export function moveEffortPickerFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const picker = state.effortPicker
+  if (picker === undefined) return state
+  return focusEffortPicker(state, picker.focused + delta)
 }
 
 /** Park or clear the `/resume` session-switcher overlay. */

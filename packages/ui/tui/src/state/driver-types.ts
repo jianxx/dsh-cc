@@ -108,10 +108,34 @@ export interface Driver {
   openModelPicker(): Promise<void>
   /** Move the model-picker focus by one row (clamped; no wrap). */
   modelPickerMove(delta: -1 | 1): void
-  /** Select the focused entry, close the overlay, and emit the status row. */
-  modelPickerSubmit(): void
+  /**
+   * Select the focused entry and close the overlay synchronously; the model
+   * write (with its effort-preserve validation) settles asynchronously, so
+   * awaiting the returned promise waits for the selection to be updated.
+   */
+  modelPickerSubmit(): Promise<void>
   /** Close the overlay without changing the selection. */
   modelPickerCancel(): void
+  /**
+   * Open the `/effort` picker overlay: resolves the current model's advertised
+   * effort levels and parks `effortPicker` state focused on the live effort
+   * (the trailing `default` entry when none is set). Fail closed — an
+   * unresolved model or unresolvable levels emit a status notice instead of
+   * opening a fabricated list. The arg path (`/effort <level|default>`)
+   * bypasses the overlay and stays scriptable.
+   */
+  openEffortPicker(): Promise<void>
+  /** Move the effort-picker focus by one row (clamped; no wrap). */
+  effortPickerMove(delta: -1 | 1): void
+  /**
+   * Select the focused entry and close the overlay synchronously; validation
+   * and the selection write settle asynchronously behind a stale-pair guard
+   * (a concurrent `/model` or session switch refuses the parked write).
+   * Awaiting the returned promise waits for that write to settle.
+   */
+  effortPickerSubmit(): Promise<void>
+  /** Close the overlay without changing the selection. */
+  effortPickerCancel(): void
   /**
    * Open the `/resume` session-switcher overlay: loads the session list
    * (newest-first), parks `sessionSwitcher` state focused on the current
@@ -169,6 +193,13 @@ export interface Driver {
    * completion; fetched per call so it never goes stale.
    */
   loadModelCatalog(): Promise<readonly CatalogEntry[]>
+  /**
+   * Reasoning-effort levels of the currently resolved model plus the trailing
+   * `default` entry; `[]` when no model is resolved or its levels cannot be
+   * resolved (no dead-end completions). Used by slash argument completion;
+   * fetched per call so it never goes stale.
+   */
+  loadModelEfforts(): Promise<readonly string[]>
   /**
    * Merged slash-command catalog: TUI-local commands first, then harness
    * commands (deduped by name, local wins). The array identity is stable

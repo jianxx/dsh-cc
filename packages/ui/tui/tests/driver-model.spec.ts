@@ -7,14 +7,23 @@ import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 /**
  * Driver-level contract tests for the /model picker overlay: opening the
  * picker parks modelPicker state with the catalog and focused-on-current,
- * move/submit/cancel behave, the arg path (`/model 2`) is unchanged, and an
- * empty catalog falls back to the status-row notice.
+ * move/submit/cancel behave, the arg path (`/model 2`) is unchanged, an
+ * empty catalog falls back to the status-row notice, and a carried reasoning
+ * effort survives a switch to a model that supports it (reset + notice when
+ * it does not).
  */
 
 interface FakeModel {
   provider: string
   id: string
   name: string
+}
+
+/** Advertised reasoning-effort ids per `provider/model` (empty = none). */
+const MODEL_EFFORTS: Record<string, string[]> = {
+  'deepseek-official/deepseek-v4-flash': ['minimal', 'high'],
+  'deepseek-official/deepseek-v4-pro': ['low', 'medium', 'high'],
+  'openai/gpt-5': ['low', 'medium', 'high'],
 }
 
 function makeModelCtx(models: FakeModel[]): Record<string, unknown> {
@@ -42,6 +51,9 @@ function makeModelCtx(models: FakeModel[]): Record<string, unknown> {
           },
           listModels: async (provider: string) =>
             models.filter(m => m.provider === provider),
+          resolveModelInfo: async (provider: string, model: string) => ({
+            reasoning: { efforts: (MODEL_EFFORTS[`${provider}/${model}`] ?? []).map(id => ({ id, name: id })) },
+          }),
         }
       }
       return undefined
@@ -166,6 +178,33 @@ describe('createDriver /model picker overlay', () => {
     expect(driver.state.modelPicker).toBeUndefined()
     const last = driver.state.rows.at(-1)
     expect((last as { text: string }).text).toBe('Model is now openai/gpt-5.')
+  })
+
+  it('/model preserves a carried effort the new model supports', async () => {
+    const driver = await createDriver(makeModelCtx(CATALOG) as never, {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    })
+    await driver.submit('/effort high')
+    await driver.submit('/model openai/gpt-5')
+    expect(driver.statusLine).toContain('gpt-5')
+    // 'high' is in gpt-5's advertised efforts → carried across untouched.
+    expect(driver.statusLine).toContain('effort: high')
+    const texts = driver.state.rows.map(r => (r as { text?: string }).text ?? '')
+    expect(texts.some(text => text.includes('not supported'))).toBe(false)
+  })
+
+  it('/model resets a carried effort the new model does not support, with a notice', async () => {
+    const driver = await createDriver(makeModelCtx(CATALOG) as never, {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    })
+    await driver.submit('/effort minimal')
+    await driver.submit('/model openai/gpt-5')
+    expect(driver.statusLine).toContain('gpt-5')
+    expect(driver.statusLine).not.toContain('effort:')
+    const texts = driver.state.rows.map(r => (r as { text?: string }).text ?? '')
+    expect(texts).toContain('Effort "minimal" not supported by gpt-5; reset to default.')
   })
 
   it('empty catalog falls back to the status-row notice and opens no overlay', async () => {

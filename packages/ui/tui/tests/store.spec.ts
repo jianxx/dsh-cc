@@ -8,14 +8,17 @@ import {
   createInitialState,
   dequeue,
   enqueue,
+  focusEffortPicker,
   focusQuestionOption,
   focusModelPicker,
   markExitAttempt,
+  moveEffortPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
   openTodoPanel,
   popQueued,
+  setEffortPicker,
   setModelPicker,
   setQuestion,
   setTodos,
@@ -27,6 +30,7 @@ import {
   typeQuestionText,
   upsertSubagent,
   type CatalogEntryView,
+  type EffortPickerView,
   type ModelPickerView,
   type QuestionView,
   type SubagentRunView,
@@ -273,6 +277,75 @@ describe('model picker helpers', () => {
   it('focusModelPicker is a no-op when no picker is open', () => {
     const base = createInitialState()
     expect(focusModelPicker(base, 1)).toBe(base)
+  })
+})
+
+const EFFORT_ENTRIES: readonly string[] = ['low', 'medium', 'high', 'default']
+
+function effortPickerState(overrides: Partial<EffortPickerView> = {}): TuiState {
+  const picker: EffortPickerView = {
+    entries: EFFORT_ENTRIES,
+    focused: 0,
+    current: 'medium',
+    ...overrides,
+  }
+  return setEffortPicker(createInitialState(), picker)
+}
+
+describe('effort picker helpers', () => {
+  it('createInitialState leaves effortPicker undefined', () => {
+    const state: TuiState = createInitialState()
+    expect(state.effortPicker).toBeUndefined()
+  })
+
+  it('setEffortPicker parks the picker with entries, focus, and current effort', () => {
+    const state = effortPickerState({ focused: 2 })
+    expect(state.effortPicker?.entries).toBe(EFFORT_ENTRIES)
+    expect(state.effortPicker?.focused).toBe(2)
+    expect(state.effortPicker?.current).toBe('medium')
+  })
+
+  it('setEffortPicker drops the field entirely when cleared', () => {
+    const state = effortPickerState()
+    const cleared = setEffortPicker(state, undefined)
+    expect(cleared.effortPicker).toBeUndefined()
+    // Cleared state does not carry the dropped field at all.
+    expect('effortPicker' in cleared).toBe(false)
+  })
+
+  it('setEffortPicker does not mutate the original state', () => {
+    const state = createInitialState()
+    const parked = setEffortPicker(state, { entries: EFFORT_ENTRIES, focused: 1, current: undefined })
+    expect(state.effortPicker).toBeUndefined()
+    expect(parked.effortPicker?.focused).toBe(1)
+    expect(parked).not.toBe(state)
+  })
+
+  it('moveEffortPickerFocus clamps focus to [0, entries.length-1] (no wrap)', () => {
+    const base = effortPickerState({ focused: 0 })
+    expect(moveEffortPickerFocus(base, 1).effortPicker?.focused).toBe(1)
+    // Clamp at the top — does not wrap to the bottom.
+    expect(moveEffortPickerFocus(base, -1).effortPicker?.focused).toBe(0)
+    // Clamp at the bottom.
+    const last = effortPickerState({ focused: 3 })
+    expect(moveEffortPickerFocus(last, 1).effortPicker?.focused).toBe(3)
+  })
+
+  it('moveEffortPickerFocus is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(moveEffortPickerFocus(base, 1)).toBe(base)
+  })
+
+  it('focusEffortPicker clamps into range', () => {
+    const base = effortPickerState({ focused: 0 })
+    expect(focusEffortPicker(base, 99).effortPicker?.focused).toBe(3)
+    expect(focusEffortPicker(base, -3).effortPicker?.focused).toBe(0)
+    expect(focusEffortPicker(base, 2).effortPicker?.focused).toBe(2)
+  })
+
+  it('focusEffortPicker is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(focusEffortPicker(base, 1)).toBe(base)
   })
 })
 

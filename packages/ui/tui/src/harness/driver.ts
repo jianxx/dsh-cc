@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -31,6 +31,7 @@ import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
+import { parseEffortChoice } from '../effort-catalog.ts'
 import { writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
@@ -52,6 +53,7 @@ import {
   createInitialState,
   enqueue,
   markExitAttempt,
+  moveEffortPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveSessionSwitcherFocus,
@@ -62,6 +64,7 @@ import {
   setApproval,
   setBusy,
   setDraft,
+  setEffortPicker,
   setHud,
   setModelPicker,
   setNotice,
@@ -148,6 +151,22 @@ type CommandsLike = {
 type LlmLike = {
   listProviders(): { id: string }[]
   listModels(provider: string): Promise<{ provider: string; id: string; name: string }[]>
+  /**
+   * Optional model-metadata lookup used to validate reasoning-effort writes.
+   * Optional so existing llm stubs without it keep working: every effort
+   * consumer treats absence as "unresolvable" and fails closed (or writes the
+   * bare pair for /model, which never needs validation).
+   */
+  resolveModelInfo?(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    reasoning?: {
+      efforts: readonly { id: string; name: string; description?: string }[]
+      defaultEffort?: string
+    }
+  }>
 }
 
 type PersistenceLike = {
@@ -165,9 +184,10 @@ type ToolsLike = {
  * Structural stand-in for the deployment's `agentDefaultModel` service
  * (settings.yaml's `agent-default-model`), which the headless bundle seeds
  * agents from. `currentSelection()` returns the resolved default or undefined
- * when no default is configured. `reasoningEffort` is intentionally ignored on
- * the read path: undefined means the provider's default effort applies, which
- * is the correct behavior for the TUI's seed.
+ * when no default is configured. A carried `reasoningEffort` is seeded into
+ * the selection too — but only after the llm service confirms the model
+ * advertises it ({@link resolveEfforts}); an invalid or unresolvable effort is
+ * silently dropped to the bare pair, which is always legal.
  */
 type AgentDefaultModelLike = {
   currentSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined
@@ -747,18 +767,63 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // Deployment default-model service (settings.yaml's agent-default-model).
   // The headless bundle seeds agents from this; the TUI driver reads it here
   // so a fresh profile with no explicit provider/model still resolves a
-  // selection. reasoningEffort is ignored on the read path (undefined = the
-  // provider's default effort).
+  // selection. A carried reasoningEffort is seeded too, after resolveModelInfo
+  // validation; an invalid or unresolvable effort is silently dropped to the
+  // bare pair.
   const agentDefaultModel = ctx.get('agentDefaultModel') as AgentDefaultModelLike | undefined
+
+  /**
+   * Advertised reasoning-effort levels of `provider`/`model`, or undefined
+   * when they cannot be resolved: the llm service is absent, does not expose
+   * `resolveModelInfo` (legacy stubs), the lookup rejects, or the model
+   * carries no reasoning metadata. Every effort write fails closed on
+   * undefined — the selection must never hold a model/effort pair the llm
+   * layer would reject (it throws UNSUPPORTED_REASONING_EFFORT, it does not
+   * degrade).
+   */
+  const resolveEfforts = async (
+    provider: string,
+    model: string,
+  ): Promise<readonly { id: string; name: string }[] | undefined> => {
+    const llm = ctx.get('llm') as LlmLike | undefined
+    if (llm?.resolveModelInfo === undefined) return undefined
+    try {
+      const info = await llm.resolveModelInfo(provider, model)
+      return info.reasoning === undefined ? undefined : info.reasoning.efforts
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Stale-pair guard for detached (submit-then-continue) writes: the captured
+   * `{provider, model}` must still be the live selection when the continuation
+   * resumes. A mismatch — a concurrent `/model` or a switchSession re-seed
+   * happened while validation was parked — emits the notice and reports true;
+   * the caller must not write.
+   */
+  const stalePair = (captured: { provider: string; model: string }): boolean => {
+    const live = selection.current
+    if (live !== undefined && live.provider === captured.provider && live.model === captured.model) {
+      return false
+    }
+    emit(upsertRow(state, { kind: 'status', text: 'Model changed; effort not applied.' }))
+    return true
+  }
+
   /**
    * Seed `selection.current` from the deployment default when no explicit
    * provider/model is configured. Explicit config (DriverConfig) and resolved
    * agent options always win — the service only fills the gap the headless
    * bundle would otherwise fill. Called at boot and after switchSession rebinds
-   * the agent. `reset` clears a stale selection first (switchSession) so a
-   * previous session's model never leaks across a switch.
+   * the agent; both call sites await it so the banner/notice reads that follow
+   * never observe a half-seeded selection. `reset` clears a stale selection
+   * first (switchSession) so a previous session's model never leaks across a
+   * switch. A carried `reasoningEffort` is seeded only when the model's
+   * advertised efforts confirm it; llm missing or effort invalid → silently
+   * dropped (the bare pair is always legal).
    */
-  const seedDefaultModel = (reset = false): void => {
+  const seedDefaultModel = async (reset = false): Promise<void> => {
     if (reset) selection.current = undefined
     if (selection.current !== undefined) return
     if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
@@ -768,11 +833,20 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (agentOptions === undefined) {
       const dep = agentDefaultModel?.currentSelection()
       if (dep !== undefined) {
-        selection.current = { provider: dep.provider, model: dep.model }
+        let effort: string | undefined
+        if (dep.reasoningEffort !== undefined) {
+          const efforts = await resolveEfforts(dep.provider, dep.model)
+          if (efforts?.some(level => level.id === dep.reasoningEffort) === true) {
+            effort = dep.reasoningEffort
+          }
+        }
+        selection.current = effort === undefined
+          ? { provider: dep.provider, model: dep.model }
+          : { provider: dep.provider, model: dep.model, reasoningEffort: ReasoningEffortId(effort) }
       }
     }
   }
-  seedDefaultModel()
+  await seedDefaultModel()
   writeResumeTarget(String(current.agent.session.id))
   // Composer history: load once at boot (oldest→newest); seeded into the
   // editor by root.ts. New prompts are appended on submit (see submit()).
@@ -1344,6 +1418,67 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }))
   }
 
+  /**
+   * Apply a `/model` switch to `provider`/`model`, carrying the live effort
+   * when the new model still supports it. The bare pair needs no validation,
+   * so the no-carried-effort path writes synchronously in the caller's tick;
+   * the carried path validates via {@link resolveEfforts} and degrades to a
+   * bare pair + reset notice when the effort is unsupported OR unresolvable —
+   * the switch itself never fails on validation. The stale-pair guard covers
+   * the detached continuation: a selection that moved while validation was in
+   * flight is never clobbered.
+   */
+  const applyModelSwitch = async (provider: string, model: string): Promise<void> => {
+    const captured = selection.current
+    const carried = captured?.reasoningEffort
+    if (captured === undefined || carried === undefined) {
+      selection.current = { provider, model }
+      emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
+      return
+    }
+    const efforts = await resolveEfforts(provider, model)
+    if (stalePair(captured)) return
+    const supported = efforts?.some(level => level.id === carried) === true
+    selection.current = supported
+      ? { provider, model, reasoningEffort: ReasoningEffortId(carried) }
+      : { provider, model }
+    emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
+    if (!supported) {
+      emit(upsertRow(state, {
+        kind: 'status',
+        text: `Effort "${carried}" not supported by ${model}; reset to default.`,
+      }))
+    }
+  }
+
+  /**
+   * Open the `/effort` picker: resolve the live model's advertised efforts
+   * and park `effortPicker` state — entries are the effort ids plus the
+   * trailing reserved `default` entry, focus on the live effort (the
+   * `default` entry when none is set or it is no longer in the list). Fail
+   * closed: an unresolved model emits the no-model notice and unresolvable
+   * levels emit a notice — never a fabricated list.
+   */
+  const openEffortPicker = async (): Promise<void> => {
+    const route = selection.current
+    if (route === undefined) {
+      emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
+      return
+    }
+    const efforts = await resolveEfforts(route.provider, route.model)
+    if (efforts === undefined || efforts.length === 0) {
+      emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
+      return
+    }
+    const entries = [...efforts.map(level => level.id), 'default']
+    const index = route.reasoningEffort === undefined ? -1 : entries.indexOf(route.reasoningEffort)
+    emit(setEffortPicker(state, {
+      entries,
+      focused: index >= 0 ? index : entries.length - 1,
+      current: route.reasoningEffort,
+    }))
+  }
+
   // --- Session switching: /resume overlay + driver.switchSession ----------
   // The overlay mirrors the model picker: state field + open/move/submit/cancel.
   // switchSession is the in-process engine: dispose old, resume new, replay
@@ -1425,7 +1560,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // Refresh the model selection from the new agent's resolved options,
     // falling back to the deployment default. Reset first so a stale selection
     // from the previous session never leaks across a switch.
-    seedDefaultModel(true)
+    await seedDefaultModel(true)
     writeResumeTarget(id)
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.
@@ -1539,11 +1674,55 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         showNotice(`Unknown model "${rawInput}". Try /model for the catalog.`)
         return
       }
-      selection.current = { provider: chosen.provider, model: chosen.model }
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: `Model is now ${chosen.provider}/${chosen.model}.`,
-      }))
+      // Validates + preserves a carried effort when possible (never blocks the
+      // switch itself — see applyModelSwitch).
+      await applyModelSwitch(chosen.provider, chosen.model)
+    }
+    if (name === 'effort') {
+      if (rawInput.length === 0) {
+        await openEffortPicker()
+        return
+      }
+      const route = selection.current
+      if (route === undefined) {
+        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
+        return
+      }
+      // `default` is a reserved keyword (it wins even over a model effort
+      // literally named "default"): reset to the bare pair with ZERO
+      // validation and zero adapter calls — the provider default is always
+      // legal, even when the llm service is unreachable.
+      if (parseEffortChoice(rawInput, [])?.kind === 'default') {
+        selection.current = { provider: route.provider, model: route.model }
+        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
+        return
+      }
+      // Fail closed: resolve before validating — selection must never hold an
+      // effort the llm layer would reject.
+      const efforts = await resolveEfforts(route.provider, route.model)
+      if (efforts === undefined || efforts.length === 0) {
+        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
+        return
+      }
+      const choice = parseEffortChoice(rawInput, efforts.map(level => level.id))
+      // `choice.kind === 'default'` cannot occur here: the reserved keyword
+      // already returned above, so anything non-level is unknown.
+      if (choice?.kind !== 'level') {
+        emit(upsertRow(state, {
+          kind: 'status',
+          text: `Unknown effort "${rawInput.trim()}" for ${route.model}. Try /effort.`,
+        }))
+        return
+      }
+      const level = efforts.find(candidate => candidate.id === choice.level)!
+      // Single branding seam: view layers stay plain strings.
+      selection.current = {
+        provider: route.provider,
+        model: route.model,
+        reasoningEffort: ReasoningEffortId(level.id),
+      }
+      // User-facing text carries the effort NAME, not the raw id.
+      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
     }
     if (name === 'cost') {
       const totals = projections === undefined
@@ -1764,17 +1943,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setTurnActive(setBusy(state, true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
   }
 
-  const statusLineOf = (width?: number): string => formatStatusLine({
-    cwd: current.agent.session.header.cwd ?? cwd,
-    sessionId: String(current.agent.session.id),
-    permissionMode: state.permissionMode,
-    ...selection.current === undefined ? {} : { model: selection.current.model },
-    ...branch === undefined ? {} : { branch },
-    ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
-    ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
-    ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
-    busy: state.busy,
-  }, width === undefined ? {} : { width })
+  const statusLineOf = (width?: number): string => {
+    const effort = selection.current?.reasoningEffort
+    return formatStatusLine({
+      cwd: current.agent.session.header.cwd ?? cwd,
+      sessionId: String(current.agent.session.id),
+      permissionMode: state.permissionMode,
+      ...selection.current === undefined ? {} : { model: selection.current.model },
+      ...effort === undefined ? {} : { effort },
+      ...branch === undefined ? {} : { branch },
+      ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
+      ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
+      ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
+      busy: state.busy,
+    }, width === undefined ? {} : { width })
+  }
 
   return {
     get state() {
@@ -1911,21 +2094,68 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     modelPickerMove(delta) {
       emit(moveModelPickerFocus(state, delta))
     },
-    modelPickerSubmit() {
+    modelPickerSubmit(): Promise<void> {
       const picker = state.modelPicker
-      if (picker === undefined) return
+      if (picker === undefined) return Promise.resolve()
       const entry = picker.entries[picker.focused]
+      // Read-then-close: capture the focused entry BEFORE the synchronous
+      // close-emit so the overlay never lingers while validation runs.
       emit(setModelPicker(state, undefined))
-      if (entry !== undefined) {
-        selection.current = { provider: entry.provider, model: entry.id }
-        emit(upsertRow(state, {
-          kind: 'status',
-          text: `Model is now ${entry.provider}/${entry.id}.`,
-        }))
-      }
+      if (entry === undefined) return Promise.resolve()
+      // Effort-preserving switch with the stale-pair guard inside; the bare
+      // fast path writes synchronously, a carried effort continues detached.
+      return applyModelSwitch(entry.provider, entry.id)
     },
     modelPickerCancel() {
       emit(setModelPicker(state, undefined))
+    },
+    async openEffortPicker() {
+      await openEffortPicker()
+    },
+    effortPickerMove(delta) {
+      emit(moveEffortPickerFocus(state, delta))
+    },
+    async effortPickerSubmit() {
+      const picker = state.effortPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      // Read-then-close (mirror modelPickerSubmit): capture the focused entry
+      // BEFORE the synchronous close-emit, then validate+write detached.
+      emit(setEffortPicker(state, undefined))
+      if (entry === undefined) return
+      const captured = selection.current
+      if (captured === undefined) {
+        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
+        return
+      }
+      // The reserved `default` entry resets to the bare pair with zero
+      // validation (the provider default is always legal); the stale-pair
+      // guard still applies.
+      if (entry === 'default') {
+        if (stalePair(captured)) return
+        selection.current = { provider: captured.provider, model: captured.model }
+        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
+        return
+      }
+      const efforts = await resolveEfforts(captured.provider, captured.model)
+      // Stale-pair guard: the captured model must still be the live selection
+      // when the validation continuation resumes — a concurrent /model or
+      // switchSession re-seed in between refuses the write.
+      if (stalePair(captured)) return
+      const level = efforts?.find(candidate => candidate.id === entry)
+      if (level === undefined) {
+        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${captured.model}.` }))
+        return
+      }
+      selection.current = {
+        provider: captured.provider,
+        model: captured.model,
+        reasoningEffort: ReasoningEffortId(level.id),
+      }
+      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
+    },
+    effortPickerCancel() {
+      emit(setEffortPicker(state, undefined))
     },
     async openSessionSwitcher() {
       await openSessionSwitcher()
@@ -1967,6 +2197,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     async loadModelCatalog() {
       return loadCatalog()
+    },
+    async loadModelEfforts() {
+      const route = selection.current
+      if (route === undefined) return []
+      const efforts = await resolveEfforts(route.provider, route.model)
+      if (efforts === undefined) return []
+      return [...efforts.map(level => level.id), 'default']
     },
     listCommands() {
       return commandCatalog

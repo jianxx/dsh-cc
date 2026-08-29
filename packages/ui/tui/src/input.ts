@@ -26,6 +26,9 @@ export interface InputSink {
   modelPickerMove(delta: -1 | 1): void
   modelPickerSubmit(): void
   modelPickerCancel(): void
+  effortPickerMove(delta: -1 | 1): void
+  effortPickerSubmit(): void
+  effortPickerCancel(): void
   sessionSwitcherMove(delta: -1 | 1): void
   sessionSwitcherSubmit(): Promise<void>
   sessionSwitcherCancel(): void
@@ -148,6 +151,31 @@ export function routeModelPickerInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open effort picker. Only arrows, enter, and
+ * escape are recognized; everything else is dropped — the picker is modal and
+ * the composer editor must never see keystrokes while it is open.
+ */
+export function routeEffortPickerInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.effortPickerCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.effortPickerMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.effortPickerMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    driver.effortPickerSubmit()
+    return
+  }
+  // All other keys are consumed and ignored (modal).
+}
+
+/**
  * Route one raw keypress into the open session switcher. Only arrows, enter,
  * and escape are recognized; everything else is dropped — the switcher is
  * modal and the composer editor must never see keystrokes while it is open.
@@ -235,6 +263,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.modelPicker !== undefined) {
     routeModelPickerInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.effortPicker !== undefined) {
+    routeEffortPickerInput(driver, data)
     return { kind: 'none' }
   }
 

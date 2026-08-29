@@ -14,7 +14,7 @@ import type { Driver } from '../state/driver-types.ts'
 import { shortenSession } from '../statusline.ts'
 
 /** The slice of the driver the completers need (structural, easy to fake). */
-export type ArgCompleterDriver = Pick<Driver, 'loadModelCatalog' | 'listSessions'>
+export type ArgCompleterDriver = Pick<Driver, 'loadModelCatalog' | 'loadModelEfforts' | 'listSessions'>
 
 /**
  * Build the per-command argument completer map handed to
@@ -46,6 +46,12 @@ export function buildArgCompleters(driver: ArgCompleterDriver): ArgCompleterMap 
         }
       }
       return items
+    },
+    effort: async () => {
+      // The driver folds in the trailing reserved `default` entry and returns
+      // [] when no model (or no resolvable levels) — no dead-end completions.
+      const efforts = await driver.loadModelEfforts()
+      return efforts.map(level => ({ value: level, label: level }))
     },
     resume: async () => {
       const sessions = await driver.listSessions()

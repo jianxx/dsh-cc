@@ -45,6 +45,35 @@ describe('formatStatusLine', () => {
     })).toBe('/tmp [feat/tui-profile] · x · default · shift+tab · /quit')
   })
 
+  it('renders effort as its own segment right after the model', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      model: 'm1',
+      effort: 'high',
+      busy: false,
+    })).toBe('/tmp · x · default · m1 · effort: high · shift+tab · /quit')
+  })
+
+  it('omits the effort segment when unset or empty', () => {
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      model: 'm1',
+      busy: false,
+    })).toBe('/tmp · x · default · m1 · shift+tab · /quit')
+    expect(formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      model: 'm1',
+      effort: '',
+      busy: false,
+    })).toBe('/tmp · x · default · m1 · shift+tab · /quit')
+  })
+
   it('renders context percent between model and tokens', () => {
     expect(formatStatusLine({
       cwd: '/tmp',

@@ -6,7 +6,7 @@
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
 export const LOCAL_SLASH = [
-  'quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'agents', 'cost', 'usage', 'export-md', 'copy',
+  'quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'effort', 'agents', 'cost', 'usage', 'export-md', 'copy',
 ] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
@@ -29,6 +29,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'tui-help', description: 'Show TUI keyboard and command help' },
   { name: 'resume', description: 'Switch to a resumed session (picker or /resume <id>)', argumentHint: '<sessionId>' },
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
+  { name: 'effort', description: 'Set reasoning effort for the current model', argumentHint: '<level|default>' },
   { name: 'agents', description: 'List subagent activity' },
   { name: 'cost', description: 'Show token usage' },
   { name: 'usage', description: 'Open the live token and context usage panel' },

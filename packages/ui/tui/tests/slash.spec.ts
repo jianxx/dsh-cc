@@ -5,7 +5,7 @@ describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
     expect(names).toEqual([
-      'agents', 'clear', 'copy', 'cost', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help', 'usage',
+      'agents', 'clear', 'copy', 'cost', 'effort', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help', 'usage',
     ])
   })
 
@@ -38,6 +38,13 @@ describe('LOCAL_COMMANDS', () => {
     expect(usage).toBeDefined()
     expect(usage!.description.toLowerCase()).toContain('panel')
   })
+
+  it('effort is listed with a level argument hint', () => {
+    const effort = LOCAL_COMMANDS.find(c => c.name === 'effort')
+    expect(effort).toBeDefined()
+    expect(effort!.argumentHint).toBe('<level|default>')
+    expect(effort!.description.toLowerCase()).toContain('reasoning effort')
+  })
 })
 
 describe('parseSlash', () => {
@@ -58,6 +65,8 @@ describe('parseSlash', () => {
     })
     expect(parseSlash('/copy')).toEqual({ kind: 'local', name: 'copy', rawInput: '' })
     expect(parseSlash('/usage')).toEqual({ kind: 'local', name: 'usage', rawInput: '' })
+    expect(parseSlash('/effort high')).toEqual({ kind: 'local', name: 'effort', rawInput: 'high' })
+    expect(parseSlash('/effort')).toEqual({ kind: 'local', name: 'effort', rawInput: '' })
   })
 
   it('forwards unknown names to the harness catalog', () => {

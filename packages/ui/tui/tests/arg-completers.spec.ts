@@ -13,10 +13,15 @@ interface FakeEntry {
   name: string
 }
 
-function fakeDriver(catalog: FakeEntry[], sessions: { id: string; createdAt: number }[]) {
+function fakeDriver(
+  catalog: FakeEntry[],
+  sessions: { id: string; createdAt: number }[],
+  efforts: readonly string[] = [],
+) {
   return {
     loadModelCatalog: async () => catalog,
     listSessions: async () => sessions,
+    loadModelEfforts: async () => efforts,
   }
 }
 
@@ -64,6 +69,21 @@ describe('buildArgCompleters — /model', () => {
     ))
     const items = await completers.model!('', new AbortController().signal)
     expect(items[0]).toEqual({ value: 'prov-a/unique', label: 'prov-a/unique' })
+  })
+})
+
+describe('buildArgCompleters — /effort', () => {
+  it('offers the live effort levels with the trailing default entry last', async () => {
+    const completers = buildArgCompleters(fakeDriver([], [], ['minimal', 'high', 'default']))
+    const items = await completers.effort!('', new AbortController().signal)
+    expect(items.map(i => i.value)).toEqual(['minimal', 'high', 'default'])
+    expect(items.map(i => i.label)).toEqual(['minimal', 'high', 'default'])
+  })
+
+  it('offers nothing when no model is resolved (loadModelEfforts returns [])', async () => {
+    const completers = buildArgCompleters(fakeDriver([], [], []))
+    const items = await completers.effort!('', new AbortController().signal)
+    expect(items).toEqual([])
   })
 })
 
