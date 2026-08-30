@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis-plugin-include": "link:../../../../deepseek-harness/vendor/include",
+    "@jianxx/dsh-cc-cache-trajectory": "workspace:^",
     "js-yaml": "^4.0.9"
   },
   "publishConfig": {

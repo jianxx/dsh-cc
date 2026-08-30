@@ -1,0 +1,30 @@
+{
+  "name": "@jianxx/dsh-cc-cache-trajectory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cache-hit-rate benchmark: standard trajectory schema, deterministic runner, report fold, and regression thresholds (Item 6).",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts",
+    "./bin": "./src/bin.ts",
+    "./package.json": "./package.json"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "zod": "^4.4.3",
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/dsh-agent": "link:../../../../deepseek-harness/packages/core/agent",
+    "@deepseek-ai/dsh-agent-loop": "link:../../../../deepseek-harness/packages/core/agent-loop",
+    "@deepseek-ai/dsh-agent-loop-testkit": "link:../../../../deepseek-harness/packages/test-support/agent-loop-testkit",
+    "@deepseek-ai/dsh-app-boot": "link:../../../../deepseek-harness/packages/boot/app-boot",
+    "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
+    "@deepseek-ai/dsh-llm-deepseek": "link:../../../../deepseek-harness/packages/llm/llm-deepseek",
+    "@deepseek-ai/dsh-llm-mock-server": "link:../../../../deepseek-harness/packages/test-support/llm-mock-server",
+    "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
+    "@deepseek-ai/dsh-tools": "link:../../../../deepseek-harness/packages/core/tools",
+    "@deepseek-ai/dsh-token-meter": "link:../../../../deepseek-harness/packages/llm/token-meter",
+    "@jianxx/dsh-cc-compaction-micro": "workspace:^"
+  }
+}

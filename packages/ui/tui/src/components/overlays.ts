@@ -13,6 +13,7 @@ import type {
   QuestionView,
   SessionSwitcherView,
   TodoItemView,
+  UsageTotalsView,
   UsageView,
 } from '../store.ts'
 import { renderDiffLines } from './diff-card.ts'
@@ -354,6 +355,19 @@ function contextLine(view: UsageView | undefined, theme: Theme): string {
 }
 
 /**
+ * Cache-hit rate as a rounded percent, `cacheRead / (input + cacheRead)` —
+ * `input` is the uncached bucket, so the denominator is all prompt input.
+ * Undefined when there is nothing to show: no `cacheRead` total at all, or a
+ * zero denominator (no input and no cache read). Ratios above 1 clamp at 100.
+ */
+export function cacheHitPercent(totals: UsageTotalsView): number | undefined {
+  if (totals.cacheRead === undefined) return undefined
+  const denominator = totals.input + totals.cacheRead
+  if (denominator === 0) return undefined
+  return Math.max(0, Math.min(100, Math.round((totals.cacheRead / denominator) * 100)))
+}
+
+/**
  * Aligned `  label  value` rows (thousands separators, shared column widths)
  * for one usage-panel section.
  */
@@ -390,6 +404,8 @@ export function createUsagePanelBox(view: UsageView | undefined, theme: Theme = 
     for (const line of alignedRows(entries)) {
       box.addChild(new Text(line, 0, 0))
     }
+    const hit = cacheHitPercent(totals)
+    if (hit !== undefined) box.addChild(new Text(`  hit  ${hit}%`, 0, 0))
   }
 
   box.addChild(new Text('Breakdown', 0, 0))

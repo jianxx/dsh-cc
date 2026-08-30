@@ -26,6 +26,28 @@ export const MEMORY_SECTION_ORDER = 90
 /** The section's unique name. */
 export const MEMORY_SECTION_NAME = 'memory'
 
+/**
+ * How long the assemble waterfall may wait for a workspace's in-flight first
+ * scan before giving up and shipping the placeholder. Bounded so a slow or
+ * wedged scan delays the first request by at most this much; the background
+ * `system-prompt/change` path remains the fallback.
+ */
+const READINESS_BUDGET_MS = 500
+
+/**
+ * Join `promise`, but reject after `ms` milliseconds either way. The loser
+ * keeps running in the background (its eventual rejection is contained); the
+ * caller gets a rejection to degrade on.
+ */
+function withinBudget<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const budget = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`readiness budget of ${ms}ms expired`)), ms)
+  })
+  budget.catch(() => {})
+  return Promise.race([promise, budget]).finally(() => clearTimeout(timer))
+}
+
 /** A memory layer surfaced in the section. */
 export interface MemoryLayer {
   /** Scope tag shown in the combined index. */
@@ -78,12 +100,45 @@ export class MemorySection {
     this.teamEnabled = options.teamEnabled ?? false
   }
 
-  /** Register the `memory` section and start the global layer's first scan. */
+  /** Register the `memory` section, its assemble-waterfall reconciliation,
+   * and start the global layer's first scan.
+   *
+   * The waterfall listener removes the first-assembly placeholder jitter:
+   * `systemPrompt.assemble()` runs BEFORE the agent pre-step, so the section
+   * text callback cannot await the directory scans — but the waterfall can.
+   * After the base assembly, a scope with unscanned layers joins the
+   * in-flight `refresh(agent)` (bounded by {@linkcode READINESS_BUDGET_MS};
+   * per-directory refreshers self-deduplicate, so this is the same promise
+   * the background scan already started) and re-renders the section with the
+   * same render function the section callback uses, so the first assembly
+   * already carries the scanned text and no later request sees a different
+   * prefix. Timeout or failure keeps the placeholder; the scan lands on a
+   * later assembly through `system-prompt/change`. */
   start(): void {
     this.ctx.systemPrompt.section({
       name: MEMORY_SECTION_NAME,
       order: MEMORY_SECTION_ORDER,
       text: (context: { scope?: unknown }): string => this.render(context.scope),
+    })
+    this.ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const result = await next()
+      const agent = agentFromScope(context.scope)
+      if (agent === undefined) return result
+      if (!this.layersFor(agent).some(layer => layer.state === undefined)) return result
+      try {
+        await withinBudget(this.refresh(agent), READINESS_BUDGET_MS)
+      } catch (error) {
+        this.ctx.logger.warn(
+          `memory: first-assembly scan did not land within ${READINESS_BUDGET_MS}ms: ${String(error)}; keeping the placeholder`,
+        )
+        return result
+      }
+      return {
+        ...result,
+        sections: result.sections.map(section => section.name === MEMORY_SECTION_NAME
+          ? { ...section, text: this.render(agent) }
+          : section),
+      }
     })
     void this.refresh()
   }

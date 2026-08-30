@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { scanMemoryDirectory } from '../src/scan.ts'
-import { MemorySection, renderMemorySection } from '../src/section.ts'
+import { MemorySection, renderMemorySection, MEMORY_SECTION_NAME } from '../src/section.ts'
 import { FakeMemoryFs } from './helpers.ts'
 
 async function mountedFs(): Promise<{ fs: FakeMemoryFs }> {
@@ -192,6 +193,72 @@ describe('MemorySection (per-agent rendering)', () => {
     expect(first).toContain('(no memories yet)')
     expect(first).toContain('memory_save')
     await vi.waitFor(() => expect(text(agentA)).toContain('- [alpha](alpha.md) — A'))
+    await ctx.fiber.dispose()
+  })
+})
+
+/**
+ * The assemble-waterfall reconciliation: while a workspace's first scan is
+ * still in flight, the assemble waterfall listener joins it (bounded) so the
+ * FIRST assembly for that scope already carries the scanned text instead of
+ * the placeholder — the first-turn request-2 prefix must not diverge. These
+ * tests drive the REAL assembly path (`ctx.plugin(SystemPrompt)` then
+ * `ctx.systemPrompt.assemble`) because the listener lives on that waterfall.
+ */
+describe('MemorySection (assemble waterfall readiness)', () => {
+  const agentAt = (cwd: string): Agent => ({ session: { header: { cwd } } }) as unknown as Agent
+
+  async function setupReal() {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(FakeMemoryFs)
+    const fs = ctx.fs as unknown as FakeMemoryFs
+    const changes = vi.fn()
+    ctx.on('system-prompt/change' as never, changes)
+    const section = new MemorySection(ctx, '/mem')
+    const textOf = async (agent?: Agent): Promise<string> => {
+      const assembly = await ctx.systemPrompt.assemble(agent === undefined ? {} : { scope: agent })
+      return assembly.sections.find(section => section.name === MEMORY_SECTION_NAME)?.text ?? ''
+    }
+    // Seed FIRST, then start: start()'s immediate global scan must not race
+    // the test's seeds (same contract as the per-agent rendering tests).
+    const start = () => section.start()
+    return { ctx, fs, changes, textOf, start }
+  }
+
+  it('first assembly with content carries the real memory text, no placeholder', async () => {
+    const { ctx, fs, textOf, start } = await setupReal()
+    fs.seed('/mem/MEMORY.md', '- [shared](shared.md) — G\n')
+    fs.seed('/mem/shared.md', '---\nname: shared\ndescription: G\ntype: user\n---\nbody\n')
+    fs.seed('/mem/projects/work-repo-a/MEMORY.md', '- [alpha](alpha.md) — A\n')
+    fs.seed('/mem/projects/work-repo-a/alpha.md', '---\nname: alpha\ndescription: A\ntype: user\n---\nbody\n')
+    start()
+
+    // The very first assembly for this workspace: the listener must join the
+    // in-flight scan rather than hand back the placeholder.
+    const text = await textOf(agentAt('/work/repo-a'))
+    expect(text).toContain('- [alpha](alpha.md) — A')
+    expect(text).toContain('- [shared](shared.md) — G')
+    expect(text).toContain('- [alpha](alpha.md) — A (workspace)')
+    expect(text).not.toContain('(no memories yet)')
+    await ctx.fiber.dispose()
+  })
+
+  it('renders memoryless directories stably without a second change emission', async () => {
+    const { ctx, changes, textOf, start } = await setupReal()
+    start()
+    const first = await textOf(agentAt('/work/repo-a'))
+    expect(first).toContain('# Memory')
+    expect(first).toContain('memory_save')
+    expect(first).toContain('(no memories yet)')
+
+    // The reassembly the first-assembly scans triggered sees the same bytes,
+    // and nothing emits again: a contentless directory never changes text.
+    const second = await textOf(agentAt('/work/repo-a'))
+    expect(second).toBe(first)
+    const count = changes.mock.calls.length
+    await textOf(agentAt('/work/repo-a'))
+    expect(changes.mock.calls.length).toBe(count)
     await ctx.fiber.dispose()
   })
 })

@@ -435,3 +435,16 @@
 
 - id: command-branch
   name: '@jianxx/dsh-cc-command-branch'
+
+# Cache-stable tool ordering: remembers each scope's last emitted tool-name
+# sequence on the system-prompt/assemble waterfall and appends newly appeared
+# tools (ToolSearch activations, MCP registrations) lexicographically at the
+# tail, so an activation extends the request prefix instead of shifting every
+# tool after the insertion point. cordis waterfall is outermost-first and the
+# outermost listener has the final say, so the plugin registers its assemble
+# listener with `prepend` to stay outermost regardless of row position; the
+# row itself stays last because the composition drift gate expects cc rows at
+# the bottom (the Item 6 L0 prefix-stability e2e is the sentinel).
+# Publishes no Service, so it needs no isolate realm.
+- id: tool-append-order
+  name: '@jianxx/dsh-cc-tool-append-order'

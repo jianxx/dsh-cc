@@ -3,6 +3,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { CallId, createMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+// Type-only: the `compaction/prune` shadow-price SessionEventMap merge.
+import type {} from '@deepseek-ai/dsh-compaction'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Microcompactor, {
@@ -216,6 +218,80 @@ describe('Microcompactor window + freeze', () => {
     const result = micro.microcompactSession(s)
     expect(result.replaced).toHaveLength(0)
     expect(result.stable).toBe(true)
+  })
+})
+
+describe('Microcompactor single-pass batch folding', () => {
+  it('collapses every over-window node in one pass, each shadow-priced by an adjacent compaction/prune', () => {
+    const micro = service({ retainResults: 2 })
+    const s = session()
+    for (let i = 1; i <= 5; i++) appendToolStep(s, i, `call-${i}`, `result ${i}`)
+    const originalSeqs = surfaceToolResults(s)
+
+    const result = micro.microcompactSession(s)
+
+    // One pass collapses ALL over-window nodes (the oldest 3), not one per pass.
+    expect(result.replaced).toHaveLength(3)
+    expect(result.replaced.map(r => r.originalSeq)).toEqual(originalSeqs.slice(0, 3))
+    for (const record of result.replaced) {
+      // Shadow-price protocol: the metering event is appended synchronously
+      // adjacent, immediately before its surface replacement.
+      const prune = s.events[record.replacementSeq - 1] as SessionEvent<'compaction/prune'> | undefined
+      expect(prune?.type).toBe('compaction/prune')
+      expect(prune!.data.shadowedSeqs).toEqual([record.originalSeq])
+      expect(prune!.data.shadowedRange).toEqual({ start: record.originalSeq, end: record.originalSeq })
+      expect(prune!.data.shadowedTokenCount).toBeGreaterThan(0)
+      // The priced replacement shadows exactly the metered node.
+      const replacement = s.events[record.replacementSeq] as SessionEvent<'tool/result'> | undefined
+      expect(replacement?.type).toBe('tool/result')
+      expect(replacement!.sourceEventSeqs).toEqual([record.originalSeq])
+    }
+  })
+
+  it('is a byte-level no-op when invoked immediately after a batch pass', () => {
+    const micro = service({ retainResults: 2 })
+    const s = session()
+    for (let i = 1; i <= 5; i++) appendToolStep(s, i, `call-${i}`, `result ${i}`)
+
+    const first = micro.microcompactSession(s)
+    expect(first.replaced).toHaveLength(3)
+    const logBytesBefore = JSON.stringify(s.events)
+    const surfaceBytesBefore = JSON.stringify(
+      [...s.surface.nodes].map(seq => s.events[seq]),
+    )
+
+    const second = micro.microcompactSession(s)
+
+    expect(second.replaced).toHaveLength(0)
+    expect(second.stable).toBe(true)
+    // Nothing appended and nothing rewritten: the event log and the projected
+    // surface are byte-identical after the no-op second pass.
+    expect(JSON.stringify(s.events)).toBe(logBytesBefore)
+    expect(JSON.stringify([...s.surface.nodes].map(seq => s.events[seq]))).toBe(surfaceBytesBefore)
+  })
+
+  it('folds exactly one node when the window overflows by exactly one (steady state)', () => {
+    const micro = service({ retainResults: 5 })
+    const s = session()
+    for (let i = 1; i <= 6; i++) appendToolStep(s, i, `call-${i}`, `result ${i}`)
+
+    const first = micro.microcompactSession(s)
+    expect(first.replaced).toHaveLength(1)
+    expect(first.replaced[0]?.callId).toEqual(CallId('call-1'))
+    expect(first.stable).toBe(false)
+
+    // Steady state: with the overflow landed, a re-pass folds nothing.
+    const second = micro.microcompactSession(s)
+    expect(second.replaced).toHaveLength(0)
+    expect(second.stable).toBe(true)
+
+    // Overflow by one again: the steady state still folds exactly the one new
+    // over-window node (the already-collapsed placeholder is never re-decided).
+    appendToolStep(s, 7, 'call-7', 'result 7')
+    const third = micro.microcompactSession(s)
+    expect(third.replaced).toHaveLength(1)
+    expect(third.replaced[0]?.callId).toEqual(CallId('call-2'))
+    expect(replacementText(s, 'call-7')).toBe('result 7')
   })
 })
 
