@@ -19,6 +19,7 @@ import {
   enqueue,
   markExitAttempt,
   moveEffortPickerFocus,
+  movePermissionPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
@@ -27,6 +28,7 @@ import {
   setApproval,
   setBusy,
   setEffortPicker,
+  setPermissionPicker,
   setModelPicker,
   setNotice,
   setQuestion,
@@ -236,6 +238,39 @@ function fakeDriver(
     },
     effortPickerCancel() {
       state = setEffortPicker(state, undefined)
+      for (const l of listeners) l(state)
+    },
+    async openPermissionPicker() {},
+    permissionPickerMove(delta) {
+      state = movePermissionPickerFocus(state, delta)
+      for (const l of listeners) l(state)
+    },
+    async permissionPickerSubmit() {
+      const picker = state.permissionPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      if (entry?.id === 'bypassPermissions' && picker.confirmingBypass !== true) {
+        state = setPermissionPicker(state, { ...picker, confirmingBypass: true })
+        for (const l of listeners) l(state)
+        return
+      }
+      state = setPermissionPicker(state, undefined)
+      if (entry !== undefined) {
+        state = upsertRow(state, {
+          kind: 'status',
+          text: `Permission mode is now "${entry.id}".`,
+        })
+      }
+      for (const l of listeners) l(state)
+    },
+    permissionPickerCancel() {
+      const picker = state.permissionPicker
+      if (picker?.confirmingBypass === true) {
+        const { confirmingBypass: _dropped, ...rest } = picker
+        state = setPermissionPicker(state, rest)
+      } else {
+        state = setPermissionPicker(state, undefined)
+      }
       for (const l of listeners) l(state)
     },
     toggleTodoPanel() {
@@ -1317,6 +1352,99 @@ describe('vt-renderer', () => {
     vt.sendInput('\x1b') // esc closes
     await settle()
     expect(driver.state.effortPicker).toBeUndefined()
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the permission picker with labels, focus marker, current marker, and footer', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setPermissionPicker(createInitialState(), {
+      entries: [
+        { id: 'default', label: 'Default', detail: 'Follow rules' },
+        { id: 'acceptEdits', label: 'Accept edits', detail: 'Auto-allow edits' },
+        { id: 'plan', label: 'Plan', detail: 'Read-only' },
+      ],
+      focused: 1,
+      current: 'acceptEdits',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Select permission mode')
+    expect(stripped).toContain('Default')
+    expect(stripped).toContain('Accept edits')
+    expect(stripped).toContain('Plan')
+    expect(stripped).toContain('❯ Accept edits')
+    expect(stripped).toMatch(/❯ Accept edits.*\*/)
+    expect(stripped).toContain('move')
+    expect(stripped).toContain('enter select')
+    expect(stripped).toContain('esc cancel')
+
+    driver.setState(setPermissionPicker(state, undefined))
+    await settle()
+    expect(stripAnsi(vt.grid().join('\n'))).not.toContain('Select permission mode')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('renders the bypass confirmation copy while confirmingBypass is set', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setPermissionPicker(createInitialState(), {
+      entries: [
+        { id: 'default', label: 'Default', detail: 'Follow rules' },
+        { id: 'bypassPermissions', label: 'Bypass permissions', detail: 'Skip prompts' },
+      ],
+      focused: 1,
+      current: 'default',
+      confirmingBypass: true,
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    const stripped = stripAnsi(vt.grid().join('\n'))
+    expect(stripped).toContain('Enable Bypass permissions?')
+    expect(stripped).toContain('Bypass permissions skips approval prompts')
+    expect(stripped).toContain('enter confirm')
+    expect(stripped).toContain('esc back')
+    expect(stripped).not.toContain('Select permission mode')
+
+    root.tui.stop()
+    root.destroy()
+  })
+
+  it('arrow down on the mounted root moves the permission picker focus one row', async () => {
+    const vt = new VirtualTerminal(80, 24)
+    let state = setPermissionPicker(createInitialState(), {
+      entries: [
+        { id: 'default', label: 'Default', detail: 'Follow rules' },
+        { id: 'acceptEdits', label: 'Accept edits', detail: 'Auto-allow edits' },
+        { id: 'plan', label: 'Plan', detail: 'Read-only' },
+      ],
+      focused: 0,
+      current: 'default',
+    })
+    const driver = fakeDriver(state)
+
+    const root = buildRoot(driver, { terminal: vt, onQuit: () => {} })
+    root.tui.start()
+    await settle()
+
+    vt.sendInput('\x1b[B') // ↓
+    await settle()
+    expect(driver.state.permissionPicker?.focused).toBe(1)
+
+    vt.sendInput('\x1b') // esc closes
+    await settle()
+    expect(driver.state.permissionPicker).toBeUndefined()
 
     root.tui.stop()
     root.destroy()

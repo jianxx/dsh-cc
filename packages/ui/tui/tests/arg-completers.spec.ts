@@ -87,6 +87,19 @@ describe('buildArgCompleters — /effort', () => {
   })
 })
 
+describe('buildArgCompleters — /permissions', () => {
+  it('offers the five CC rule-engine modes in advertisement order', async () => {
+    const completers = buildArgCompleters(fakeDriver([], []))
+    const items = await completers.permissions!('', new AbortController().signal)
+    expect(items.map(i => i.value)).toEqual([
+      'default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions',
+    ])
+    expect(items.map(i => i.label)).toEqual([
+      'default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions',
+    ])
+  })
+})
+
 describe('buildArgCompleters — /resume', () => {
   it('offers short session ids newest-first with the full id as description', async () => {
     const completers = buildArgCompleters(fakeDriver([], [

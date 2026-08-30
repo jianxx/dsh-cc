@@ -70,6 +70,7 @@ describe('parseSlash', () => {
   })
 
   it('forwards unknown names to the harness catalog', () => {
+    expect(parseSlash('/permissions')).toEqual({ kind: 'harness', line: '/permissions' })
     expect(parseSlash('/permissions plan')).toEqual({ kind: 'harness', line: '/permissions plan' })
     expect(parseSlash('/status')).toEqual({ kind: 'harness', line: '/status' })
   })

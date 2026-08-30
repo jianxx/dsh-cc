@@ -15,18 +15,9 @@
 import type { ClientContext, ISessions, SessionFace } from '@deepseek-ai/dsh-client-runtime/client'
 import type { CommandUiContract, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ClientSessionContext } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import { BYPASS_MODE, PERMISSION_MODE_OPTIONS } from '../modes.ts'
+import { BYPASS_CONFIRMATION, BYPASS_MODE, PERMISSION_MODE_OPTIONS } from '../modes.ts'
 
 export const inject = ['commandUi', 'sessions']
-
-/** Explicit risk gate on the bypassPermissions row, mirroring `/permission` Full access. */
-const BYPASS_CONFIRMATION = {
-  title: 'Enable Bypass permissions?',
-  description: 'Bypass permissions skips approval prompts and pins this session\'s sandbox to full access. Bypass-immune paths and catastrophic commands stay denied. Only use it when you trust the current task.',
-  acknowledgeLabel: 'I understand the risks and want to continue',
-  cancelLabel: 'Cancel',
-  confirmLabel: 'Enable Bypass permissions',
-} as const
 
 /**
  * Resolve the live session face for a popup session scope (undefined = not

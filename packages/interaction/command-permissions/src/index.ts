@@ -7,7 +7,9 @@
  * The host command remains the write path. A client decoration (see
  * `./client`) hangs the same popupSelect on the BARE invocation, mirroring the
  * `/permission` preset pattern — a pick submits `/permissions <mode>` through
- * here, so both surfaces write through one path.
+ * here, so both surfaces write through one path. The TUI intercepts the same
+ * bare invocation and opens an overlay that also submits `/permissions
+ * <mode>` through here.
  *
  * `/permission` (host, sandbox+approval presets) and `/permissions` (this
  * package, CC rule-engine modes) drive different knobs. A CC session's slash
@@ -32,6 +34,7 @@ import { PERMISSION_COMMAND_MODES } from './modes.ts'
 import { renderPermissions } from './permissions.ts'
 
 export {
+  BYPASS_CONFIRMATION,
   BYPASS_MODE,
   PERMISSION_COMMAND_MODES,
   PERMISSION_MODE_OPTIONS,

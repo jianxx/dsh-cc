@@ -1,8 +1,9 @@
 /**
  * The single source of truth for the `/permissions` rule-engine modes. Pure
  * and browser-safe (no cordis/session imports) so the host command (the write
- * path) and the client popupSelect decoration (a pick submits
- * `/permissions <id>`) both render from the same lists and cannot drift.
+ * path), the client popupSelect decoration (a pick submits `/permissions
+ * <id>`), and the TUI picker overlay all render from the same lists and
+ * cannot drift.
  */
 
 /** The available CC rule-engine modes, shared by the switch list and the popup. */
@@ -30,3 +31,15 @@ export const PERMISSION_MODE_OPTIONS: readonly PermissionModeOption[] = [
 
 /** The mode that carries the explicit risk gate (mirrors `/permission` Full access). */
 export const BYPASS_MODE = 'bypassPermissions' as const
+
+/**
+ * Explicit risk gate on the bypassPermissions row, shared by the browser
+ * popupSelect confirmation and the TUI picker overlay.
+ */
+export const BYPASS_CONFIRMATION = {
+  title: 'Enable Bypass permissions?',
+  description: 'Bypass permissions skips approval prompts and pins this session\'s sandbox to full access. Bypass-immune paths and catastrophic commands stay denied. Only use it when you trust the current task.',
+  acknowledgeLabel: 'I understand the risks and want to continue',
+  cancelLabel: 'Cancel',
+  confirmLabel: 'Enable Bypass permissions',
+} as const

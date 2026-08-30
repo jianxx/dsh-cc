@@ -9,10 +9,12 @@ import {
   dequeue,
   enqueue,
   focusEffortPicker,
+  focusPermissionPicker,
   focusQuestionOption,
   focusModelPicker,
   markExitAttempt,
   moveEffortPickerFocus,
+  movePermissionPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveTodoPanelFocus,
@@ -20,6 +22,7 @@ import {
   popQueued,
   resetTurnStep,
   setEffortPicker,
+  setPermissionPicker,
   setModelPicker,
   setQuestion,
   setTodos,
@@ -32,6 +35,7 @@ import {
   upsertSubagent,
   type CatalogEntryView,
   type EffortPickerView,
+  type PermissionPickerView,
   type ModelPickerView,
   type QuestionView,
   type SubagentRunView,
@@ -347,6 +351,95 @@ describe('effort picker helpers', () => {
   it('focusEffortPicker is a no-op when no picker is open', () => {
     const base = createInitialState()
     expect(focusEffortPicker(base, 1)).toBe(base)
+  })
+})
+
+const PERMISSION_ENTRIES: PermissionPickerView['entries'] = [
+  { id: 'default', label: 'Default', detail: 'Follow rules' },
+  { id: 'acceptEdits', label: 'Accept edits', detail: 'Auto-allow edits' },
+  { id: 'plan', label: 'Plan', detail: 'Read-only' },
+  { id: 'auto', label: 'Auto', detail: 'Auto-allow low-risk' },
+  { id: 'bypassPermissions', label: 'Bypass permissions', detail: 'Skip prompts' },
+]
+
+function permissionPickerState(overrides: Partial<PermissionPickerView> = {}): TuiState {
+  const picker: PermissionPickerView = {
+    entries: PERMISSION_ENTRIES,
+    focused: 0,
+    current: 'default',
+    ...overrides,
+  }
+  return setPermissionPicker(createInitialState(), picker)
+}
+
+describe('permission picker helpers', () => {
+  it('createInitialState leaves permissionPicker undefined', () => {
+    const state: TuiState = createInitialState()
+    expect(state.permissionPicker).toBeUndefined()
+  })
+
+  it('setPermissionPicker parks the picker with entries, focus, and current mode', () => {
+    const state = permissionPickerState({ focused: 2, current: 'plan' })
+    expect(state.permissionPicker?.entries).toBe(PERMISSION_ENTRIES)
+    expect(state.permissionPicker?.focused).toBe(2)
+    expect(state.permissionPicker?.current).toBe('plan')
+  })
+
+  it('setPermissionPicker drops the field entirely when cleared', () => {
+    const state = permissionPickerState()
+    const cleared = setPermissionPicker(state, undefined)
+    expect(cleared.permissionPicker).toBeUndefined()
+    expect('permissionPicker' in cleared).toBe(false)
+  })
+
+  it('setPermissionPicker does not mutate the original state', () => {
+    const state = createInitialState()
+    const parked = setPermissionPicker(state, {
+      entries: PERMISSION_ENTRIES,
+      focused: 1,
+      current: 'default',
+    })
+    expect(state.permissionPicker).toBeUndefined()
+    expect(parked.permissionPicker?.focused).toBe(1)
+    expect(parked).not.toBe(state)
+  })
+
+  it('movePermissionPickerFocus clamps focus to [0, entries.length-1] (no wrap)', () => {
+    const base = permissionPickerState({ focused: 0 })
+    expect(movePermissionPickerFocus(base, 1).permissionPicker?.focused).toBe(1)
+    expect(movePermissionPickerFocus(base, -1).permissionPicker?.focused).toBe(0)
+    const last = permissionPickerState({ focused: 4 })
+    expect(movePermissionPickerFocus(last, 1).permissionPicker?.focused).toBe(4)
+  })
+
+  it('movePermissionPickerFocus is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(movePermissionPickerFocus(base, 1)).toBe(base)
+  })
+
+  it('movePermissionPickerFocus at a bound returns the same reference when not confirming', () => {
+    const base = permissionPickerState({ focused: 0 })
+    expect(movePermissionPickerFocus(base, -1)).toBe(base)
+  })
+
+  it('focusPermissionPicker clamps into range', () => {
+    const base = permissionPickerState({ focused: 0 })
+    expect(focusPermissionPicker(base, 99).permissionPicker?.focused).toBe(4)
+    expect(focusPermissionPicker(base, -3).permissionPicker?.focused).toBe(0)
+    expect(focusPermissionPicker(base, 2).permissionPicker?.focused).toBe(2)
+  })
+
+  it('focusPermissionPicker is a no-op when no picker is open', () => {
+    const base = createInitialState()
+    expect(focusPermissionPicker(base, 1)).toBe(base)
+  })
+
+  it('movePermissionPickerFocus clears confirmingBypass so the flag cannot stick to a non-bypass row', () => {
+    const confirming = permissionPickerState({ focused: 4, confirmingBypass: true })
+    const moved = movePermissionPickerFocus(confirming, -1)
+    expect(moved.permissionPicker?.focused).toBe(3)
+    expect(moved.permissionPicker?.confirmingBypass).toBeUndefined()
+    expect('confirmingBypass' in (moved.permissionPicker ?? {})).toBe(false)
   })
 })
 

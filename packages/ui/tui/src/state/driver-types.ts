@@ -137,6 +137,26 @@ export interface Driver {
   /** Close the overlay without changing the selection. */
   effortPickerCancel(): void
   /**
+   * Open the `/permissions` picker overlay: parks `permissionPicker` state
+   * focused on the live mode. The argued path (`/permissions <mode>`)
+   * bypasses the overlay and stays scriptable through the host command.
+   */
+  openPermissionPicker(): Promise<void>
+  /** Move the permission-picker focus by one row (clamped; no wrap). */
+  permissionPickerMove(delta: -1 | 1): void
+  /**
+   * Select the focused entry. `bypassPermissions` first parks an in-overlay
+   * confirmation; a second submit (or any other mode) closes the overlay
+   * synchronously and writes `/permissions ${id}` through the host command.
+   * Awaiting the returned promise waits for that write to settle.
+   */
+  permissionPickerSubmit(): Promise<void>
+  /**
+   * Close the overlay without changing the mode. While the bypass
+   * confirmation is showing, cancel returns to the list instead.
+   */
+  permissionPickerCancel(): void
+  /**
    * Open the `/resume` session-switcher overlay: loads the session list
    * (newest-first), parks `sessionSwitcher` state focused on the current
    * session, or falls back to a status-row notice when no sessions exist.
