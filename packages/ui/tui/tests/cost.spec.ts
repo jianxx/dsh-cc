@@ -69,6 +69,7 @@ describe('formatCostReport', () => {
         '  output    1,234',
         '  cache r   5,678',
         '  cache w     901',
+        '  cache hit   32%',
         '  Pricing is not configured — costs are not computed.',
       ].join('\n'),
     )
@@ -88,6 +89,22 @@ describe('formatCostReport', () => {
 
   it('reports no usage when totals are absent', () => {
     expect(formatCostReport(undefined)).toBe('No token usage recorded yet.')
+  })
+
+  it('appends a cache-hit percent line when cacheRead is present', () => {
+    const text = formatCostReport({ input: 750, output: 10, cacheRead: 250, cacheWrite: 0 })
+    expect(text).toContain('  cache hit   25%')
+  })
+
+  it('clamps the cache-hit percent at 100%', () => {
+    // >1 is unreachable with non-negative buckets; the clamp guards malformed data.
+    const text = formatCostReport({ input: -300, output: 0, cacheRead: 400 })
+    expect(text).toContain('  cache hit  100%')
+  })
+
+  it('omits the cache-hit line when cacheRead is absent or the denominator is zero', () => {
+    expect(formatCostReport({ input: 500, output: 40 })).not.toContain('cache hit')
+    expect(formatCostReport({ input: 0, output: 0, cacheRead: 0 })).not.toContain('cache hit')
   })
 })
 

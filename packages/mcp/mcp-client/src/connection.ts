@@ -32,8 +32,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport, buildAuthProvider } from './transport.ts'
 import type { TransportContext } from './transport.ts'
-import { syncTools } from './tools.ts'
-import type { ToolBridgeOptions, ToolDisposers } from './tools.ts'
+import { emptyToolGeneration, syncTools } from './tools.ts'
+import type { ToolBridgeOptions, ToolGeneration } from './tools.ts'
 import { syncResources } from './resources.ts'
 import type { ResourceDisposers } from './resources.ts'
 import { syncPrompts } from './prompts.ts'
@@ -129,15 +129,18 @@ export interface ConnectionHandle {
 
 /** All registrations owned by one server generation, keyed by swap target. */
 interface GenerationRegistrations {
-  tools: ToolDisposers
+  tools: ToolGeneration
   resources: ResourceDisposers
   prompts: PromptDisposers
 }
 
-/** Dispose one disposer map and clear it. */
-function clear(map: Map<string, () => void>): Map<string, () => void> {
-  for (const dispose of map.values()) dispose()
-  return new Map()
+/** Dispose one disposer map or tool generation and return the emptied value. */
+function clear(entry: ToolGeneration): ToolGeneration
+function clear(entry: Map<string, () => void>): Map<string, () => void>
+function clear(entry: ToolGeneration | Map<string, () => void>): ToolGeneration | Map<string, () => void> {
+  const disposers = entry instanceof Map ? entry.values() : entry.disposers.values()
+  for (const dispose of disposers) dispose()
+  return entry instanceof Map ? new Map() : emptyToolGeneration()
 }
 
 /**
@@ -176,7 +179,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   /** Close signal paired with {@link client}; captured by dispose before current ownership is cleared. */
   let clientClosed: Promise<void> | undefined
   /** Live registrations owned by this server; each map is swapped by its own sync task or clear. */
-  let registrations: GenerationRegistrations = { tools: new Map(), resources: new Map(), prompts: new Map() }
+  let registrations: GenerationRegistrations = { tools: emptyToolGeneration(), resources: new Map(), prompts: new Map() }
   let reconnectTimer: NodeJS.Timeout | undefined
   /** Consecutive failed connection attempts within the current outage. */
   let failedAttempts = 0

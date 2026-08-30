@@ -59,6 +59,9 @@
       "@jianxx/dsh-cc-tool-search": [
         "./packages/core/tool-search/src/index.ts"
       ],
+      "@jianxx/dsh-cc-tool-append-order": [
+        "./packages/core/tool-append-order/src/index.ts"
+      ],
       "@jianxx/dsh-cc-claude-code-agents": [
         "./packages/preset/claude-code-agents/src/index.ts"
       ],
@@ -139,6 +142,12 @@
       ],
       "@jianxx/dsh-cc-agent-loop-mock": [
         "./packages/test-support/agent-loop-mock/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-cache-trajectory": [
+        "./packages/test-support/cache-trajectory/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-cache-trajectory/*": [
+        "./packages/test-support/cache-trajectory/src/*"
       ],
       "@jianxx/dsh-cc-bundle-shell": [
         "./packages/bundle/cc-shell/src/index.ts"

@@ -4,12 +4,13 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Container } from '@jianxx/dsh-cc-pi-tui'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
-import { createUsagePanelBox } from '@jianxx/dsh-cc-tui/components/overlays.ts'
+import { cacheHitPercent, createUsagePanelBox } from '@jianxx/dsh-cc-tui/components/overlays.ts'
 import {
   closeUsagePanel,
   createInitialState,
   openUsagePanel,
   setUsage,
+  type UsageTotalsView,
   type UsageView,
 } from '@jianxx/dsh-cc-tui/store.ts'
 
@@ -78,6 +79,25 @@ describe('usage panel store helpers', () => {
   })
 })
 
+describe('cacheHitPercent', () => {
+  it('computes cacheRead / (input + cacheRead) as a rounded percent', () => {
+    expect(cacheHitPercent({ input: 750, output: 10, cacheRead: 250 })).toBe(25)
+    expect(cacheHitPercent({ input: 1, output: 0, cacheRead: 2 })).toBe(67)
+  })
+
+  it('is undefined when cacheRead is absent or the denominator is zero', () => {
+    expect(cacheHitPercent({ input: 100, output: 5 })).toBeUndefined()
+    const totals: UsageTotalsView = { input: 0, output: 0, cacheRead: 0 }
+    expect(cacheHitPercent(totals)).toBeUndefined()
+  })
+
+  it('clamps the ratio at 100%', () => {
+    // cacheRead/(input + cacheRead) cannot exceed 1 with non-negative buckets,
+    // so the clamp only guards malformed data (negative input).
+    expect(cacheHitPercent({ input: -300, output: 0, cacheRead: 400 })).toBe(100)
+  })
+})
+
 describe('createUsagePanelBox', () => {
   it('renders the context bar, token totals, breakdown rows, and footer', () => {
     const lines = boxLines(createUsagePanelBox(fullView))
@@ -88,6 +108,8 @@ describe('createUsagePanelBox', () => {
     expect(lines).toContain('  output    1,234')
     expect(lines).toContain('  cache r   5,678')
     expect(lines).toContain('  cache w     901')
+    // 5,678 / (12,345 + 5,678) ≈ 31.5% → 32%.
+    expect(lines).toContain('  hit  32%')
     expect(lines).toContain('  system     1,200')
     expect(lines).toContain('  tools      3,400')
     expect(lines).toContain('  messages  81,400')
@@ -118,7 +140,9 @@ describe('createUsagePanelBox', () => {
   it('shows the used count without a percent when the window is unknown', () => {
     const text = boxText(createUsagePanelBox({ ...fullView, contextWindow: undefined }))
     expect(text).toContain('86k tok · window n/a')
-    expect(text).not.toContain('%')
+    // The *context* line claims no percent; the Tokens hit row still may.
+    expect(boxLines(createUsagePanelBox({ ...fullView, contextWindow: undefined }))[1])
+      .toBe('86k tok · window n/a')
     // The other sections still render their full data.
     expect(text).toContain('  input    12,345')
   })
@@ -140,6 +164,34 @@ describe('createUsagePanelBox', () => {
     expect(text).toContain('  input   500')
     expect(text).toContain('Breakdown')
     expect(text).toContain('n/a')
+  })
+
+  it('omits the hit row when cacheRead is absent', () => {
+    const text = boxText(createUsagePanelBox({ totals: { input: 100, output: 5 } }))
+    expect(text).not.toContain('  hit')
+  })
+
+  it('shows hit 0% when cacheRead is zero but the denominator is positive', () => {
+    const lines = boxLines(createUsagePanelBox({
+      totals: { input: 500, output: 40, cacheRead: 0, cacheWrite: 0 },
+    }))
+    expect(lines).toContain('  input   500')
+    expect(lines).toContain('  hit  0%')
+  })
+
+  it('omits the hit row when input and cacheRead are both zero', () => {
+    const text = boxText(createUsagePanelBox({
+      totals: { input: 0, output: 40, cacheRead: 0, cacheWrite: 0 },
+    }))
+    expect(text).not.toContain('  hit')
+  })
+
+  it('clamps the hit percent at 100%', () => {
+    // >1 is unreachable with non-negative buckets; the clamp guards malformed data.
+    const lines = boxLines(createUsagePanelBox({
+      totals: { input: -300, output: 0, cacheRead: 400 },
+    }))
+    expect(lines).toContain('  hit  100%')
   })
 })
 

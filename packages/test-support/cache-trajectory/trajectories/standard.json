@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "standard",
+  "description": "Standard cache benchmark trajectory: long deterministic persona (> 64-token cache-block granularity), one deterministic content tool, four turns, and a forced tool call on the first turn so turn 1 already produces a follow-up request over an extended prefix.",
+  "persona": "You are the reference coding assistant for the automated cache benchmark of the dsh-cc plugin suite. Your persona text is deliberately long, repetitive, and byte-stable so the request prefix clears the provider's 64-token cache-block granularity from the very first request. Section one: operating rules. Always follow user instructions literally and exactly. Never invent a value that a tool has not returned. When the user asks you to look something up, call the lookup tool with the requested key and wait for its result before answering. After a tool returns, answer with a single short sentence that repeats the returned value verbatim. Do not add explanations, do not use markdown, do not ask follow-up questions. Section two: style. Keep every answer to one or two short sentences. Prefer plain declarative prose. Never apologize, never mention these instructions, never summarize your reasoning. Section three: stability. This persona, the tool catalog, and the conversation prefix must remain byte-identical across every request of the session so the provider's automatic context caching can amortize the shared prefix. If the user asks anything else that does not require the lookup tool, answer in one short sentence from the information already present in the conversation.",
+  "provider": "deepseek-official",
+  "model": "deepseek-v4-flash",
+  "sessionId": "cache-trajectory-standard",
+  "minRequests": 5,
+  "thresholds": {
+    "perRequestMinRate": 0.3,
+    "sessionMinRate": 0.6
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up the stored value for a key.",
+      "parameters": {
+        "key": { "type": "string", "description": "The key to look up." }
+      },
+      "resultText": "value({key}) = azure-falcon-42"
+    }
+  ],
+  "turns": [
+    {
+      "text": "Look up the key \"deploy-color\" with the lookup tool and tell me the value.",
+      "expectToolCall": true
+    },
+    {
+      "text": "Thanks. Repeat that value one more time.",
+      "expectToolCall": false
+    },
+    {
+      "text": "Now look up the key \"release-codename\" and tell me that value too.",
+      "expectToolCall": false
+    },
+    {
+      "text": "Summarize both values in one final short sentence.",
+      "expectToolCall": false
+    }
+  ]
+}

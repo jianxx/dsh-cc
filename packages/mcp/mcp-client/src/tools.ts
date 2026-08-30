@@ -40,6 +40,73 @@ export interface ToolBridgeOptions {
 /** State for one sync generation: the current set of disposers keyed by public name. */
 export type ToolDisposers = Map<string, () => void>
 
+/**
+ * One registered tool generation plus the identity data used to skip no-op
+ * swaps. `fingerprintTools` fingerprints the raw server payload; when a
+ * re-sync produces the same fingerprint on the same client generation, the
+ * live registrations are kept as-is so request prefixes stay stable.
+ */
+export interface ToolGeneration {
+  /** Live registrations owned by this generation, keyed by public name. */
+  disposers: ToolDisposers
+  /**
+   * Fingerprint of the raw server payload that produced this generation.
+   * `undefined` when nothing is registered (initial state or rolled-back
+   * registration), which forces the next sync to attempt a real swap.
+   */
+  fingerprint: string | undefined
+  /** The client generation the payload was fetched from; a new client forces a swap. */
+  client: Client | undefined
+}
+
+/** The generation representing "nothing registered yet" (or a rolled-back swap). */
+export function emptyToolGeneration(): ToolGeneration {
+  return { disposers: new Map(), fingerprint: undefined, client: undefined }
+}
+
+/**
+ * Deterministic JSON serialization: object keys are sorted recursively while
+ * array order is preserved, so semantically identical JSON payloads with
+ * unstable key order serialize to identical bytes. Primitives go through
+ * `JSON.stringify`; `undefined` (absent optional fields) serializes as `null`.
+ */
+function stableStringify(value: unknown): string {
+  if (value === undefined) return 'null'
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(',')}}`
+}
+
+/**
+ * Fingerprint the raw tools/list payload for swap short-circuiting.
+ *
+ * Entries are ordered by public name, then stable-stringified (recursive key
+ * sort, array order preserved) and hashed. The fingerprint covers every field
+ * of the raw entries — including `execution.taskSupport`, which
+ * `createExecutor` bakes into the executor's semantics, and `outputSchema`,
+ * which shapes the registered output schema — so any server-side semantic
+ * change forces a swap. Executor closures are not compared (functions are not
+ * serializable); identical fingerprints on one client generation imply the
+ * rebuilt executors would be behaviorally identical.
+ *
+ * @param serverName - Namespace used to derive each entry's public name for ordering.
+ * @param tools - Raw entries exactly as returned by the server's `tools/list`.
+ * @returns A hex digest that is equal precisely when the payload is semantically unchanged.
+ */
+export function fingerprintTools(serverName: string, tools: readonly unknown[]): string {
+  const rawName = (entry: unknown): string => {
+    const name = (entry as { name?: unknown } | null)?.name
+    return typeof name === 'string' ? name : ''
+  }
+  const ordered = [...tools].sort((a, b) => {
+    const nameA = publicToolName(serverName, rawName(a))
+    const nameB = publicToolName(serverName, rawName(b))
+    return nameA < nameB ? -1 : nameA > nameB ? 1 : 0
+  })
+  return createHash('sha256').update(stableStringify(ordered)).digest('hex')
+}
+
 /** Canonical MCP result exposed to Code Mode without discarding protocol blocks. */
 export type McpResult<Structured extends JsonValue = JsonValue> = {
   content: JsonValue[]
@@ -123,28 +190,39 @@ export function publicToolName(serverName: string, rawName: string): string {
  *    server's `mcp__<serverName>__` namespace — the partial generation is
  *    rolled back (zero tools from this server) and logged. Initial strict
  *    synchronization may propagate the conflict so its parent transaction
- *    rejects; ordinary clients and later re-syncs return an empty map.
+ *    rejects; ordinary clients and later re-syncs return an empty generation.
+ *
+ * Between the phases, a fingerprint of the raw payload decides whether the
+ * swap is needed at all: when the payload is semantically unchanged (key
+ * order may drift; content may not) AND `previous` was produced by the same
+ * client generation, the live registrations are kept and `previous` is
+ * returned unchanged — dispose+register churn (and the request-prefix churn
+ * it risks) is skipped. A new client generation always forces a real swap,
+ * so reconnects never reuse the previous generation's registrations.
  *
  * @param client - Connected MCP Client instance used to list and call tools.
  * @param ctx - Cordis context providing the `tools` service for registration.
  * @param opts - Bridge options: server namespace and per-call timeout.
- * @param previous - Disposer map from the prior sync generation; disposed
- *   during the swap phase (only after the fetch phase succeeded).
- * @returns A map of registered public tool names to their unregister
- *   disposers — the exact set of live registrations owned by this server.
+ * @param previous - The prior sync generation; its registrations are disposed
+ *   during the swap phase (only after the fetch phase succeeded and the
+ *   fingerprint check found a real change).
+ * @returns The live generation — `previous` itself on a fingerprint hit,
+ *   otherwise the newly registered one.
  */
 export async function syncTools(
   client: Client,
   ctx: Context,
   opts: ToolBridgeOptions,
-  previous: ToolDisposers,
-): Promise<ToolDisposers> {
+  previous: ToolGeneration,
+): Promise<ToolGeneration> {
   // Phase 1: fetch and build the next generation without touching the registry.
   const definitions = new Map<string, ToolDefinition>()
+  const rawTools: unknown[] = []
   let cursor: string | undefined
   do {
     const response = await listToolsUncached(client, cursor)
     for (const tool of response.tools) {
+      rawTools.push(tool)
       const publicName = publicToolName(opts.serverName, tool.name)
       if (definitions.has(publicName)) {
         throw new Error(
@@ -162,8 +240,20 @@ export async function syncTools(
     cursor = response.nextCursor
   } while (cursor)
 
+  // Semantically unchanged payload on the same client generation: keep the
+  // live generation so the registered definitions (and any request prefix
+  // built on them) stay byte-stable. A different client generation never
+  // short-circuits — reconnects must rebuild against their own client.
+  const fingerprint = fingerprintTools(opts.serverName, rawTools)
+  if (previous.client === client && previous.fingerprint === fingerprint) {
+    ctx.logger.debug(
+      `mcp-client(${opts.serverName}): tool list unchanged (fingerprint ${fingerprint.slice(0, 12)}) — keeping ${previous.disposers.size} registered tools`,
+    )
+    return previous
+  }
+
   // Phase 2: swap generations.
-  for (const dispose of previous.values()) dispose()
+  for (const dispose of previous.disposers.values()) dispose()
   const disposers: ToolDisposers = new Map()
   try {
     for (const [publicName, definition] of definitions) {
@@ -176,9 +266,11 @@ export async function syncTools(
     for (const dispose of disposers.values()) dispose()
     ctx.logger.error(`mcp-client(${opts.serverName}): tool registration failed, no tools registered: ${String(error)}`)
     if (opts.registrationFailure === 'throw') throw error
-    return new Map()
+    // No fingerprint: nothing is registered, so the next sync must attempt a
+    // real swap even if the payload is unchanged.
+    return emptyToolGeneration()
   }
-  return disposers
+  return { disposers, fingerprint, client }
 }
 
 /**

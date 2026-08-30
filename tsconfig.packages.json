@@ -32,6 +32,9 @@
       "path": "./packages/core/tool-search"
     },
     {
+      "path": "./packages/core/tool-append-order"
+    },
+    {
       "path": "./packages/preset/claude-code-agents"
     },
     {
@@ -129,6 +132,9 @@
     },
     {
       "path": "./packages/test-support/agent-loop-mock"
+    },
+    {
+      "path": "./packages/test-support/cache-trajectory"
     },
     {
       "path": "./packages/bundle/cc-shell"

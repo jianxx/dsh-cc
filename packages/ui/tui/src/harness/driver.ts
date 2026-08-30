@@ -410,7 +410,9 @@ function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; outp
 
 /**
  * `/cost` report: token counts with thousands separators, cache lines only
- * when non-zero, and an explicit note that no price table is configured —
+ * when non-zero, a `cache hit` percent (`cacheRead / (input + cacheRead)`,
+ * clamped at 100, shown only when `cacheRead` exists and the denominator is
+ * positive), and an explicit note that no price table is configured —
  * the harness reports usage only, so no monetary amounts are claimed.
  */
 export function formatCostReport(totals: TokenUsageTotals | undefined): string {
@@ -424,6 +426,13 @@ export function formatCostReport(totals: TokenUsageTotals | undefined): string {
   ]
   if ((totals.cacheRead ?? 0) > 0) lines.push(row('cache r', totals.cacheRead!))
   if ((totals.cacheWrite ?? 0) > 0) lines.push(row('cache w', totals.cacheWrite!))
+  if (totals.cacheRead !== undefined) {
+    const denominator = totals.input + totals.cacheRead
+    if (denominator > 0) {
+      const percent = Math.max(0, Math.min(100, Math.round((totals.cacheRead / denominator) * 100)))
+      lines.push(`  ${'cache hit'.padEnd(9)}${`${percent}%`.padStart(6)}`)
+    }
+  }
   lines.push('  Pricing is not configured — costs are not computed.')
   return lines.join('\n')
 }

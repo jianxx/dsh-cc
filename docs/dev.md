@@ -77,3 +77,63 @@ package's `package.json` **and** add the matching lockfile entry (see above).
 - `node_modules/.bin` is absent in the worktree: call `node
   node_modules/typescript/bin/tsc -b tsconfig.packages.json` and
   `node node_modules/vitest/vitest.mjs run` directly instead of `pnpm`.
+
+## Cache hit-rate benchmark (`cache-trajectory`)
+
+`packages/test-support/cache-trajectory` is the Item 6 benchmark: a standard
+trajectory schema, a deterministic runner, a report fold, and the regression
+thresholds used by the cache hit-rate suite. Hit-rate口径:
+`cacheRead / (input + cacheRead)` — the harness buckets are disjoint and
+`inputTokens` is uncached input only.
+
+Three layers, ordered by flakiness risk (hard assertions only on the
+deterministic layers; the rate floors are conservative soft limits):
+
+- **L2 runner + report** (pure, always on): `runCacheTrajectory(ctx, trajectory)`
+  drives `trajectories/standard.json` — long byte-stable persona (> 64-token
+  cache-block granularity), one deterministic content tool, four turns, forced
+  tool call on turn 1 — and folds a report
+  (`schemaVersion`/trajectory/provider/model/per-request buckets/rates/thresholds/`verdict`).
+  `hitRate()`, `foldRates()`, `evaluateInvariants()`, `renderReportTable()`,
+  and the report zod schema are pure. Shape invariants always apply (request
+  floor — never a ceiling — per-request usage, forced tool call); cache
+  invariants apply only when `cacheHitsExpected`.
+- **L0 keyless prefix stability**: the mock-backed e2e asserts, straight off
+  the mock server's captured requests, that request N+1's messages are a
+  strict prefix-extension of request N's — a broken request prefix becomes a
+  deterministic failure, decoupled from provider cache behavior. Scope guard:
+  append-only surface only (no compaction plugin mounted / microcompactor
+  passive; a surface-rewriting scenario would need the degraded
+  "prefix until the latest replace" assertion).
+- **L1 with-key regression** (`tests/real-provider-cache.spec.ts`,
+  `describe.skipIf(!process.env.DEEPSEEK_API_KEY)`): the standard trajectory
+  against the live DeepSeek API over the minimal cc-plugin composition (token
+  meter + passive microcompactor). Gates: `cacheReadTokens > 0` from request 2
+  on, per-request rate ≥ 0.3, session aggregate excluding the first request
+  ≥ 0.6. Both floors scale from `DSH_CACHE_E2E_MIN_HIT_RATE` (one knob, `[0,1]`).
+
+Usage:
+
+```sh
+# unit + keyless layers (part of pnpm test)
+pnpm exec vitest run packages/test-support/cache-trajectory/tests/
+pnpm exec vitest run packages/bundle/cc-tui/tests/cache-trajectory.e2e.spec.ts
+
+# with-key regression (skipped without DEEPSEEK_API_KEY)
+DSH_CACHE_E2E_MIN_HIT_RATE=0.5 pnpm exec vitest run \
+  packages/test-support/cache-trajectory/tests/real-provider-cache.spec.ts
+
+# standalone calibration bin — always exits 0; verdict lives in the report
+pnpm exec tsx packages/test-support/cache-trajectory/src/bin.ts --out /tmp/report.json
+pnpm exec tsx packages/test-support/cache-trajectory/src/bin.ts --report-only /tmp/report.json
+# keyless against a mock server (see harness dsh-llm-mock-server bin)
+pnpm exec tsx packages/test-support/cache-trajectory/src/bin.ts \
+  --base-url http://127.0.0.1:8000/v1 --api-key mock-key --model mock-model \
+  --no-cache-expected
+```
+
+Workflow: calibrate with `--report-only`/`--out` distributions first, then
+tighten the trajectory's `thresholds` (or set the env gate in CI). The full
+bundle-patch composition (preset roster + TUI rows) boots only under a
+deployed dsh installation — deploy with `scripts/sync-cc-preset.sh`, then run
+the bin there; harness-side clients link this package rather than the reverse.
