@@ -2,12 +2,15 @@
  * Driver-backed slash argument completers injected into the TUI autocomplete
  * provider. `/model` completes from the live model catalog in both forms the
  * arg path accepts (`provider/id`, plus a bare `id` when unique across the
- * catalog — mirroring parseModelChoice); `/resume` completes session short ids.
+ * catalog — mirroring parseModelChoice); `/effort` completes live effort
+ * levels; `/permissions` completes the five CC rule-engine modes; `/resume`
+ * completes session short ids.
  * Candidates are fetched per completion request, so catalog/session staleness
  * is bounded by the driver calls themselves.
  * @module @jianxx/dsh-cc-tui/components/arg-completers
  */
 
+import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
 import type { AutocompleteItem } from '@jianxx/dsh-cc-pi-tui'
 import type { ArgCompleterMap } from './completion.ts'
 import type { Driver } from '../state/driver-types.ts'
@@ -52,6 +55,9 @@ export function buildArgCompleters(driver: ArgCompleterDriver): ArgCompleterMap 
       // [] when no model (or no resolvable levels) — no dead-end completions.
       const efforts = await driver.loadModelEfforts()
       return efforts.map(level => ({ value: level, label: level }))
+    },
+    permissions: async () => {
+      return PERMISSION_COMMAND_MODES.map(mode => ({ value: mode, label: mode }))
     },
     resume: async () => {
       const sessions = await driver.listSessions()

@@ -119,6 +119,29 @@ export interface EffortPickerView {
 }
 
 /**
+ * One row in the `/permissions` picker. Mirrors the command package's
+ * permission-mode option (`id`/`label`/`detail`) but lives in the view
+ * layer so the overlay can render without importing the host surface.
+ */
+export interface PermissionPickerEntryView {
+  id: string
+  label: string
+  detail: string
+}
+
+/**
+ * Live view of the `/permissions` picker overlay: the five CC rule-engine
+ * modes, the focused index, the current mode (so the renderer can mark it),
+ * and an optional in-overlay confirmation step for `bypassPermissions`.
+ */
+export interface PermissionPickerView {
+  entries: readonly PermissionPickerEntryView[]
+  focused: number
+  current: string
+  confirmingBypass?: true
+}
+
+/**
  * One session entry shown in the `/resume` picker. Mirrors the harness
  * persistence header but lives in the view layer (harness-import-free).
  */
@@ -243,6 +266,8 @@ export interface TuiState {
   modelPicker?: ModelPickerView
   /** Open `/effort` picker overlay; absent while closed. */
   effortPicker?: EffortPickerView
+  /** Open `/permissions` picker overlay; absent while closed. */
+  permissionPicker?: PermissionPickerView
   sessionSwitcher?: SessionSwitcherView
   /**
    * Outbox of texts submitted while the agent was busy: rendered as pending
@@ -427,6 +452,34 @@ export function moveEffortPickerFocus(state: TuiState, delta: -1 | 1): TuiState 
   const picker = state.effortPicker
   if (picker === undefined) return state
   return focusEffortPicker(state, picker.focused + delta)
+}
+
+/** Park or clear the `/permissions` picker overlay. */
+export function setPermissionPicker(state: TuiState, picker: PermissionPickerView | undefined): TuiState {
+  const { permissionPicker: _dropped, ...rest } = state
+  return picker === undefined ? rest : { ...rest, permissionPicker: picker }
+}
+
+/**
+ * Focus a permission-picker row by index, clamped to [0, entries.length-1].
+ * Always drops `confirmingBypass` so the risk-gate flag cannot stick to a
+ * non-bypass row after the user moves.
+ */
+export function focusPermissionPicker(state: TuiState, index: number): TuiState {
+  const picker = state.permissionPicker
+  if (picker === undefined || picker.entries.length === 0) return state
+  const max = picker.entries.length - 1
+  const focused = Math.max(0, Math.min(index, max))
+  if (focused === picker.focused && picker.confirmingBypass === undefined) return state
+  const { confirmingBypass: _dropped, ...rest } = picker
+  return setPermissionPicker(state, { ...rest, focused })
+}
+
+/** Move the permission-picker focus by one row (clamped; no wrap). */
+export function movePermissionPickerFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const picker = state.permissionPicker
+  if (picker === undefined) return state
+  return focusPermissionPicker(state, picker.focused + delta)
 }
 
 /** Park or clear the `/resume` session-switcher overlay. */

@@ -24,7 +24,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routePermissionPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
 import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
@@ -37,6 +37,7 @@ import {
   createApprovalBox,
   createEffortPickerBox,
   createModelPickerBox,
+  createPermissionPickerBox,
   createQuestionBox,
   createSessionSwitcherBox,
   createTodoPanelBox,
@@ -268,7 +269,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// driver's command catalog changes identity (driver.listCommands() returns a
 	// stable reference until commands/change fires) — cheap reference compare on
 	// every state emit, rebuild only when the catalog actually moved.
-	// Argument completers (`/model`, `/resume`) are driver-backed and fetch per
+	// Argument completers (`/model`, `/effort`, `/permissions`, `/resume`) are driver-backed and fetch per
 	// request, so a single map built once at mount never goes stale.
 	const argCompleters = buildArgCompleters(driver)
 	let lastCatalog = driver.listCommands()
@@ -336,6 +337,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			}
 			if (live.approval !== undefined || live.question !== undefined ||
 				live.modelPicker !== undefined || live.effortPicker !== undefined ||
+				live.permissionPicker !== undefined ||
 				live.sessionSwitcher !== undefined ||
 				live.todoPanel !== undefined || live.usagePanel !== undefined) {
 				return undefined
@@ -372,6 +374,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		if (live.effortPicker !== undefined) {
 			// Modal effort picker: arrows/enter/esc only, everything else consumed.
 			routeEffortPickerInput(driver, data)
+			return { consume: true }
+		}
+		if (live.permissionPicker !== undefined) {
+			// Modal permission picker: arrows/enter/esc only, everything else consumed.
+			routePermissionPickerInput(driver, data)
 			return { consume: true }
 		}
 		if (live.sessionSwitcher !== undefined) {
@@ -504,6 +511,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		}
 		if (state.effortPicker !== undefined) {
 			overlays.addChild(createEffortPickerBox(state.effortPicker, theme))
+		}
+		if (state.permissionPicker !== undefined) {
+			overlays.addChild(createPermissionPickerBox(state.permissionPicker, theme))
 		}
 		if (state.sessionSwitcher !== undefined) {
 			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher, theme))

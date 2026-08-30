@@ -23,7 +23,7 @@ import {
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
-import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
+import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
@@ -54,6 +54,7 @@ import {
   enqueue,
   markExitAttempt,
   moveEffortPickerFocus,
+  movePermissionPickerFocus,
   moveModelPickerFocus,
   moveQuestionFocus,
   moveSessionSwitcherFocus,
@@ -66,6 +67,7 @@ import {
   setBusy,
   setDraft,
   setEffortPicker,
+  setPermissionPicker,
   setHud,
   setModelPicker,
   setNotice,
@@ -1504,6 +1506,22 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }))
   }
 
+  /**
+   * Open the `/permissions` picker: park the five CC rule-engine modes,
+   * focused on the live mode (row 0 when the live mode is not in the list).
+   * The overlay always opens — an unmounted engine surfaces as a host-command
+   * error on submit, matching the argued `/permissions <mode>` path.
+   */
+  const openPermissionPicker = (): void => {
+    const currentMode = liveMode(current.agent, state.permissionMode)
+    const index = PERMISSION_MODE_OPTIONS.findIndex(option => option.id === currentMode)
+    emit(setPermissionPicker(state, {
+      entries: PERMISSION_MODE_OPTIONS,
+      focused: index >= 0 ? index : 0,
+      current: currentMode,
+    }))
+  }
+
   // --- Session switching: /resume overlay + driver.switchSession ----------
   // The overlay mirrors the model picker: state field + open/move/submit/cancel.
   // switchSession is the in-process engine: dispose old, resume new, replay
@@ -1676,7 +1694,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     if (name === 'tui-help') {
       emit(upsertRow(state, {
         kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
+        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
       }))
       return
     }
@@ -1941,6 +1959,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       return
     }
     if (parsed.kind === 'harness') {
+      // Bare `/permissions` is the TUI analogue of the browser popupSelect
+      // decoration: open the overlay instead of dumping the rule listing.
+      // `/permissions <mode>` stays scriptable through the host command.
+      if (/^\/permissions$/i.test(parsed.line)) {
+        openPermissionPicker()
+        return
+      }
       await runHarness(parsed.line)
       return
     }
@@ -2181,6 +2206,39 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     },
     effortPickerCancel() {
       emit(setEffortPicker(state, undefined))
+    },
+    async openPermissionPicker() {
+      openPermissionPicker()
+    },
+    permissionPickerMove(delta) {
+      emit(movePermissionPickerFocus(state, delta))
+    },
+    async permissionPickerSubmit() {
+      const picker = state.permissionPicker
+      if (picker === undefined) return
+      const entry = picker.entries[picker.focused]
+      if (entry === undefined) {
+        emit(setPermissionPicker(state, undefined))
+        return
+      }
+      // bypassPermissions parks an in-overlay confirmation first; a second
+      // enter (or any other mode) closes then writes through the host command.
+      if (entry.id === BYPASS_MODE && picker.confirmingBypass !== true) {
+        emit(setPermissionPicker(state, { ...picker, confirmingBypass: true }))
+        return
+      }
+      emit(setPermissionPicker(state, undefined))
+      await runHarness(`/permissions ${entry.id}`)
+    },
+    permissionPickerCancel() {
+      const picker = state.permissionPicker
+      if (picker === undefined) return
+      if (picker.confirmingBypass === true) {
+        const { confirmingBypass: _dropped, ...rest } = picker
+        emit(setPermissionPicker(state, rest))
+        return
+      }
+      emit(setPermissionPicker(state, undefined))
     },
     async openSessionSwitcher() {
       await openSessionSwitcher()

@@ -29,7 +29,7 @@ one backend.
 - Ctrl+T — toggle the todo panel overlay (arrow keys move the highlight; Esc or a second Ctrl+T closes it)
 - Ctrl+O — toggle global collapse: thinking blocks and tool output fold to one-line summaries, and pressing it again restores them
 - ↑ (empty composer) — recall the most recent queued message into the composer for editing; with a non-empty composer, ↑ walks composer history; in `!` shell mode, ↑/↓ walk the separate bash history
-- Tab — complete slash-command arguments after the command name (supported for `/model` and `/resume`)
+- Tab — complete slash-command arguments after the command name (supported for `/model`, `/effort`, `/permissions`, and `/resume`)
 - `!` — run a local shell command (see [Shell mode](#shell-mode-))
 - `/quit` — exit
 - `/model` — list or switch the live LLM route
@@ -37,7 +37,8 @@ one backend.
 - `/export-md [path]` — write the transcript to a Markdown file; an explicit path resolves against the session cwd, and no argument lands under `$DSH_HOME/tui/exports/<sessionId>-<timestamp>.md` (the directory is created on demand)
 - `/copy` — copy the most recent assistant reply to the system clipboard via an OSC 52 sequence (terminal must support OSC 52; no reply yet degrades to a notice)
 - `/usage` — open the usage panel: a context-occupancy bar, the token totals (input/output/cache buckets), and the system/tools/messages breakdown, all live while open; Esc closes it. Quota data has no source in this stack and is never shown
-- other `/commands` — harness catalog (CC preset), including `/permissions`
+- `/permissions` — open a picker of the five CC permission modes (`default` / `acceptEdits` / `plan` / `auto` / `bypassPermissions`); `/permissions <mode>` still switches directly. `bypassPermissions` asks for an in-overlay confirmation first. The rule listing is no longer reachable from the TUI bare invocation (browser popupSelect parity)
+- other `/commands` — harness catalog (CC preset)
 
 ## Rendering
 

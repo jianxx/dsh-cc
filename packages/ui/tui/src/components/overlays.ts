@@ -6,10 +6,12 @@
  */
 
 import { Container, Markdown, Text } from '@jianxx/dsh-cc-pi-tui'
+import { BYPASS_CONFIRMATION } from '@jianxx/dsh-cc-command-permissions'
 import type {
   ApprovalView,
   EffortPickerView,
   ModelPickerView,
+  PermissionPickerView,
   QuestionView,
   SessionSwitcherView,
   TodoItemView,
@@ -196,6 +198,32 @@ export function createEffortPickerBox(picker: EffortPickerView, theme: Theme = d
     box.addChild(new Text(`${marker}${label}${currentMark}`, 0, 0))
   }
 
+  box.addChild(new Text(theme.muted('↑↓ move · enter select · esc cancel'), 0, 0))
+  return box
+}
+
+/**
+ * Permission picker box: a modal list of the five CC rule-engine modes with
+ * a `❯` focus marker and a `*` on the live mode. While `confirmingBypass`
+ * is set the list is replaced by the shared bypass risk-gate copy.
+ */
+export function createPermissionPickerBox(picker: PermissionPickerView, theme: Theme = defaultTheme): Container {
+  const box = new Container()
+  if (picker.confirmingBypass === true) {
+    box.addChild(new Text(theme.bold(BYPASS_CONFIRMATION.title), 0, 0))
+    box.addChild(new Text(BYPASS_CONFIRMATION.description, 0, 0))
+    box.addChild(new Text(theme.muted('enter confirm · esc back'), 0, 0))
+    return box
+  }
+
+  box.addChild(new Text(theme.bold('Select permission mode'), 0, 0))
+  for (let index = 0; index < picker.entries.length; index += 1) {
+    const entry = picker.entries[index]!
+    const focused = picker.focused === index
+    const marker = focused ? '❯ ' : '  '
+    const currentMark = picker.current === entry.id ? ' *' : ''
+    box.addChild(new Text(`${marker}${entry.label}${currentMark}`, 0, 0))
+  }
   box.addChild(new Text(theme.muted('↑↓ move · enter select · esc cancel'), 0, 0))
   return box
 }

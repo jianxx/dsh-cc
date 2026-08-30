@@ -29,6 +29,9 @@ export interface InputSink {
   effortPickerMove(delta: -1 | 1): void
   effortPickerSubmit(): void
   effortPickerCancel(): void
+  permissionPickerMove(delta: -1 | 1): void
+  permissionPickerSubmit(): void
+  permissionPickerCancel(): void
   sessionSwitcherMove(delta: -1 | 1): void
   sessionSwitcherSubmit(): Promise<void>
   sessionSwitcherCancel(): void
@@ -176,6 +179,31 @@ export function routeEffortPickerInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open permission picker. Only arrows, enter,
+ * and escape are recognized; everything else is dropped — the picker is modal
+ * and the composer editor must never see keystrokes while it is open.
+ */
+export function routePermissionPickerInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.permissionPickerCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.permissionPickerMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.permissionPickerMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    driver.permissionPickerSubmit()
+    return
+  }
+  // All other keys are consumed and ignored (modal).
+}
+
+/**
  * Route one raw keypress into the open session switcher. Only arrows, enter,
  * and escape are recognized; everything else is dropped — the switcher is
  * modal and the composer editor must never see keystrokes while it is open.
@@ -268,6 +296,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.effortPicker !== undefined) {
     routeEffortPickerInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.permissionPicker !== undefined) {
+    routePermissionPickerInput(driver, data)
     return { kind: 'none' }
   }
 

@@ -9,12 +9,14 @@ import {
   setBusy,
   setEffortPicker,
   setModelPicker,
+  setPermissionPicker,
   setQuestion,
   setSessionSwitcher,
   setTodos,
   type CatalogEntryView,
   type EffortPickerView,
   type ModelPickerView,
+  type PermissionPickerView,
   type QuestionView,
   type SessionEntryView,
   type SessionSwitcherView,
@@ -38,6 +40,12 @@ interface ModelPickerCalls {
 }
 
 interface EffortPickerCalls {
+  moved: number[]
+  submitted: number
+  cancelled: number
+}
+
+interface PermissionPickerCalls {
   moved: number[]
   submitted: number
   cancelled: number
@@ -67,6 +75,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   questionCalls: QuestionCalls
   modelPickerCalls: ModelPickerCalls
   effortPickerCalls: EffortPickerCalls
+  permissionPickerCalls: PermissionPickerCalls
   sessionSwitcherCalls: SessionSwitcherCalls
   todoPanelCalls: TodoPanelCalls
   usagePanelCalls: UsagePanelCalls
@@ -87,6 +96,11 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     cancelled: 0,
   }
   const effortPickerCalls: EffortPickerCalls = {
+    moved: [],
+    submitted: 0,
+    cancelled: 0,
+  }
+  const permissionPickerCalls: PermissionPickerCalls = {
     moved: [],
     submitted: 0,
     cancelled: 0,
@@ -112,6 +126,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     questionCalls,
     modelPickerCalls,
     effortPickerCalls,
+    permissionPickerCalls,
     sessionSwitcherCalls,
     todoPanelCalls,
     usagePanelCalls,
@@ -167,6 +182,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     effortPickerCancel() {
       effortPickerCalls.cancelled += 1
+    },
+    permissionPickerMove(delta) {
+      permissionPickerCalls.moved.push(delta)
+    },
+    permissionPickerSubmit() {
+      permissionPickerCalls.submitted += 1
+    },
+    permissionPickerCancel() {
+      permissionPickerCalls.cancelled += 1
     },
     sessionSwitcherMove(delta) {
       sessionSwitcherCalls.moved.push(delta)
@@ -523,6 +547,120 @@ describe('handleComposerInput effort picker routing', () => {
     handleComposerInput(driver, '\x1b')
     expect(driver.interrupted).toBe(false)
     expect(driver.effortPickerCalls.cancelled).toBe(1)
+  })
+})
+
+const PERMISSION_ENTRIES: PermissionPickerView['entries'] = [
+  { id: 'default', label: 'Default', detail: 'Follow rules' },
+  { id: 'acceptEdits', label: 'Accept edits', detail: 'Auto-allow edits' },
+  { id: 'plan', label: 'Plan', detail: 'Read-only' },
+  { id: 'auto', label: 'Auto', detail: 'Auto-allow low-risk' },
+  { id: 'bypassPermissions', label: 'Bypass permissions', detail: 'Skip prompts' },
+]
+
+function permissionPickerState(overrides: Partial<PermissionPickerView> = {}): TuiState {
+  return setPermissionPicker(createInitialState(), {
+    entries: PERMISSION_ENTRIES,
+    focused: 0,
+    current: 'default',
+    ...overrides,
+  })
+}
+
+describe('handleComposerInput permission picker routing', () => {
+  it('arrow up moves focus up (-1)', () => {
+    const driver = sink(permissionPickerState({ focused: 1 }))
+    const action = handleComposerInput(driver, '\x1b[A')
+    expect(driver.permissionPickerCalls.moved).toEqual([-1])
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('arrow down moves focus down (+1)', () => {
+    const driver = sink(permissionPickerState())
+    handleComposerInput(driver, '\x1b[B')
+    expect(driver.permissionPickerCalls.moved).toEqual([1])
+  })
+
+  it('enter submits the focused entry', () => {
+    const driver = sink(permissionPickerState())
+    handleComposerInput(driver, '\r')
+    expect(driver.permissionPickerCalls.submitted).toBe(1)
+  })
+
+  it('escape cancels the picker', () => {
+    const driver = sink(permissionPickerState())
+    handleComposerInput(driver, '\x1b')
+    expect(driver.permissionPickerCalls.cancelled).toBe(1)
+  })
+
+  it('all other keys are consumed and never reach the editor (modal)', () => {
+    const driver = sink(permissionPickerState())
+    for (const key of ['h', ' ', '2', '\x7f', 'abc']) {
+      expect(handleComposerInput(driver, key)).toEqual({ kind: 'none' })
+    }
+    expect(driver.permissionPickerCalls.moved).toEqual([])
+    expect(driver.permissionPickerCalls.submitted).toBe(0)
+    expect(driver.permissionPickerCalls.cancelled).toBe(0)
+    expect(driver.cycled).toBe(false)
+    expect(driver.toggled).toBe(false)
+    expect(driver.interrupted).toBe(false)
+  })
+
+  it('shift+tab is swallowed while the picker is open (no cycle behind the overlay)', () => {
+    const driver = sink(permissionPickerState())
+    handleComposerInput(driver, '\x1b[Z')
+    expect(driver.cycled).toBe(false)
+    expect(driver.permissionPickerCalls.moved).toEqual([])
+    expect(driver.permissionPickerCalls.submitted).toBe(0)
+    expect(driver.permissionPickerCalls.cancelled).toBe(0)
+  })
+
+  it('an effort picker outranks the permission picker (precedence: modelPicker > effortPicker > permissionPicker)', () => {
+    let state = setEffortPicker(createInitialState(), {
+      entries: ['minimal', 'default'],
+      focused: 0,
+      current: undefined,
+    })
+    state = setPermissionPicker(state, {
+      entries: PERMISSION_ENTRIES,
+      focused: 0,
+      current: 'default',
+    })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.effortPickerCalls.submitted).toBe(1)
+    expect(driver.permissionPickerCalls.submitted).toBe(0)
+  })
+
+  it('a permission picker outranks the session switcher', () => {
+    let state = setPermissionPicker(createInitialState(), {
+      entries: PERMISSION_ENTRIES,
+      focused: 0,
+      current: 'default',
+    })
+    state = setSessionSwitcher(state, {
+      sessions: [{ id: 's-1', createdAt: 1 }],
+      focused: 0,
+      switching: false,
+      currentId: 's-1',
+    })
+    const driver = sink(state)
+    handleComposerInput(driver, '\r')
+    expect(driver.permissionPickerCalls.submitted).toBe(1)
+    expect(driver.sessionSwitcherCalls.submitted).toBe(0)
+  })
+
+  it('does not toggle thinking while a permission picker is open (overlay wins)', () => {
+    const driver = sink(permissionPickerState())
+    handleComposerInput(driver, '\x0f')
+    expect(driver.toggled).toBe(false)
+  })
+
+  it('does not interrupt on escape while a permission picker is open (cancel wins)', () => {
+    const driver = sink(setBusy(permissionPickerState(), true))
+    handleComposerInput(driver, '\x1b')
+    expect(driver.interrupted).toBe(false)
+    expect(driver.permissionPickerCalls.cancelled).toBe(1)
   })
 })
 
