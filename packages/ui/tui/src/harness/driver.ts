@@ -25,15 +25,12 @@ import { composePreset } from './preset.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import { allowRuleOf, isSettingsConflict, payloadOf } from './approval-preview.ts'
 import {
-  BASH_RUNNING_NOTICE,
-  BASH_STDOUT_MAX_BYTES,
-  BASH_TIMEOUT_MS,
   defaultExportDir,
-  execFileAsync,
   exportStamp,
   gitBranchOf,
-  shellOutputRow,
 } from './shell-output.ts'
+import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
+import type { DriverBashCtx } from './driver-ctx.ts'
 import {
   breakdownOf,
   formatCostReport,
@@ -1521,58 +1518,14 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // mounted, through a direct /bin/sh child with the same timeout and output
   // budget. The command never reaches the agent and never touches the session
   // log (status rows are UI-only), and its output is line-capped.
-  const runShellCommand = async (raw: string): Promise<void> => {
-    const command = raw.trim()
-    if (command.length === 0) return
-    appendBashHistory(command)
-    emit(upsertRow(state, { kind: 'status', text: `$ ${command}` }))
-    emit(setNotice(state, BASH_RUNNING_NOTICE))
-    try {
-      if (shell === undefined) {
-        // Degraded path: no shell executor mounted. Non-zero exits, timeout
-        // kills, and spawn failures all arrive as rejections.
-        const result = await execFileAsync('/bin/sh', ['-c', command], {
-          cwd,
-          timeout: BASH_TIMEOUT_MS,
-          maxBuffer: BASH_STDOUT_MAX_BYTES,
-        })
-        const row = shellOutputRow(result.stdout, result.stderr, { exitCode: 0, timedOut: false })
-        if (row.text.length > 0) emit(upsertRow(state, row))
-      } else {
-        const result = await shell.run(shell.resolve({
-          command,
-          timeoutMs: BASH_TIMEOUT_MS,
-          stdoutMaxBytes: BASH_STDOUT_MAX_BYTES,
-        }))
-        const row = shellOutputRow(result.stdout.text, result.stderr.text, result)
-        if (row.text.length > 0) emit(upsertRow(state, row))
-      }
-    } catch (error) {
-      const failure = error as {
-        code?: unknown
-        killed?: boolean
-        message?: string
-        stdout?: string
-        stderr?: string
-      }
-      let row: { kind: 'status'; text: string; error?: boolean }
-      if (typeof failure.code === 'number') {
-        // Non-zero exit from the fallback child: output rides on the error.
-        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: failure.code, timedOut: false })
-      } else if (failure.killed === true) {
-        // The fallback child hit the timeout and was killed.
-        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: null, timedOut: true })
-      } else {
-        // Infrastructure fault (executor rejection, unwritable workdir, no
-        // /bin/sh): the message is all there is to show.
-        row = { kind: 'status', text: failure.message ?? String(error), error: true }
-      }
-      if (row.text.length > 0) emit(upsertRow(state, row))
-    } finally {
-      // Drop the running indicator only if nothing replaced it meanwhile.
-      if (state.notice === BASH_RUNNING_NOTICE) emit(setNotice(state, undefined))
-    }
+  const bashCtx: DriverBashCtx = {
+    state: () => state,
+    emit,
+    cwd,
+    shell,
+    appendBashHistory,
   }
+  const runShellCommand = (raw: string): Promise<void> => runShellCommandModule(bashCtx, raw)
 
   const submit = async (text?: string): Promise<void> => {
     const draft = text ?? state.draft
