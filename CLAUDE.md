@@ -62,6 +62,22 @@ what behavior to verify, how to drive it (script/browser/CLI), what
 observable result counts as pass. Execute via fast-worker; if results
 are ambiguous, deep-reasoner judges — you don't re-litigate inline.
 
+### Worktree-first modification policy
+Never edit/write files in the main checkout. Before the first edit of
+repo files, `EnterWorktree` with a task-derived slug — this section is
+the standing explicit request; do not wait to be asked. All shell/fs
+calls then use `workdir: <worktreePath>`.
+- Worktree base is HEAD: commit or stash anything in the main checkout
+  the worktree must see — uncommitted state is invisible there.
+- At task end: commit in the worktree, `ExitWorktree` with `keep`,
+  report the `worktree-<slug>` branch. Merging into the base branch is
+  a separate step done from the main checkout; conflicts between
+  parallel worktrees surface and are resolved there.
+- This isolation is what makes parallel TUIs safe. Launch every dsh
+  cc-tui from the main checkout and enter worktrees in-session —
+  launching directly inside a worktree dir is unsupported (gitignored
+  `.claude/settings.local.json` does not load there).
+
 ### Worktree environment
 `claude --worktree` and `git worktree add` check out only tracked files,
 so node_modules/ (gitignored) is absent — any
