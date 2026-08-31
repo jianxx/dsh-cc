@@ -23,6 +23,7 @@ import type {
 import type { Context } from '@deepseek-ai/cordis'
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { ModalEntry } from './driver-modal.ts'
+import type { SessionEventLike, ToolPresenters } from '../transcript.ts'
 
 /**
  * The slice of createDriver's closed-over state that `!` shell-command
@@ -312,3 +313,56 @@ export interface DriverQueueCtx {
   /** Mark/clear the session as having real content (drives /quit resume). */
   setMarkedContent(value: boolean): void
 }
+
+/**
+ * The slice of createDriver's closed-over state that the agent-model/history
+ * cluster needs: resolveEfforts, seedDefaultModel, persistResumeTarget, the
+ * prompt/bash histories, tool presenters, foldHistory, and loadCatalog all
+ * read `ctx`/`current`/`selection` off `rt` instead of createDriver's locals.
+ * The section returns handles createDriver threads into the other sections.
+ */
+export interface DriverAgentCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context for llm/shell/tools service lookup. */
+  ctx: Context
+  /** The rebindable agent holder (re-read live at fire time). */
+  current: { handle: AgentHandle; agent: Agent }
+  /** Model selection ref; seeded by agent options / deployment default. */
+  selection: ModelSelectionRef
+  /** Explicit provider/model override, or undefined when unset. */
+  agentOptions: { provider: string; model: string } | undefined
+  /** Fold the live plan/permission mode for the agent. */
+  liveMode(agent: Agent, fallback: string): string
+  /** Directory backing prompt/bash-history persistence. */
+  historyDir: string | undefined
+}
+
+/**
+ * The slice of createDriver's closed-over state the `session/event` listener
+ * needs. It only reads the live view-model and current agent; the queue flush
+ * is late-bound through a holder so the listener can be attached before the
+ * queue section is constructed.
+ */
+export interface DriverSessionEventsCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context the `session/event` listener subscribes through. */
+  ctx: Context
+  /** The rebindable agent holder (re-read live at fire time). */
+  current: { handle: AgentHandle; agent: Agent }
+  /** Fold the live plan/permission mode. */
+  liveMode(agent: Agent, fallback: string): string
+  /** Tool presenters for folding replayed session events. */
+  presenters: ToolPresenters | undefined
+  /** Late-bound queue flush (wired after createQueueSection). */
+  flushQueue(): void
+}
+
+// re-export the event-like types so the agent section can type them without
+// importing the (heavier) transcript module directly in its own ctx.
+export type { SessionEventLike, ToolPresenters }
