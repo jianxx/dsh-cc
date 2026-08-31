@@ -14,7 +14,8 @@ import { jsonNormalizeArgs, renderValue } from './json-render.ts'
 import { CodeRunFailedError, resolveFlavor, RUN_CODE_DESCRIPTION_PARAM_DESCRIPTION, RUN_CODE_NAME, TYPESCRIPT_FLAVOR } from './run-code-defs.ts'
 import { defineTool, parameterSchemaSpecToJsonSchema } from './schema.ts'
 import { TOOL_RUNTIME_SCHEDULER } from './scheduler.ts'
-import type { CodeDispatchLog, ToolDefinition, ToolExecutionResult, ToolRuntime, ToolRunContext } from './index.ts'
+import type { ToolRuntimeCore } from './runtime-core.ts'
+import type { CodeDispatchLog, ToolDefinition, ToolExecutionResult, ToolRunContext } from './index.ts'
 import type {} from './types.ts'
 
 export { CodeRunFailedError, RUN_CODE_NAME, SDK_SECTION_ORDER } from './run-code-defs.ts'
@@ -55,7 +56,7 @@ export interface RunCodeBridgeOptions {
  * @param options - the registry-private capabilities described above.
  * @returns the registry-ready definition.
  */
-export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeOptions): ToolDefinition {
+export function createRunCodeTool(registry: ToolRuntimeCore, options: RunCodeBridgeOptions): ToolDefinition {
   const { requireRuntime, peekRuntime, maxParallel, shapeDispatchLog } = options
   const definition = defineTool({
     name: RUN_CODE_NAME,
