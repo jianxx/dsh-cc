@@ -121,7 +121,7 @@ function fakeDriver(options: {
     interrupt() {
       interruptCount += 1
     },
-    cyclePermissionMode() {},
+    cyclePermissionMode: async () => {},
     toggleThinking() {},
     toggleGlobalCollapse() {},
     answerApproval() {},

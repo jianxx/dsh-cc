@@ -81,7 +81,7 @@ function fakeDriver(initial: TuiState): Driver {
     setDraft() {},
     async submit() {},
     interrupt() {},
-    cyclePermissionMode() {},
+    cyclePermissionMode: async () => {},
     toggleThinking() {},
     toggleGlobalCollapse() { state = toggleGlobalCollapse(state) },
     answerApproval() {},

@@ -1,8 +1,8 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PERMISSION_MODE_OPTIONS, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 
 /**
@@ -17,14 +17,30 @@ interface ExecuteCall {
   line: string
 }
 
+interface FakeSession {
+  id: string
+  header: Record<string, never>
+  events: unknown[]
+}
+
 function makeCtx(opts: {
   execute?: (line: string) => Promise<{ result?: { kind: string; text?: string } } | undefined>
   events?: unknown[]
+  rules?: boolean
+  planState?: PlanUnitStateLike
 } = {}): {
   ctx: Record<string, unknown>
   executed: ExecuteCall[]
+  calls: string[]
+  session: FakeSession
+  fire: (type: string, event: unknown) => void
 } {
   const executed: ExecuteCall[] = []
+  // Shared write-order log across the fake command registry and the fake
+  // rules engine, so tests can assert '/plan off' precedes setMode.
+  const calls: string[] = []
+  const session: FakeSession = { id: 's-perm', header: {}, events: opts.events ?? [] }
+  const listeners = new Map<string, ((session: FakeSession, event: unknown) => void)[]>()
   const ctx: Record<string, unknown> = {
     get(key: string) {
       if (key === 'agentPresets') {
@@ -41,6 +57,7 @@ function makeCtx(opts: {
           ],
           execute: async (_agent: unknown, line: string) => {
             executed.push({ line })
+            calls.push(`cmd:${line}`)
             if (opts.execute !== undefined) return opts.execute(line)
             if (line === '/permissions') {
               return { result: { kind: 'success', text: 'Permission rules (read-only)' } }
@@ -53,14 +70,27 @@ function makeCtx(opts: {
           },
         }
       }
+      if (key === 'permissionRules') {
+        return opts.rules === true
+          ? { setMode: (_agent: unknown, mode: string) => { calls.push(`rules:${mode}`) } }
+          : undefined
+      }
+      if (key === 'sessionProjections') {
+        return opts.planState === undefined
+          ? undefined
+          : { stateOf: () => opts.planState, onChanged: () => () => {} }
+      }
       return undefined
     },
-    on: () => () => {},
+    on: (type: string, fn: (session: FakeSession, event: unknown) => void) => {
+      listeners.set(type, [...(listeners.get(type) ?? []), fn])
+      return () => {}
+    },
     agents: {
       create: async () => ({
         agent: {
           options: {},
-          session: { id: 's-perm', header: {}, events: opts.events ?? [] },
+          session,
           id: 'a-perm',
           status: 'idle',
           followup() {},
@@ -70,7 +100,10 @@ function makeCtx(opts: {
       }),
     },
   }
-  return { ctx, executed }
+  const fire = (type: string, event: unknown): void => {
+    for (const fn of listeners.get(type) ?? []) fn(session, event)
+  }
+  return { ctx, executed, calls, session, fire }
 }
 
 function statusTexts(driver: { state: { rows: readonly { kind: string; text?: string }[] } }): string[] {
@@ -237,5 +270,132 @@ describe('createDriver /permissions picker overlay', () => {
     driver.permissionPickerMove(1)
     await driver.permissionPickerSubmit()
     expect(statusTexts(driver).at(-1)).toBe('The permission-rules engine is not mounted in this composition.')
+  })
+})
+
+describe('createDriver Shift+Tab plan switching via the /plan channel', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-plan-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  it('cycling into plan dispatches bare /plan and waits for the plan/mode event to flip the display', async () => {
+    const { ctx, executed, session, fire } = makeCtx({
+      events: [{ type: 'permission/mode', data: { mode: 'acceptEdits' } }],
+      execute: async line => line === '/plan'
+        ? { result: { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' } }
+        : { result: { kind: 'error', text: 'unknown command' } },
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(executed).toEqual([{ line: '/plan' }])
+    // No optimistic flip: the display follows plan-mode's committed event.
+    expect(driver.state.permissionMode).not.toBe('plan')
+    expect(statusTexts(driver).at(-1)).toBe('Plan mode on. Use /plan off to leave.')
+    // Production ordering: the event is in the log before it is dispatched.
+    const committed = { type: 'plan/mode', data: { active: true } }
+    session.events.push(committed)
+    fire('session/event', committed)
+    expect(driver.state.permissionMode).toBe('plan')
+  })
+
+  it('leaving plan dispatches /plan off before the engine setMode', async () => {
+    const { ctx, calls } = makeCtx({
+      events: [{ type: 'plan/mode', data: { active: true } }],
+      rules: true,
+      execute: async line => line === '/plan off'
+        ? { result: { kind: 'success', text: 'Plan mode off.' } }
+        : { result: { kind: 'error', text: 'unknown command' } },
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(calls).toEqual(['cmd:/plan off', 'rules:auto'])
+    expect(driver.state.permissionMode).toBe('auto')
+  })
+
+  it('cancels a queued plan entry when cycling away (projection entering, fold still off)', async () => {
+    const { ctx, calls } = makeCtx({
+      rules: true,
+      planState: { active: false, wanted: true, running: null },
+      execute: async () => ({ result: { kind: 'success', text: 'Plan mode entry cancelled.' } }),
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(calls).toEqual(['cmd:/plan off', 'rules:acceptEdits'])
+  })
+
+  it('a failing /plan off aborts the switch', async () => {
+    const { ctx, calls } = makeCtx({
+      events: [{ type: 'plan/mode', data: { active: true } }],
+      rules: true,
+      execute: async line => line === '/plan off'
+        ? { result: { kind: 'error', text: 'cannot leave now' } }
+        : { result: { kind: 'error', text: 'unknown command' } },
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(calls).toEqual(['cmd:/plan off'])
+    expect(driver.state.permissionMode).not.toBe('auto')
+    expect(statusTexts(driver).at(-1)).toBe('cannot leave now')
+  })
+
+  it('notices when /plan is not mounted in the composition', async () => {
+    const { ctx } = makeCtx({
+      events: [{ type: 'permission/mode', data: { mode: 'acceptEdits' } }],
+      execute: async () => undefined,
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(driver.state.notice).toBe('plan mode is not mounted in this composition')
+  })
+
+  it('surfaces a rejected /plan execution as a notice', async () => {
+    const { ctx } = makeCtx({
+      events: [{ type: 'permission/mode', data: { mode: 'acceptEdits' } }],
+      execute: async () => { throw new Error('boom') },
+    })
+    const driver = await createDriver(ctx as never, {})
+    await driver.cyclePermissionMode()
+    expect(driver.state.notice).toBe('boom')
+  })
+
+  it('serializes rapid cycles: the second write starts after the first settles', async () => {
+    let callCount = 0
+    let firstSettled = false
+    let secondStartedEarly = false
+    let resolveFirst!: () => void
+    const { ctx } = makeCtx({
+      events: [{ type: 'permission/mode', data: { mode: 'acceptEdits' } }],
+      execute: line => {
+        callCount += 1
+        if (callCount === 1) {
+          return new Promise<{ result?: { kind: string; text?: string } } | undefined>(resolve => {
+            resolveFirst = () => {
+              firstSettled = true
+              resolve({ result: { kind: 'success', text: 'Plan mode on.' } })
+            }
+          })
+        }
+        if (!firstSettled) secondStartedEarly = true
+        return Promise.resolve({ result: { kind: 'success', text: 'Plan mode on.' } })
+      },
+    })
+    const driver = await createDriver(ctx as never, {})
+    const first = driver.cyclePermissionMode()
+    const second = driver.cyclePermissionMode()
+    await vi.waitFor(() => expect(callCount).toBe(1))
+    resolveFirst()
+    await Promise.all([first, second])
+    expect(callCount).toBe(2)
+    expect(secondStartedEarly).toBe(false)
   })
 })
