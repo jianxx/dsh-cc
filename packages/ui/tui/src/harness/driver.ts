@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
@@ -18,10 +18,11 @@ import { gitBranchOf } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createApprovalsSection } from './driver-approvals.ts'
 import { createCatalogSection } from './driver-catalog.ts'
-import type { DriverBashCtx } from './driver-ctx.ts'
+import type { DriverBashCtx, DriverQueueCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
 import { createHudSection } from './driver-hud.ts'
 import { createPickersSection } from './driver-pickers.ts'
+import { createQueueSection } from './driver-queue.ts'
 import { createRunLocalSection } from './driver-run-local.ts'
 
 import type { Driver } from '../state/driver-types.ts'
@@ -34,10 +35,9 @@ import type {
   ToolsLike,
 } from '../state/driver-types.ts'
 
-import { parseSlash } from '../slash.ts'
 import { type CatalogEntry } from '../model-catalog.ts'
 import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
-import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
+import { HISTORY_CAP, loadHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import {
   applySessionEvent,
@@ -46,16 +46,13 @@ import {
 } from '../transcript.ts'
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
-  clearQueue,
   clearTurn,
   closeTodoPanel,
   closeUsagePanel,
   createInitialState,
-  enqueue,
   markExitAttempt,
   moveTodoPanelFocus,
   openTodoPanel,
-  popQueued,
   resetTurnStep,
   setBusy,
   setDraft,
@@ -397,7 +394,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       // working-line anchor clears next, and only then does the queue flush —
       // its dispatch re-anchors for the followup turn.
       emit(clearTurn(state))
-      flushQueue()
+      queue.flushQueue()
     }
   })
 
@@ -548,60 +545,6 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const { runLocal, runHarness } = runLocalSection
   actions.runHarness = runHarness
 
-  /**
-   * Outbox flush, anchored to the durable `turn/end` event: snapshot the
-   * queue, dispatch every entry FIFO through `followup`, and clear the queue
-   * in the same synchronous stroke as the dispatch — so the queue never holds
-   * an entry that was already sent and ↑ recall cannot race a flush. Busy is
-   * re-asserted optimistically (the flushed followups start a new turn
-   * immediately; the fold's `turn/end` handling just set it false).
-   */
-  const flushQueue = (): void => {
-    const pending = [...state.queued]
-    if (pending.length === 0) return
-    for (const text of pending) {
-      current.agent.followup(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'user' },
-      }))
-    }
-    // Unconditional anchor: the only call site is the turn/end handler, which
-    // has just cleared the previous turn's anchor, so this re-anchors for the
-    // flushed followup turn and can never reset a live one.
-    emit(setTurnActive(setBusy(clearQueue(state), true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
-
-  /**
-   * Ctrl+S queue-jump: inject every queued entry into the RUNNING turn
-   * immediately — same synchronous snapshot-then-clear discipline as
-   * {@link flushQueue}, but via `agent.steer` and without a busy flip (the
-   * turn is already running).
-   */
-  const steerQueued = (): void => {
-    const pending = [...state.queued]
-    if (pending.length === 0) return
-    for (const text of pending) {
-      current.agent.steer(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'user' },
-      }))
-    }
-    emit(clearQueue(state))
-  }
-
-  /**
-   * Recall for editing: pop the most recent queued entry back out of the
-   * outbox and hand it to the caller (root.ts puts it into the composer).
-   * Race-free by construction — flush and steer always clear synchronously,
-   * so the queue only ever holds entries that were never sent.
-   */
-  const recallQueued = (): string | undefined => {
-    const popped = popQueued(state)
-    if (popped.text === undefined) return undefined
-    emit(popped.state)
-    return popped.text
-  }
-
   // --- `!` bash mode: local shell commands -----------------------------------
   // A composer line with a leading `!` is executed locally: through the
   // mounted shell executor (resolve→run, bounded spec) or, when none is
@@ -617,60 +560,23 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   const runShellCommand = (raw: string): Promise<void> => runShellCommandModule(bashCtx, raw)
 
-  const submit = async (text?: string): Promise<void> => {
-    const draft = text ?? state.draft
-    if (draft.trim().length === 0) return
-    emit(setDraft(state, ''))
-    // A leading `!` marks a LOCAL shell command no matter how the text was
-    // entered — typed in shell mode or pasted wholesale. It runs even while
-    // the agent is busy (a local command never touches the turn) and is
-    // neither a prompt nor a slash command.
-    if (draft.startsWith('!')) {
-      await runShellCommand(draft.slice(1))
-      return
-    }
-    const parsed = parseSlash(draft)
-    if (parsed.kind === 'local') {
-      await runLocal(parsed.name, parsed.rawInput)
-      return
-    }
-    if (parsed.kind === 'harness') {
-      // Bare `/permissions` is the TUI analogue of the browser popupSelect
-      // decoration: open the overlay instead of dumping the rule listing.
-      // `/permissions <mode>` stays scriptable through the host command.
-      if (/^\/permissions$/i.test(parsed.line)) {
-        openPermissionPicker()
-        return
-      }
-      await runHarness(parsed.line)
-      return
-    }
-    // Persist the prompt (not slash commands — they are commands, not
-    // prompts, and would dilute the recall signal). Consecutive duplicates
-    // and the cap are handled inside saveHistory. This is also the first
-    // real-content signal: mark the session so the launcher can resume it.
-    history = saveHistory([...history, draft], historyDir)
-    markedContent = true
-    persistResumeTarget()
-    if (state.busy) {
-      // Outbox: park the text as a pending chip only. It reaches the agent on
-      // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
-      // (steerQueued). No injection into the running turn here — that is what
-      // makes recall-then-edit meaningful.
-      emit(enqueue(state, draft))
-      return
-    }
-    // Idle sends bypass the outbox entirely — the row surfaces from the
-    // durable `user/message` event, and a sent text must not stay recallable.
-    current.agent.followup(createUserMessage({
-      content: [{ type: 'text', text: draft }],
-      source: { kind: 'user' },
-    }))
-    // Anchor the working line at dispatch: elapsed counts from here, the
-    // token delta from the current HUD total (undefined when unseeded — the
-    // tokenUsage rebase pins it on the first change).
-    emit(setTurnActive(setBusy(state, true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
+  // Outbox queue + submit/interrupt pipeline: extracted to driver-queue.ts.
+  // `history`/`markedContent` rebind through the getter/setter seams so the
+  // leaf stays decoupled from createDriver's locals.
+  const queue = createQueueSection({
+    emit,
+    state: () => state,
+    current,
+    runLocal,
+    runHarness,
+    openPermissionPicker,
+    runShellCommand,
+    getHistory: () => history,
+    setHistory: (next) => { history = next },
+    historyDir,
+    persistResumeTarget,
+    setMarkedContent: (value) => { markedContent = value },
+  } satisfies DriverQueueCtx)
 
 
   return {
@@ -702,20 +608,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     setDraft(draft) {
       emit(setDraft(state, draft))
     },
-    submit,
-    interrupt() {
-      current.agent.cancel({ kind: 'user' })
-      // cancel discards queued/steering inbox items; mirror that in UI state.
-      // Clearing BEFORE the abort's turn/end lands also guarantees the flush
-      // anchor finds an empty queue — an interrupt never resurrects entries.
-      // The working-line anchor clears with the turn.
-      emit(upsertRow(clearTurn(clearQueue(setBusy(state, false))), {
-        kind: 'status',
-        text: 'Interrupted by user.',
-      }))
-    },
-    steerQueued,
-    recallQueued,
+    submit: queue.submit,
+    interrupt: queue.interrupt,
+    steerQueued: queue.steerQueued,
+    recallQueued: queue.recallQueued,
     cyclePermissionMode() {
       return modeSection.cyclePermissionMode()
     },

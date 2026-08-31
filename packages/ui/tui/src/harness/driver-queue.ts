@@ -1,0 +1,165 @@
+/**
+ * Outbox queue, submit, and interrupt pipeline extracted from harness/driver.ts.
+ * Free-function collaborator: takes a {@link DriverQueueCtx} instead of closing
+ * over createDriver's locals, so the harness factory stays out of this leaf.
+ * @module @jianxx/dsh-cc-tui/harness/driver-queue
+ */
+
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { parseSlash } from '../slash.ts'
+import { saveHistory } from '../history.ts'
+import {
+  clearQueue,
+  clearTurn,
+  enqueue,
+  popQueued,
+  setBusy,
+  setDraft,
+  setTurnActive,
+  upsertRow,
+} from '../store.ts'
+import type { DriverQueueCtx } from './driver-ctx.ts'
+
+/**
+ * Outbox flush, anchored to the durable `turn/end` event: snapshot the queue,
+ * dispatch every entry FIFO through `followup`, and clear the queue in the same
+ * synchronous stroke as the dispatch — so the queue never holds an entry that
+ * was already sent and ↑ recall cannot race a flush. Busy is re-asserted
+ * optimistically (the flushed followups start a new turn immediately; the
+ * fold's `turn/end` handling just set it false).
+ */
+const flushQueue = (rt: DriverQueueCtx): void => {
+  const s = rt.state()
+  const pending = [...s.queued]
+  if (pending.length === 0) return
+  for (const text of pending) {
+    rt.current.agent.followup(createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'user' },
+    }))
+  }
+  // Unconditional anchor: the only call site is the turn/end handler, which
+  // has just cleared the previous turn's anchor, so this re-anchors for the
+  // flushed followup turn and can never reset a live one.
+  rt.emit(setTurnActive(setBusy(clearQueue(s), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
+}
+
+/**
+ * Ctrl+S queue-jump: inject every queued entry into the RUNNING turn
+ * immediately — same synchronous snapshot-then-clear discipline as
+ * {@link flushQueue}, but via `agent.steer` and without a busy flip (the
+ * turn is already running).
+ */
+const steerQueued = (rt: DriverQueueCtx): void => {
+  const s = rt.state()
+  const pending = [...s.queued]
+  if (pending.length === 0) return
+  for (const text of pending) {
+    rt.current.agent.steer(createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'user' },
+    }))
+  }
+  rt.emit(clearQueue(s))
+}
+
+/**
+ * Recall for editing: pop the most recent queued entry back out of the outbox
+ * and hand it to the caller (root.ts puts it into the composer). Race-free by
+ * construction — flush and steer always clear synchronously, so the queue only
+ * ever holds entries that were never sent.
+ */
+const recallQueued = (rt: DriverQueueCtx): string | undefined => {
+  const popped = popQueued(rt.state())
+  if (popped.text === undefined) return undefined
+  rt.emit(popped.state)
+  return popped.text
+}
+
+const submit = async (rt: DriverQueueCtx, text?: string): Promise<void> => {
+  const draft = text ?? rt.state().draft
+  if (draft.trim().length === 0) return
+  rt.emit(setDraft(rt.state(), ''))
+  // A leading `!` marks a LOCAL shell command no matter how the text was
+  // entered — typed in shell mode or pasted wholesale. It runs even while
+  // the agent is busy (a local command never touches the turn) and is neither
+  // a prompt nor a slash command.
+  if (draft.startsWith('!')) {
+    await rt.runShellCommand(draft.slice(1))
+    return
+  }
+  const parsed = parseSlash(draft)
+  if (parsed.kind === 'local') {
+    await rt.runLocal(parsed.name, parsed.rawInput)
+    return
+  }
+  if (parsed.kind === 'harness') {
+    // Bare `/permissions` is the TUI analogue of the browser popupSelect
+    // decoration: open the overlay instead of dumping the rule listing.
+    // `/permissions <mode>` stays scriptable through the host command.
+    if (/^\/permissions$/i.test(parsed.line)) {
+      rt.openPermissionPicker()
+      return
+    }
+    await rt.runHarness(parsed.line)
+    return
+  }
+  // Persist the prompt (not slash commands — they are commands, not prompts,
+  // and would dilute the recall signal). Consecutive duplicates and the cap
+  // are handled inside saveHistory. This is also the first real-content
+  // signal: mark the session so the launcher can resume it.
+  rt.setHistory(saveHistory([...rt.getHistory(), draft], rt.historyDir))
+  rt.setMarkedContent(true)
+  rt.persistResumeTarget()
+  const s = rt.state()
+  if (s.busy) {
+    // Outbox: park the text as a pending chip only. It reaches the agent on
+    // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
+    // (steerQueued). No injection into the running turn here — that is what
+    // makes recall-then-edit meaningful.
+    rt.emit(enqueue(s, draft))
+    return
+  }
+  // Idle sends bypass the outbox entirely — the row surfaces from the durable
+  // `user/message` event, and a sent text must not stay recallable.
+  rt.current.agent.followup(createUserMessage({
+    content: [{ type: 'text', text: draft }],
+    source: { kind: 'user' },
+  }))
+  // Anchor the working line at dispatch: elapsed counts from here, the token
+  // delta from the current HUD total (undefined when unseeded — the tokenUsage
+  // rebase pins it on the first change).
+  rt.emit(setTurnActive(setBusy(rt.state(), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
+}
+
+const interrupt = (rt: DriverQueueCtx): void => {
+  rt.current.agent.cancel({ kind: 'user' })
+  // cancel discards queued/steering inbox items; mirror that in UI state.
+  // Clearing BEFORE the abort's turn/end lands also guarantees the flush
+  // anchor finds an empty queue — an interrupt never resurrects entries.
+  // The working-line anchor clears with the turn.
+  rt.emit(upsertRow(clearTurn(clearQueue(setBusy(rt.state(), false))), {
+    kind: 'status',
+    text: 'Interrupted by user.',
+  }))
+}
+
+/**
+ * Build the queue/sumit/interrupt section of createDriver. `rt` supplies live
+ * state, emit, and neighbor-section seams (bash/local/harness/permission picker).
+ */
+export function createQueueSection(rt: DriverQueueCtx): {
+  flushQueue(): void
+  steerQueued(): void
+  recallQueued(): string | undefined
+  submit(text?: string): Promise<void>
+  interrupt(): void
+} {
+  return {
+    flushQueue: () => flushQueue(rt),
+    steerQueued: () => steerQueued(rt),
+    recallQueued: () => recallQueued(rt),
+    submit: (text) => submit(rt, text),
+    interrupt: () => interrupt(rt),
+  }
+}

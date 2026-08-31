@@ -279,3 +279,36 @@ export interface DriverRunLocalCtx {
   /** Whether real content has been produced this boot (drives /quit resume). */
   getMarkedContent(): boolean
 }
+
+/**
+ * The slice of createDriver's closed-over state that the queue/outbox +
+ * submit/interrupt pipeline needs (driver-queue.ts). `state()` returns the
+ * CURRENT view-model value — createDriver rebinds `state` on every emit, so the
+ * queue collaborator must read it through a getter rather than a stale snapshot.
+ */
+export interface DriverQueueCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** The rebindable agent holder (switchSession replaces it in place). */
+  current: { agent: Agent }
+  /** Dispatch a local slash command (run-local section). */
+  runLocal(name: string, rawInput: string): Promise<void>
+  /** Dispatch a harness slash command (run-local section, late-bound). */
+  runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+  /** Open the /permissions overlay picker (pickers section). */
+  openPermissionPicker(): void
+  /** Run a `!` bash-mode line (driver-bash section). */
+  runShellCommand(raw: string): Promise<void>
+  /** Read the current composer prompt history (oldest→newest). */
+  getHistory(): string[]
+  /** Replace the composer prompt history after a submit persist. */
+  setHistory(next: string[]): void
+  /** Directory backing prompt-history persistence (for saveHistory). */
+  historyDir: string | undefined
+  /** Persist the resume marker (idempotent) — after first real content. */
+  persistResumeTarget(): void
+  /** Mark/clear the session as having real content (drives /quit resume). */
+  setMarkedContent(value: boolean): void
+}
