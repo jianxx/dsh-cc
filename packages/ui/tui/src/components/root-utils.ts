@@ -1,10 +1,14 @@
 /**
- * Standalone helpers extracted from the root mount: OS URL opening and
- * active-task text capping. Deliberately a leaf — must not import root.ts.
+ * Standalone helpers and constants extracted from the root mount: OS URL
+ * opening, active-task text capping, and the double-press quit window.
+ * Deliberately a leaf — must not import root.ts.
  * @module @jianxx/dsh-cc-tui/components/root-utils
  */
 
 import { spawn } from 'node:child_process'
+
+/** How long after the first idle Ctrl+C a second press still quits (ms). */
+export const DOUBLE_PRESS_WINDOW_MS = 2000
 
 /** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
 const TODO_ACTIVE_CAP = 60

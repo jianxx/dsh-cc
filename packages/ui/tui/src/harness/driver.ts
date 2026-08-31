@@ -5,11 +5,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -22,12 +19,53 @@ import {
   type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
+import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
+import { allowRuleOf, isSettingsConflict, payloadOf } from './approval-preview.ts'
+import {
+  BASH_RUNNING_NOTICE,
+  BASH_STDOUT_MAX_BYTES,
+  BASH_TIMEOUT_MS,
+  defaultExportDir,
+  execFileAsync,
+  exportStamp,
+  gitBranchOf,
+  shellOutputRow,
+} from './shell-output.ts'
+import {
+  breakdownOf,
+  formatCostReport,
+  occupancyOf,
+  percentOf,
+  sameTodos,
+  sameUsage,
+  todosOf,
+  tokensOf,
+  totalsOf,
+  usageViewOf,
+} from './usage-view.ts'
+
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
+import type {
+  AgentDefaultModelLike,
+  ContextPressureStateLike,
+  DriverConfig,
+  LlmLike,
+  PersistenceLike,
+  SessionProjectionsLike,
+  SessionQueryLike,
+  SessionTitleResultLike,
+  ShellExecutorLike,
+  SettingsProviderLike,
+  SubagentRunEndInfoLike,
+  SubagentRunInfoLike,
+  TokenUsageStateLike,
+  ToolsLike,
+} from '../state/driver-types.ts'
+
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
@@ -42,7 +80,6 @@ import {
   type SessionEventLike,
   type ToolPresenters,
 } from '../transcript.ts'
-import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
   backspaceQuestionText,
@@ -91,37 +128,33 @@ import {
   type QuestionView,
   type SessionEntryView,
   type SubagentRunView,
-  type TodoItemView,
   type TuiState,
-  type UsageBreakdownView,
   type UsageView,
 } from '../store.ts'
 
-export interface DriverConfig {
-  cwd?: string
-  agentPreset?: string
-  sessionId?: string
-  provider?: string
-  model?: string
-  /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
-  historyDir?: string
-  /**
-   * Git-branch probe used by the statusline (best-effort, never throws).
-   * Injectable so tests avoid a real child process; defaults to
-   * {@link gitBranchOf}.
-   */
-  branchProbe?: (cwd: string) => Promise<string | undefined>
-  /**
-   * Output directory for `/export-md` when no path is given. Defaults to
-   * `$DSH_HOME/tui/exports` (same resolution as {@link resume-target}).
-   */
-  exportDir?: string
-  /**
-   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
-   * Injectable so tests capture the sequence; production wires it to the live
-   * terminal in plugin.ts (safe inline — the sequence paints nothing).
-   */
-  copyWrite?: (sequence: string) => void
+export type { DriverConfig, TokenUsageTotals } from '../state/driver-types.ts'
+export {
+  BASH_OUTPUT_LINE_CAP,
+  BASH_STDOUT_MAX_BYTES,
+  BASH_TIMEOUT_MS,
+  gitBranchOf,
+} from './shell-output.ts'
+export { formatCostReport } from './usage-view.ts'
+export { allowRuleOf, payloadOf } from './approval-preview.ts'
+
+/** Default lifetime of a transient `showNotice` hint. */
+const NOTICE_TTL_MS = 3000
+
+/**
+ * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
+ * with BEL. The sequence is zero-width — writing it inline never disturbs the
+ * rendered frame.
+ */
+const OSC52_PREFIX = '\x1b]52;c;'
+
+function liveMode(agent: Agent, fallback: string): string {
+  if (foldPlanMode(agent.session.events)) return 'plan'
+  return foldPermissionMode(agent.session.events) ?? fallback
 }
 
 type PermissionRulesLike = {
@@ -146,594 +179,6 @@ type CommandsLike = {
     images: readonly unknown[],
     signal: AbortSignal,
   ): Promise<{ result?: { kind: string; text?: string } } | undefined>
-}
-
-type LlmLike = {
-  listProviders(): { id: string }[]
-  listModels(provider: string): Promise<{ provider: string; id: string; name: string }[]>
-  /**
-   * Optional model-metadata lookup used to validate reasoning-effort writes.
-   * Optional so existing llm stubs without it keep working: every effort
-   * consumer treats absence as "unresolvable" and fails closed (or writes the
-   * bare pair for /model, which never needs validation).
-   */
-  resolveModelInfo?(
-    provider: string,
-    model: string,
-    signal?: AbortSignal,
-  ): Promise<{
-    reasoning?: {
-      efforts: readonly { id: string; name: string; description?: string }[]
-      defaultEffort?: string
-    }
-  }>
-}
-
-type PersistenceLike = {
-  list(signal?: AbortSignal): Promise<{
-    id: string
-    cwd?: string
-    createdAt: number
-    updatedAtMs?: number
-    parentSession?: string
-  }[]>
-}
-
-/**
- * Structural stand-in for the deployment's `sessionQuery` service: batch
- * title reads for the /resume picker. One result per requested id —
- * operational failures are isolated per id (`status: 'rejected'`), and the
- * fulfilled value carries the session header plus its latest title snapshot.
- */
-type SessionTitleResultLike =
-  | {
-    status: 'fulfilled'
-    /** Requested session id — the join key. Do not use `value.session.id`. */
-    sessionId: string
-    value: { session: { id: string }; title?: { title: string } }
-  }
-  | { status: 'rejected'; sessionId?: string }
-
-type SessionQueryLike = {
-  readTitleSnapshots(ids: readonly string[], signal?: AbortSignal): Promise<readonly SessionTitleResultLike[]>
-}
-
-type ToolsLike = {
-  get(name: string, scope?: unknown): {
-    presentCall?(args: unknown): ToolCallView | undefined
-    presentResult?(args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
-  } | undefined
-}
-
-/**
- * Structural stand-in for the deployment's `agentDefaultModel` service
- * (settings.yaml's `agent-default-model`), which the headless bundle seeds
- * agents from. `currentSelection()` returns the resolved default or undefined
- * when no default is configured. A carried `reasoningEffort` is seeded into
- * the selection too — but only after the llm service confirms the model
- * advertises it ({@link resolveEfforts}); an invalid or unresolvable effort is
- * silently dropped to the bare pair, which is always legal.
- */
-type AgentDefaultModelLike = {
-  currentSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined
-}
-
-/**
- * `subagent/start` snapshot. The real `SubagentRunInfo` is declared in
- * @deepseek-ai/subagent (via cordis module augmentation), which the tui
- * package doesn't import — so a structural local type stands in. Fields are
- * `unknown` because the driver stringifies them into the view layer.
- */
-type SubagentRunInfoLike = {
-  runId: unknown
-  provider: unknown
-  id: unknown
-  local: boolean
-}
-
-/**
- * `subagent/end` snapshot. `stopReason` and `lastAssistantMessage` are
- * optional on the payload; only `stopReason` is surfaced to the view.
- */
-type SubagentRunEndInfoLike = {
-  runId: unknown
-  provider: unknown
-  id: unknown
-  local: boolean
-  stopReason?: unknown
-  lastAssistantMessage?: unknown
-}
-
-/**
- * Structural stand-in for the deployment's `shell` service (ShellExecutor's
- * resolve→run seam), which the tui package doesn't import. `resolve` fills
- * the request's defaults/caps; `run` executes the resolved spec and reports
- * the first-cause outcome. Absent service → the driver degrades to a direct
- * child process (see {@link runShellCommand}).
- */
-type ShellExecSpecLike = {
-  command: string
-  workdir: string
-  timeoutMs: number
-  stdoutMaxBytes: number
-}
-
-type ShellRunResultLike = {
-  /** Exit code; null when the process died from a signal. */
-  exitCode: number | null
-  /** True when the executor's timeout was the first cause to cut the command. */
-  timedOut: boolean
-  stdout: { text: string }
-  stderr: { text: string }
-}
-
-type ShellExecutorLike = {
-  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
-  run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
-}
-
-/** Wall-clock lifetime of a `!` shell command. */
-export const BASH_TIMEOUT_MS = 120_000
-
-/** Foreground stdout byte budget handed to the shell executor for a `!` run. */
-export const BASH_STDOUT_MAX_BYTES = 64_000
-
-/** Lines of command output shown under the `$ cmd` echo row (rest is elided). */
-export const BASH_OUTPUT_LINE_CAP = 20
-
-/** Notice parked above the composer while a `!` command runs. */
-const BASH_RUNNING_NOTICE = '⠋ running…'
-
-/**
- * Structural stand-in for the sessionProjections registry
- * (@deepseek-ai/dsh-session-projection via token-meter's augmentation),
- * which the tui package doesn't import — same pattern as the other `*Like`
- * seams. `onChanged` fires once per client-visible unit whose state changed;
- * `stateOf` is the live read (undefined when the key is not registered).
- */
-type SessionProjectionsLike = {
-  onChanged(listener: (session: { id: unknown }, key: string, value: unknown, seq: number) => void): () => void
-  stateOf(session: unknown, key: string): unknown
-}
-
-/**
- * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
- * field name; `inputTokens` is accepted defensively so a shape drift
- * degrades to "no tokens" instead of NaN. Cache fields are optional —
- * compositions without prompt caching simply omit those lines.
- */
-type TokenUsageStateLike = {
-  totals?: {
-    uncachedInputTokens?: number
-    inputTokens?: number
-    outputTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  }
-}
-
-/** Normalized token totals shared by the HUD and `/cost`. */
-export interface TokenUsageTotals {
-  input: number
-  output: number
-  cacheRead?: number
-  cacheWrite?: number
-}
-
-/** `contextPressure` projection state (subset the HUD reads). */
-type ContextPressureStateLike = {
-  contextWindow?: number
-  pressureTokens?: number
-  surfaceTokens?: number
-  sampledSurfaceTokens?: number
-}
-
-const execFileAsync = promisify(execFile)
-
-/** Default lifetime of a transient `showNotice` hint. */
-const NOTICE_TTL_MS = 3000
-
-/**
- * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
- * with BEL. The sequence is zero-width — writing it inline never disturbs the
- * rendered frame.
- */
-const OSC52_PREFIX = '\x1b]52;c;'
-
-/**
- * Default `/export-md` output directory: `$DSH_HOME/tui/exports` (or
- * `~/.dsh/tui/exports`), mirroring the {@link resume-target} data-dir
- * resolution one level deeper.
- */
-function defaultExportDir(): string {
-  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(dshHome, 'tui', 'exports')
-}
-
-/** Filesystem-safe timestamp for default export filenames (ISO, `:`/`.` dashed). */
-function exportStamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-')
-}
-
-/**
- * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
- * with a short timeout. Never throws — errors (no git, no repo, detached
- * head) resolve to undefined and the statusline simply omits the segment.
- */
-export async function gitBranchOf(cwd: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      timeout: 2000,
-    })
-    const branch = stdout.trim()
-    return branch.length > 0 ? branch : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Cap combined command output at {@link BASH_OUTPUT_LINE_CAP} lines. Leading
- * and trailing blank edges (from an empty stream or a trailing newline) are
- * trimmed; interior blank lines are preserved.
- */
-function capShellOutput(text: string): string {
-  const lines = text.replace(/^\n+/, '').replace(/\n+$/, '').split('\n')
-  if (lines.length === 1 && lines[0] === '') return ''
-  if (lines.length <= BASH_OUTPUT_LINE_CAP) return lines.join('\n')
-  const hidden = lines.length - BASH_OUTPUT_LINE_CAP
-  return `${lines.slice(0, BASH_OUTPUT_LINE_CAP).join('\n')}\n… +${hidden} more line${hidden === 1 ? '' : 's'}`
-}
-
-/**
- * Assemble the bash-command output row: combined stdout/stderr (line-capped)
- * plus a failure trailer. The row is error-marked for a non-zero exit, a
- * signal death, or an executor timeout.
- */
-function shellOutputRow(
-  stdout: string,
-  stderr: string,
-  outcome: { exitCode: number | null; timedOut: boolean },
-): { kind: 'status'; text: string; error?: boolean } {
-  const parts: string[] = []
-  const capped = capShellOutput(`${stdout}\n${stderr}`)
-  if (capped.length > 0) parts.push(capped)
-  if (outcome.timedOut) {
-    parts.push(`timed out after ${BASH_TIMEOUT_MS / 1000}s`)
-  } else if (outcome.exitCode === null) {
-    parts.push('killed by a signal')
-  } else if (outcome.exitCode !== 0) {
-    parts.push(`exit code ${outcome.exitCode}`)
-  }
-  const failed = outcome.timedOut || outcome.exitCode === null || outcome.exitCode !== 0
-  return {
-    kind: 'status',
-    text: parts.join('\n'),
-    ...(failed ? { error: true } : {}),
-  }
-}
-
-/** Pull cumulative token totals out of a `tokenUsage` state value. */
-function totalsOf(usage: TokenUsageStateLike | undefined): TokenUsageTotals | undefined {
-  const totals = usage?.totals
-  const input = totals?.uncachedInputTokens ?? totals?.inputTokens
-  if (typeof input !== 'number' || typeof totals?.outputTokens !== 'number') return undefined
-  return {
-    input,
-    output: totals.outputTokens,
-    ...typeof totals.cacheReadTokens === 'number' ? { cacheRead: totals.cacheReadTokens } : {},
-    ...typeof totals.cacheWriteTokens === 'number' ? { cacheWrite: totals.cacheWriteTokens } : {},
-  }
-}
-
-/** HUD-shaped subset of {@link totalsOf} (input/output only). */
-function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; output: number } | undefined {
-  const totals = totalsOf(usage)
-  return totals === undefined ? undefined : { input: totals.input, output: totals.output }
-}
-
-/**
- * `/cost` report: token counts with thousands separators, cache lines only
- * when non-zero, a `cache hit` percent (`cacheRead / (input + cacheRead)`,
- * clamped at 100, shown only when `cacheRead` exists and the denominator is
- * positive), and an explicit note that no price table is configured —
- * the harness reports usage only, so no monetary amounts are claimed.
- */
-export function formatCostReport(totals: TokenUsageTotals | undefined): string {
-  if (totals === undefined) return 'No token usage recorded yet.'
-  const row = (label: string, value: number): string =>
-    `  ${label.padEnd(9)}${value.toLocaleString('en-US').padStart(6)}`
-  const lines = [
-    'Token usage this session:',
-    row('input', totals.input),
-    row('output', totals.output),
-  ]
-  if ((totals.cacheRead ?? 0) > 0) lines.push(row('cache r', totals.cacheRead!))
-  if ((totals.cacheWrite ?? 0) > 0) lines.push(row('cache w', totals.cacheWrite!))
-  if (totals.cacheRead !== undefined) {
-    const denominator = totals.input + totals.cacheRead
-    if (denominator > 0) {
-      const percent = Math.max(0, Math.min(100, Math.round((totals.cacheRead / denominator) * 100)))
-      lines.push(`  ${'cache hit'.padEnd(9)}${`${percent}%`.padStart(6)}`)
-    }
-  }
-  lines.push('  Pricing is not configured — costs are not computed.')
-  return lines.join('\n')
-}
-
-/**
- * Map a `todos` projection value (`TodoItem[] | null`) onto view items.
- * Non-arrays (including the pre-first-write `null`) map to undefined (no
- * strip); malformed entries inside an array are dropped defensively so one
- * bad item degrades to a shorter list instead of a crash.
- */
-function todosOf(value: unknown): readonly TodoItemView[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const views: TodoItemView[] = []
-  for (const item of value) {
-    if (item === null || typeof item !== 'object') continue
-    const content = (item as { content?: unknown }).content
-    const status = (item as { status?: unknown }).status
-    if (typeof content !== 'string') continue
-    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
-    views.push({ content, status })
-  }
-  return views
-}
-
-/** Structural equality for two optional todo lists. */
-function sameTodos(
-  a: readonly TodoItemView[] | undefined,
-  b: readonly TodoItemView[] | undefined,
-): boolean {
-  if (a === b) return true
-  if (a === undefined || b === undefined || a.length !== b.length) return false
-  return a.every((item, i) => item.content === b[i]!.content && item.status === b[i]!.status)
-}
-
-/**
- * Raw context-window occupancy behind {@link percentOf}: the latest sample
- * plus the surface's movement since that sample was taken (the projection's
- * anchor adjustment), falling back to the bare sample when no anchor exists.
- * `window` is undefined — the result still being usable for exact-token
- * display — when the projection does not expose a positive window. Callers
- * must render from these raw counts, never back-derive them from the rounded
- * percent.
- */
-function occupancyOf(pressure: ContextPressureStateLike | undefined): { used: number; window?: number } | undefined {
-  const sample = pressure?.pressureTokens
-  if (typeof sample !== 'number') return undefined
-  const { surfaceTokens, sampledSurfaceTokens } = pressure ?? {}
-  const used = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
-    ? Math.max(0, sample + surfaceTokens - sampledSurfaceTokens)
-    : sample
-  const contextWindow = pressure?.contextWindow
-  const window = typeof contextWindow === 'number' && contextWindow > 0 ? contextWindow : undefined
-  // exactOptionalPropertyTypes: `window` must be absent, not explicitly undefined.
-  return window === undefined ? { used } : { used, window }
-}
-
-/**
- * Context-occupancy percent (0-100 int) from a `contextPressure` state
- * value. Undefined until both numerator and denominator are known.
- */
-function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
-  const occupancy = occupancyOf(pressure)
-  if (occupancy === undefined || occupancy.window === undefined) return undefined
-  return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
-}
-
-/**
- * `contextBreakdown` projection state (subset the usage panel reads): the
- * projected context token count per content role.
- */
-type ContextBreakdownStateLike = {
-  system?: number
-  tools?: number
-  messages?: number
-}
-
-/**
- * Map a `contextBreakdown` projection value onto the usage panel's three role
- * counts. Absent or malformed fields (shape drift, a partial value) degrade
- * to no breakdown — the panel renders the whole section `n/a` instead of a
- * misleading subset of numbers.
- */
-function breakdownOf(value: unknown): UsageBreakdownView | undefined {
-  const raw = value as ContextBreakdownStateLike | null | undefined
-  if (raw === null || typeof raw !== 'object') return undefined
-  const { system, tools, messages } = raw
-  if (typeof system !== 'number' || typeof tools !== 'number' || typeof messages !== 'number') {
-    return undefined
-  }
-  return { system, tools, messages }
-}
-
-/**
- * Assemble the usage panel's view from the three projection reads. Absent
- * sections stay absent (the panel renders each `n/a` independently); an
- * all-absent read yields undefined so no empty snapshot is parked in state.
- */
-function usageViewOf(
-  totals: TokenUsageTotals | undefined,
-  occupancy: { used: number; window?: number } | undefined,
-  breakdown: UsageBreakdownView | undefined,
-): UsageView | undefined {
-  const view: UsageView = {}
-  if (totals !== undefined) view.totals = totals
-  if (occupancy !== undefined) {
-    view.contextUsed = occupancy.used
-    if (occupancy.window !== undefined) view.contextWindow = occupancy.window
-  }
-  if (breakdown !== undefined) view.breakdown = breakdown
-  const empty = view.totals === undefined && view.contextUsed === undefined && view.breakdown === undefined
-  return empty ? undefined : view
-}
-
-/** Structural equality for two usage token-total sets. */
-function sameTotals(a: UsageView['totals'], b: UsageView['totals']): boolean {
-  if (a === undefined || b === undefined) return a === b
-  return a.input === b.input && a.output === b.output
-    && a.cacheRead === b.cacheRead && a.cacheWrite === b.cacheWrite
-}
-
-/** Structural equality for two usage breakdowns. */
-function sameBreakdown(a: UsageBreakdownView | undefined, b: UsageBreakdownView | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b
-  return a.system === b.system && a.tools === b.tools && a.messages === b.messages
-}
-
-/** Structural equality for two usage snapshots (all sections field-wise). */
-function sameUsage(a: UsageView | undefined, b: UsageView): boolean {
-  return a !== undefined
-    && sameTotals(a.totals, b.totals)
-    && a.contextUsed === b.contextUsed
-    && a.contextWindow === b.contextWindow
-    && sameBreakdown(a.breakdown, b.breakdown)
-}
-
-function liveMode(agent: Agent, fallback: string): string {
-  if (foldPlanMode(agent.session.events)) return 'plan'
-  return foldPermissionMode(agent.session.events) ?? fallback
-}
-
-/**
- * Character cap for the pretty-printed raw-arguments preview of an approval
- * prompt (non-shell, non-file-edit tools).
- */
-const ARGS_PREVIEW_MAX_CHARS = 500
-
-/**
- * The restored arguments of an approved call: a parsed JSON object, or the
- * raw stored text when the arguments are not a JSON object (malformed JSON,
- * a bare scalar) so the preview degrades to the literal payload instead of
- * nothing.
- */
-type RestoredArgs = { args: Record<string, unknown> } | { raw: string }
-
-/**
- * Restore the approved call's arguments by scanning the session log backwards
- * for the `tool/call` event carrying the request's callId (`appendToolCall`
- * lands before the pre-execute approval, so the event is always present).
- * Returns undefined when the callId is missing, unpaired, or its arguments
- * are not stored as a string.
- */
-function argsOf(req: ApprovalRequest): RestoredArgs | undefined {
-  if (req.callId === undefined) return undefined
-  const events = req.agent.session.events
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i]!
-    if (event.type !== 'tool/call') continue
-    if (String((event.data as { callId?: unknown }).callId) !== String(req.callId)) continue
-    const raw = (event.data as { arguments?: unknown }).arguments
-    if (typeof raw !== 'string') return undefined
-    try {
-      const parsed: unknown = JSON.parse(raw)
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { args: parsed as Record<string, unknown> }
-      }
-    } catch {
-      // Not JSON — fall through to the raw-text preview.
-    }
-    return { raw }
-  }
-  return undefined
-}
-
-/**
- * Build the approval prompt's structured payload preview from the restored
- * call arguments: shell-style `command` arguments map to the command kind;
- * Edit/MultiEdit/Write arguments map to per-file diffs (rendered with the
- * transcript's multi-hunk diff renderer); anything else pretty-prints the raw
- * arguments, and a failed recovery degrades to tool name + reason only.
- */
-export function payloadOf(req: ApprovalRequest): ApprovalPreview {
-  const restored = argsOf(req)
-  if (restored === undefined) return { kind: 'none' }
-  if ('raw' in restored) {
-    return { kind: 'args', json: restored.raw.slice(0, ARGS_PREVIEW_MAX_CHARS) }
-  }
-  const args = restored.args
-  if (typeof args.command === 'string') {
-    return { kind: 'command', command: args.command }
-  }
-  const diffs = diffsOf(req.toolName.toLowerCase(), args)
-  if (diffs !== undefined) return { kind: 'diff', diffs }
-  return { kind: 'args', json: JSON.stringify(args, null, 2).slice(0, ARGS_PREVIEW_MAX_CHARS) }
-}
-
-/**
- * Extract per-file diffs from file-edit tool arguments, or undefined when the
- * arguments do not carry the expected shape (the preview then degrades to the
- * raw-arguments kind).
- */
-function diffsOf(name: string, args: Record<string, unknown>): readonly { path: string; oldText: string | null; newText: string }[] | undefined {
-  const path = typeof args.file_path === 'string' ? args.file_path : undefined
-  if (name === 'write') {
-    if (path === undefined || typeof args.content !== 'string') return undefined
-    return [{ path, oldText: null, newText: args.content }]
-  }
-  if (name === 'edit') {
-    if (path === undefined || typeof args.old_string !== 'string' || typeof args.new_string !== 'string') return undefined
-    return [{ path, oldText: args.old_string, newText: args.new_string }]
-  }
-  if (name === 'multiedit' || name === 'multi_edit') {
-    if (path === undefined || !Array.isArray(args.edits)) return undefined
-    const diffs: { path: string; oldText: string | null; newText: string }[] = []
-    for (const edit of args.edits) {
-      if (edit === null || typeof edit !== 'object') continue
-      const { old_string: oldText, new_string: newText } = edit as Record<string, unknown>
-      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
-      diffs.push({ path, oldText, newText })
-    }
-    return diffs.length > 0 ? diffs : undefined
-  }
-  return undefined
-}
-
-/**
- * Derive the permission rule an "always" answer persists for the approved
- * call. Shell commands get a trailing-space first-word prefix rule
- * (`Bash(npm )` matches `npm install …` but not `npmx …` — the deliberate
- * trailing space replaces the colon-carrying `:*` legacy form, which would
- * otherwise embed the colon in the prefix and never match). Every other tool
- * gets a whole-tool rule. Undefined (stay once-only) when nothing usable
- * remains, e.g. a blank command.
- */
-export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
-  const name = toolName.trim()
-  if (name === '') return undefined
-  if (preview?.kind === 'command') {
-    const firstWord = preview.command.trim().split(/\s+/)[0] ?? ''
-    if (firstWord === '') return undefined
-    // ruleString escapes parens/backslashes so a subshell-opening first word
-    // round-trips through parseRuleString.
-    return ruleString(name, `${firstWord} `)
-  }
-  return name
-}
-
-/**
- * Structural seam for the deployment settings provider: the pieces the
- * always-allow write path needs (namespace descriptors and whole-section
- * replace). Declared locally — the tui package does not import the settings
- * package, mirroring the other `*Like` seams.
- */
-type SettingsProviderLike = {
-  readonly writable?: boolean
-  describe(options?: { redactSecrets?: boolean }): readonly {
-    ns: unknown
-    revision: number
-    user?: unknown
-  }[]
-  replace(ns: unknown, section: object, expectedRevision?: number): Promise<void>
-}
-
-/** Whether an error is the settings provider's revision-conflict rejection. */
-function isSettingsConflict(error: unknown): boolean {
-  const candidate = error as { name?: unknown; code?: unknown } | null
-  if (candidate === null || typeof candidate !== 'object') return false
-  return candidate.code === 'SETTINGS_CONFLICT' || candidate.name === 'SettingsConflictError'
 }
 
 /**

@@ -7,6 +7,7 @@
 
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
+import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 
 /** The three approval answers: grant once, grant persistently, reject. */
 export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
@@ -245,4 +246,239 @@ export interface Driver {
    */
   listCommands(): readonly { name: string; description?: string; argumentHint?: string }[]
   dispose(): Promise<void>
+}
+
+
+// ---------------------------------------------------------------------------
+// Driver configuration and structural service seams shared by
+// harness/driver.ts and its extracted helper modules (usage-view,
+// shell-output, approval-preview). Pure structure only — this file must not
+// contain harness-package imports (check:tui-boundary), so the two seams that
+// reference the agent type stay in harness/driver.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the TUI harness driver. `branchProbe` defaults to
+ * `gitBranchOf` (harness/shell-output); `exportDir` defaults to
+ * `$DSH_HOME/tui/exports` (same resolution as `resume-target`).
+ */
+export interface DriverConfig {
+  cwd?: string
+  agentPreset?: string
+  sessionId?: string
+  provider?: string
+  model?: string
+  /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
+  historyDir?: string
+  /**
+   * Git-branch probe used by the statusline (best-effort, never throws).
+   * Injectable so tests avoid a real child process; defaults to
+   * `gitBranchOf`.
+   */
+  branchProbe?: (cwd: string) => Promise<string | undefined>
+  /**
+   * Output directory for `/export-md` when no path is given. Defaults to
+   * `$DSH_HOME/tui/exports` (same resolution as `resume-target`).
+   */
+  exportDir?: string
+  /**
+   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
+   * Injectable so tests capture the sequence; production wires it to the live
+   * terminal in plugin.ts (safe inline — the sequence paints nothing).
+   */
+  copyWrite?: (sequence: string) => void
+}
+
+export type ToolsLike = {
+  get(name: string, scope?: unknown): {
+    presentCall?(args: unknown): ToolCallView | undefined
+    presentResult?(args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
+  } | undefined
+}
+
+/**
+ * Structural stand-in for the deployment's `agentDefaultModel` service
+ * (settings.yaml's `agent-default-model`), which the headless bundle seeds
+ * agents from. `currentSelection()` returns the resolved default or undefined
+ * when no default is configured. A carried `reasoningEffort` is seeded into
+ * the selection too — but only after the llm service confirms the model
+ * advertises it ({@link resolveEfforts}); an invalid or unresolvable effort is
+ * silently dropped to the bare pair, which is always legal.
+ */
+export type AgentDefaultModelLike = {
+  currentSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined
+}
+
+export type LlmLike = {
+  listProviders(): { id: string }[]
+  listModels(provider: string): Promise<{ provider: string; id: string; name: string }[]>
+  /**
+   * Optional model-metadata lookup used to validate reasoning-effort writes.
+   * Optional so existing llm stubs without it keep working: every effort
+   * consumer treats absence as "unresolvable" and fails closed (or writes the
+   * bare pair for /model, which never needs validation).
+   */
+  resolveModelInfo?(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    reasoning?: {
+      efforts: readonly { id: string; name: string; description?: string }[]
+      defaultEffort?: string
+    }
+  }>
+}
+
+export type PersistenceLike = {
+  list(signal?: AbortSignal): Promise<{
+    id: string
+    cwd?: string
+    createdAt: number
+    updatedAtMs?: number
+    parentSession?: string
+  }[]>
+}
+
+/**
+ * Structural stand-in for the deployment's `sessionQuery` service: batch
+ * title reads for the /resume picker. One result per requested id —
+ * operational failures are isolated per id (`status: 'rejected'`), and the
+ * fulfilled value carries the session header plus its latest title snapshot.
+ */
+export type SessionTitleResultLike =
+  | {
+    status: 'fulfilled'
+    /** Requested session id — the join key. Do not use `value.session.id`. */
+    sessionId: string
+    value: { session: { id: string }; title?: { title: string } }
+  }
+  | { status: 'rejected'; sessionId?: string }
+
+export type SessionQueryLike = {
+  readTitleSnapshots(ids: readonly string[], signal?: AbortSignal): Promise<readonly SessionTitleResultLike[]>
+}
+
+/**
+ * `subagent/start` snapshot. The real `SubagentRunInfo` is declared in
+ * the subagent package (via cordis module augmentation), which the tui
+ * package doesn't import — so a structural local type stands in. Fields are
+ * `unknown` because the driver stringifies them into the view layer.
+ */
+export type SubagentRunInfoLike = {
+  runId: unknown
+  provider: unknown
+  id: unknown
+  local: boolean
+}
+
+/**
+ * `subagent/end` snapshot. `stopReason` and `lastAssistantMessage` are
+ * optional on the payload; only `stopReason` is surfaced to the view.
+ */
+export type SubagentRunEndInfoLike = {
+  runId: unknown
+  provider: unknown
+  id: unknown
+  local: boolean
+  stopReason?: unknown
+  lastAssistantMessage?: unknown
+}
+
+/**
+ * Structural stand-in for the deployment's `shell` service (ShellExecutor's
+ * resolve→run seam), which the tui package doesn't import. `resolve` fills
+ * the request's defaults/caps; `run` executes the resolved spec and reports
+ * the first-cause outcome. Absent service → the driver degrades to a direct
+ * child process (see `runShellCommand`).
+ */
+export type ShellExecSpecLike = {
+  command: string
+  workdir: string
+  timeoutMs: number
+  stdoutMaxBytes: number
+}
+
+export type ShellRunResultLike = {
+  /** Exit code; null when the process died from a signal. */
+  exitCode: number | null
+  /** True when the executor's timeout was the first cause to cut the command. */
+  timedOut: boolean
+  stdout: { text: string }
+  stderr: { text: string }
+}
+
+export type ShellExecutorLike = {
+  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
+  run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
+}
+
+/**
+ * Structural stand-in for the sessionProjections registry
+ * (dsh-session-projection package, via token-meter's augmentation),
+ * which the tui package doesn't import — same pattern as the other `*Like`
+ * seams. `onChanged` fires once per client-visible unit whose state changed;
+ * `stateOf` is the live read (undefined when the key is not registered).
+ */
+export type SessionProjectionsLike = {
+  onChanged(listener: (session: { id: unknown }, key: string, value: unknown, seq: number) => void): () => void
+  stateOf(session: unknown, key: string): unknown
+}
+
+/**
+ * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
+ * field name; `inputTokens` is accepted defensively so a shape drift
+ * degrades to "no tokens" instead of NaN. Cache fields are optional —
+ * compositions without prompt caching simply omit those lines.
+ */
+export type TokenUsageStateLike = {
+  totals?: {
+    uncachedInputTokens?: number
+    inputTokens?: number
+    outputTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+  }
+}
+
+/** Normalized token totals shared by the HUD and `/cost`. */
+export interface TokenUsageTotals {
+  input: number
+  output: number
+  cacheRead?: number
+  cacheWrite?: number
+}
+
+/** `contextPressure` projection state (subset the HUD reads). */
+export type ContextPressureStateLike = {
+  contextWindow?: number
+  pressureTokens?: number
+  surfaceTokens?: number
+  sampledSurfaceTokens?: number
+}
+
+/**
+ * `contextBreakdown` projection state (subset the usage panel reads): the
+ * projected context token count per content role.
+ */
+export type ContextBreakdownStateLike = {
+  system?: number
+  tools?: number
+  messages?: number
+}
+
+/**
+ * Structural seam for the deployment settings provider: the pieces the
+ * always-allow write path needs (namespace descriptors and whole-section
+ * replace). Declared locally — the tui package does not import the settings
+ * package, mirroring the other `*Like` seams.
+ */
+export type SettingsProviderLike = {
+  readonly writable?: boolean
+  describe(options?: { redactSecrets?: boolean }): readonly {
+    ns: unknown
+    revision: number
+    user?: unknown
+  }[]
+  replace(ns: unknown, section: object, expectedRevision?: number): Promise<void>
 }

@@ -18,7 +18,6 @@ import {
 	getKeybindings,
 	isKeyRelease,
 	type Component,
-	type Terminal,
 	type TUI,
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
@@ -29,8 +28,8 @@ import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
-import { openSystemUrl, truncateActive } from './root-utils.ts'
-import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
+import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, truncateActive } from './root-utils.ts'
+import { createEditorTheme, createTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
 import {
@@ -44,44 +43,9 @@ import {
   createUsagePanelBox,
 } from './overlays.ts'
 
-export interface BuildRootOptions {
-	terminal?: Terminal
-	onQuit?: () => void
-	/**
-	 * 'regular' (default) renders inline into the main screen scrollback;
-	 * 'fullscreen' enters the alternate screen on start: the transcript scrolls
-	 * inside a primary ScrollView while the dock (queue, todos, overlays,
-	 * editor, statusline) stays pinned at the bottom.
-	 */
-	uiMode?: TuiMode
-	/** Fullscreen-only: mouse capture for wheel scrolling and app-owned selection. Default true. */
-	mouse?: boolean
-	/**
-	 * Per-role palette overrides for the terminal theme. Every role accepts a
-	 * basic ANSI color name or a raw SGR code string; invalid values keep the
-	 * built-in default, so an absent (or partial) override renders exactly like
-	 * the historical fixed palette.
-	 */
-	theme?: ThemeOverrides
-}
+import type { BuildRootOptions, RootHandle } from './root-types.ts'
 
-/** How long after the first idle Ctrl+C a second press still quits (ms). */
-const DOUBLE_PRESS_WINDOW_MS = 2000
-
-
-export interface RootHandle {
-	readonly tui: TUI
-	readonly editor: Editor
-	readonly mode: TuiMode
-	destroy(): void
-	/**
-	 * Stop the surface. In fullscreen mode this leaves the alternate screen
-	 * with the final frame preserved, then replays the chrome through a one-shot
-	 * main-screen renderer so native scrollback ends up with the same inline
-	 * layout a regular session would have produced.
-	 */
-	stopForExit(): void
-}
+export type { BuildRootOptions, RootHandle }
 
 /**
  * Build the pi-tui render tree.
