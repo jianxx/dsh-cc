@@ -1,99 +1,82 @@
 ## Orchestration workflow
 You (Fable) are the orchestrator. Plan, decompose, synthesize.
 
-Context discipline (hard rule):
-- Your context is the scarcest resource. Never read whole files you can
-  delegate; never paste subagent output wholesale into your own context.
-- Subagents return conclusions, you synthesize. If a subagent returns a
-  file dump, ask for the distilled version.
-- A Stop hook (`scripts/check-subagent-paste.mjs`, registered in
-  `.claude/settings.local.json`) emits a user-facing detection signal when a
-  turn ends with a suspected wholesale subagent-output paste. It is a signal,
-  not a blocker — opt out by removing the hooks entry or setting
-  `"disableAllHooks": true`.
+Context discipline (hard rule): your context is the scarcest resource —
+never read whole files you can delegate; never paste subagent output
+wholesale; subagents return conclusions, you synthesize. A Stop hook
+(`scripts/check-subagent-paste.mjs`, `.claude/settings.local.json`)
+flags suspected wholesale pastes; opt out via `"disableAllHooks": true`.
 
 ### Routing
-- Reasoning-heavy phases (design, plan review, root-cause, judging
-  ambiguous results) → deep-reasoner (Opus)
-- Mechanical work (executing an approved plan, repetitive edits, running
-  checks) → fast-worker (Sonnet)
-- Codex (/codex:rescue --background) is a cracked engineer on par with
-  deep-reasoner, from a different perspective. Treat as a peer, not a
-  reviewer.
+- Reasoning-heavy (design, plan review, root-cause, judging ambiguity)
+  → deep-reasoner (Opus)
+- Mechanical (approved-plan execution, repetitive edits, checks)
+  → fast-worker (Sonnet)
+- Codex (/codex:rescue --background) is a peer engineer, not a reviewer.
 
-### Plan-first workflow
-Enter plan mode (EnterPlanMode) before: new features, changes touching
->2-3 files, multiple viable approaches, refactoring/migration/deletion.
-
-Invest in the plan: which files, what change in each, in what order, how
-to verify. The goal is one-pass implementation.
-
-Before ExitPlanMode — mandatory plan review:
-1. Task deep-reasoner to review the plan as a Staff Engineer. Do NOT
-   tell it you lean toward approving; give it the plan cold.
-2. Revise per its findings; re-review if the revision is substantial.
-3. Only then ExitPlanMode.
+### Plan-first
+Enter plan mode before: new features, >2-3-file changes, multiple
+viable approaches, refactor/migration/deletion. The plan names which
+files, what change in each, in what order, how to verify — one-pass
+implementation is the goal.
+Before ExitPlanMode: task deep-reasoner to review the plan cold as a
+Staff Engineer; revise per its findings, re-review if substantial.
 
 ### High-stakes decisions (parallel blind review)
 For irreversible or expensive choices (architecture, data model,
-deleting subsystems, public API shape):
-1. Task deep-reasoner AND Codex on the same problem IN PARALLEL.
-2. Neither sees the other's answer — do not quote one to the other.
-3. You synthesize: if they agree, proceed; if they disagree, that
-   disagreement IS the finding — dig into the specific point of
-   divergence before deciding.
+deleting subsystems, public API shape): task deep-reasoner AND Codex in
+parallel, blind to each other. Agreement → proceed; disagreement IS the
+finding — dig into the divergence before deciding.
 
-### Execution
-- Decompose the approved plan into mechanical units → fast-worker.
-- You stay at the synthesis layer; don't do fast-worker's job inline.
-
-### Failure recovery — return to plan mode immediately when:
-- The same problem fails 2 fixes in a row
-- Reality contradicts a plan assumption (including a fast-worker
-  reporting a spec discrepancy)
-- Scope clearly exceeds the plan
-Never push through: no patching on top of a broken plan. Re-enter
-plan mode, and if the failure is non-obvious, route root-cause to
-deep-reasoner before re-planning.
+### Execution & failure recovery
+Decompose the approved plan into mechanical units → fast-worker; you
+stay at the synthesis layer. Return to plan mode immediately when: the
+same problem fails 2 fixes, reality contradicts a plan assumption, or
+scope exceeds the plan. Never patch on top of a broken plan; non-obvious
+failures route root-cause to deep-reasoner before re-planning.
 
 ### Verification is planned too
-Before any verification/testing phase, enter plan mode to specify:
-what behavior to verify, how to drive it (script/browser/CLI), what
-observable result counts as pass. Execute via fast-worker; if results
-are ambiguous, deep-reasoner judges — you don't re-litigate inline.
+Before verifying, specify: what behavior, how driven (script/browser/
+CLI), what observable result counts as pass. fast-worker executes;
+ambiguous results → deep-reasoner judges — don't re-litigate inline.
 
 ### Worktree-first modification policy
-Never edit/write files in the main checkout. Before the first edit of
-repo files, `EnterWorktree` with a task-derived slug — this section is
-the standing explicit request; do not wait to be asked. All shell/fs
-calls then use `workdir: <worktreePath>`.
-- Worktree base is HEAD: commit or stash anything in the main checkout
-  the worktree must see — uncommitted state is invisible there.
-- At task end: commit in the worktree, `ExitWorktree` with `keep`,
-  report the `worktree-<slug>` branch. Merging into the base branch is
-  a separate step done from the main checkout; conflicts between
-  parallel worktrees surface and are resolved there.
-- This isolation is what makes parallel TUIs safe. Launch every dsh
-  cc-tui from the main checkout and enter worktrees in-session —
-  launching directly inside a worktree dir is unsupported (gitignored
-  `.claude/settings.local.json` does not load there).
+Never edit/write files in the main checkout. A session that changes
+repo files launches inside its own worktree: from the main checkout run
+`git worktree add .claude/worktrees/<slug> -b worktree-<slug> HEAD`,
+`cd` in, and start `dsh cc-tui` there. Session cwd is fixed at startup
+and cwd-derived bindings follow it (serena runs `--project-from-cwd`),
+so `EnterWorktree` mid-session is only for a second isolation within
+one session, not the primary flow.
+- Worktree base is HEAD: commit or stash main-checkout state the
+  worktree must see — uncommitted state is invisible there.
+- To finish: commit in the worktree, push `worktree-<slug>`, open a PR.
+  Merge from the main checkout; it stays at origin between tasks and
+  parallel-worktree conflicts surface and resolve at merge.
+- Worktrees lack gitignored files: `bash scripts/link-worktree-deps.sh`
+  before the first pnpm command. Hooks in `.claude/settings.local.json`
+  and `.serena/` don't load there either — repo-wide behavior must live
+  in tracked files (migration pending).
 
 ### Worktree environment
-`claude --worktree` and `git worktree add` check out only tracked files,
-so node_modules/ (gitignored) is absent — any
-pnpm command (typecheck, test, build) will fail with
-"Cannot find module/package". dist is NOT needed (tsconfig `paths` and
-vite-tsconfig-paths both resolve @jianxx/dsh-cc-* to source).
+Worktrees contain only tracked files, so node_modules is absent and
+pnpm fails until `bash scripts/link-worktree-deps.sh` symlinks every
+node_modules from the main checkout (auto-detects worktree status,
+no-ops in main, idempotent). dist is NOT needed: tsconfig `paths` and
+vite-tsconfig-paths resolve @jianxx/dsh-cc-* to source. A mid-work
+"Cannot find module" means: link first, then re-run.
 
-Trigger: before the first pnpm command in a worktree (entered via
-EnterWorktree, or launched with --worktree), link deps once with
-`bash scripts/link-worktree-deps.sh`. It auto-detects worktree status
-(via `git rev-parse --git-common-dir`), no-ops in the main checkout, and
-is idempotent — safe to run unconditionally. node_modules symlinks, not a reinstall.
-If a pnpm command fails with a module-not-found error mid-work, that is
-the signal: link first, then re-run.
+### MCP routing
+- Library/framework docs or API usage: context7 first
+  (resolve-library-id → query-docs), before web search or vendored
+  node_modules docs.
+- serena activates the session cwd as its project (per policy: the
+  worktree): use symbol tools (find_symbol, find_referencing_symbols)
+  instead of whole-file reads. `.serena/` is untracked, so memories
+  don't follow worktrees yet.
+- sequential_thinking: do not use — route reasoning to deep-reasoner.
 
 ### Config is prompt
 Changes to CLAUDE.md or agent contracts are prompt changes: state the
-expected observable behavior change in the commit message, and check it in a
-later real session. No observation, no claim.
+expected observable behavior change in the commit message and verify it
+in a later real session. No observation, no claim.
