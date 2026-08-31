@@ -32,6 +32,7 @@ if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
 pnpm check:spec-deps
 pnpm check:deep-imports
+# 一手 .ts 硬门 ≤500 行(空基线);pi-tui 与 tests/ 豁免,见 scripts/check-file-size.mjs
 pnpm check:size
 pnpm typecheck
 pnpm run bundle:client
