@@ -4,7 +4,6 @@
  * @module @jianxx/dsh-cc-tui/components/root
  */
 
-import { spawn } from 'node:child_process'
 import {
 	Container,
 	Editor,
@@ -30,6 +29,7 @@ import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
+import { openSystemUrl, truncateActive } from './root-utils.ts'
 import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
@@ -65,15 +65,9 @@ export interface BuildRootOptions {
 	theme?: ThemeOverrides
 }
 
-/** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
-const TODO_ACTIVE_CAP = 60
-
 /** How long after the first idle Ctrl+C a second press still quits (ms). */
 const DOUBLE_PRESS_WINDOW_MS = 2000
 
-function truncateActive(content: string): string {
-	return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
-}
 
 export interface RootHandle {
 	readonly tui: TUI
@@ -87,18 +81,6 @@ export interface RootHandle {
 	 * layout a regular session would have produced.
 	 */
 	stopForExit(): void
-}
-
-/**
- * Open an OSC 8 hyperlink with the OS handler. Fullscreen mouse capture takes
- * over the terminal's native link activation, so clicks are routed here.
- */
-function openSystemUrl(url: string): void {
-	const child = process.platform === 'win32'
-		? spawn('cmd.exe', ['/c', 'start', '', url], { stdio: 'ignore', detached: true })
-		: spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore', detached: true })
-	child.on('error', () => {})
-	child.unref()
 }
 
 /**

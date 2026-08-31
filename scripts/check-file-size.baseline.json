@@ -1,12 +1,8 @@
 {
-  "packages/core/tools/src/code-mode.ts": 673,
   "packages/core/tools/src/index.ts": 2016,
-  "packages/core/tools/src/json-schema.ts": 656,
   "packages/core/tools/src/py-types.ts": 818,
-  "packages/core/tools/src/schema.ts": 617,
   "packages/hooks/hooks-claude-code/src/index.ts": 860,
-  "packages/interaction/permission-rules/src/index.ts": 518,
-  "packages/ui/tui/src/components/root.ts": 583,
+  "packages/ui/tui/src/components/root.ts": 565,
   "packages/ui/tui/src/harness/driver.ts": 2523,
   "packages/ui/tui/src/store.ts": 802
 }

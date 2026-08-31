@@ -19,14 +19,13 @@ import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { ccToolAliases } from '@jianxx/dsh-cc-tools'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 // Side-effect type import: declaration-merges `ctx.shell` (the capability fact
 // `sandboxMode` this plugin reads for the sandboxed-bash exemption). No value
 // dependency on the seam.
 import type {} from '@deepseek-ai/dsh-shell'
-import { parseRule, ruleString, contentMatches } from './parser.ts'
+import { parseRule, ruleString } from './parser.ts'
 import { evaluatePermission, mergeRuleSets } from './evaluate.ts'
 import { assessBashCommand, assessFilePath, type RiskAssessment } from './classifier.ts'
 import {
@@ -44,6 +43,7 @@ import {
   foldResumeSandbox,
   setPermissionMode,
 } from './mode.ts'
+import { isBashToolName, ruleMatches, subjectOf } from './matchers.ts'
 
 export {
   foldPermissionMode,
@@ -334,38 +334,11 @@ export class PermissionRulesService extends Service {
     for (const dispose of this.guardDisposers) dispose()
     this.guardDisposers = this.bypassImmuneRules.map(rule =>
       this.ctx.tools.guard((exec) => {
-        const subject = this.subjectOf(exec)
-        if (subject === undefined || !this.ruleMatches(rule, exec.name, subject)) return undefined
+        const subject = subjectOf(exec, this.bashToolName)
+        if (subject === undefined || !ruleMatches(rule, exec.name, subject)) return undefined
         return `denied by permission rule ${ruleString(rule.toolName, rule.content)} [${rule.source}] (bypass-immune)`
       }),
     )
-  }
-
-  /** Whether a rule's tool name and content (when present) match a call. */
-  private ruleMatches(rule: PermissionRule, toolName: string, subject: string): boolean {
-    if (!this.ruleMatchesTool(rule, toolName)) return false
-    if (rule.content === undefined || rule.matcher === undefined) return false
-    return contentMatches(rule.matcher, subject)
-  }
-
-  /** Whether an authored rule's tool name answers to a harness call's tool name. */
-  private ruleMatchesTool(rule: PermissionRule, toolName: string): boolean {
-    // The harness exec.name is lowercase; the rule preserves its authored CC
-    // spelling, so compare through the CC↔harness alias map.
-    return ccToolAliases(toolName).includes(rule.toolName)
-  }
-
-  /** Whether a harness call name counts as the configured bash tool. */
-  private isBashToolName(name: string): boolean {
-    return name === this.bashToolName || ccToolAliases(name).includes(this.bashToolName)
-  }
-
-  /** Extract the call subject for content matching (shell command or file path). */
-  private subjectOf(exec: ToolExecution): string | undefined {
-    const args = exec.arguments as Record<string, unknown>
-    if (this.isBashToolName(exec.name) && typeof args.command === 'string') return args.command
-    if (typeof args.file_path === 'string') return args.file_path
-    return undefined
   }
 
   /** The effective mode for one call: plan overlays, else the session override. */
@@ -379,7 +352,7 @@ export class PermissionRulesService extends Service {
   /** Whether a call is sandboxed bash for the whole-tool-ask exemption. */
   private sandboxedBash(exec: ToolExecution): boolean {
     if (!this.config.exemptSandboxedBashFromToolAsk) return false
-    if (!this.isBashToolName(exec.name)) return false
+    if (!isBashToolName(exec.name, this.bashToolName)) return false
     const mode = this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined
     return mode !== undefined && mode !== 'danger-full-access'
   }
@@ -393,7 +366,7 @@ export class PermissionRulesService extends Service {
     if (this.config.classifierEnabled === false) return { level: 'LOW', reasons: [] }
     const args = exec.arguments as Record<string, unknown>
     const session = exec.agent?.session
-    if (this.isBashToolName(exec.name) && typeof args.command === 'string') {
+    if (isBashToolName(exec.name, this.bashToolName) && typeof args.command === 'string') {
       return assessBashCommand(args.command, this.settingsSection().dangerousPatterns)
     }
     if (this.fileEditTools.has(exec.name) && typeof args.file_path === 'string') {
@@ -425,7 +398,7 @@ export class PermissionRulesService extends Service {
       if (mode === 'bypassPermissions') return { kind: 'allow' }
       return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
     }
-    const subject = this.subjectOf(exec)
+    const subject = subjectOf(exec, this.bashToolName)
     const decision = evaluatePermission({
       toolName: exec.name,
       ...subject === undefined ? {} : { subject },
