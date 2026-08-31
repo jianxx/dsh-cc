@@ -53,6 +53,9 @@ interface PermissionPickerCalls {
 
 interface SessionSwitcherCalls {
   moved: number[]
+  typed: string[]
+  backspaced: number
+  scopeToggled: number
   submitted: number
   cancelled: number
 }
@@ -107,6 +110,9 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
   }
   const sessionSwitcherCalls: SessionSwitcherCalls = {
     moved: [],
+    typed: [],
+    backspaced: 0,
+    scopeToggled: 0,
     submitted: 0,
     cancelled: 0,
   }
@@ -194,6 +200,15 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     },
     sessionSwitcherMove(delta) {
       sessionSwitcherCalls.moved.push(delta)
+    },
+    sessionSwitcherType(text) {
+      sessionSwitcherCalls.typed.push(text)
+    },
+    sessionSwitcherBackspace() {
+      sessionSwitcherCalls.backspaced += 1
+    },
+    sessionSwitcherToggleScope() {
+      sessionSwitcherCalls.scopeToggled += 1
     },
     async sessionSwitcherSubmit() {
       sessionSwitcherCalls.submitted += 1
@@ -643,6 +658,8 @@ describe('handleComposerInput permission picker routing', () => {
       focused: 0,
       switching: false,
       currentId: 's-1',
+      query: '',
+      scope: 'cwd',
     })
     const driver = sink(state)
     handleComposerInput(driver, '\r')
@@ -704,6 +721,8 @@ function switcherState(overrides: Partial<SessionSwitcherView> = {}): TuiState {
     focused: 0,
     switching: false,
     currentId: 's-first',
+    query: '',
+    scope: 'cwd',
     ...overrides,
   })
 }
@@ -728,10 +747,36 @@ describe('handleComposerInput session switcher routing', () => {
     expect(driver.sessionSwitcherCalls.submitted).toBe(1)
   })
 
-  it('escape cancels the switcher', () => {
+  it('escape cancels the switcher (the two-stage clear-then-close lives in the driver)', () => {
     const driver = sink(switcherState())
     handleComposerInput(driver, '\x1b')
     expect(driver.sessionSwitcherCalls.cancelled).toBe(1)
+  })
+
+  it('tab toggles the scope', () => {
+    const driver = sink(switcherState())
+    const action = handleComposerInput(driver, '\t')
+    expect(driver.sessionSwitcherCalls.scopeToggled).toBe(1)
+    expect(action).toEqual({ kind: 'none' })
+  })
+
+  it('shift+tab is consumed but is NOT the scope toggle (plain tab only)', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, '\x1b[Z')
+    expect(driver.sessionSwitcherCalls.scopeToggled).toBe(0)
+  })
+
+  it('backspace edits the query filter', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, '\x7f')
+    expect(driver.sessionSwitcherCalls.backspaced).toBe(1)
+  })
+
+  it('printable characters type into the query filter', () => {
+    const driver = sink(switcherState())
+    handleComposerInput(driver, 'f')
+    handleComposerInput(driver, 'i')
+    expect(driver.sessionSwitcherCalls.typed).toEqual(['f', 'i'])
   })
 
   it('all other keys are consumed and never reach the editor (modal)', () => {
@@ -763,6 +808,8 @@ describe('handleComposerInput session switcher routing', () => {
       focused: 0,
       switching: false,
       currentId: 's-first',
+      query: '',
+      scope: 'cwd',
     })
     const driver = sink(state)
     handleComposerInput(driver, '\r')
@@ -843,6 +890,8 @@ describe('handleComposerInput todo panel routing', () => {
       focused: 0,
       switching: false,
       currentId: 's-first',
+      query: '',
+      scope: 'cwd',
     })
     const driver = sink(state)
     handleComposerInput(driver, '\r')

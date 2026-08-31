@@ -25,6 +25,7 @@ import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
 import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
+import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
@@ -32,7 +33,7 @@ import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
-import { writeResumeTarget } from '../resume-target.ts'
+import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import { formatStatusLine, shortenSession } from '../statusline.ts'
@@ -169,7 +170,32 @@ type LlmLike = {
 }
 
 type PersistenceLike = {
-  list(signal?: AbortSignal): Promise<{ id: string; cwd?: string; createdAt: number }[]>
+  list(signal?: AbortSignal): Promise<{
+    id: string
+    cwd?: string
+    createdAt: number
+    updatedAtMs?: number
+    parentSession?: string
+  }[]>
+}
+
+/**
+ * Structural stand-in for the deployment's `sessionQuery` service: batch
+ * title reads for the /resume picker. One result per requested id —
+ * operational failures are isolated per id (`status: 'rejected'`), and the
+ * fulfilled value carries the session header plus its latest title snapshot.
+ */
+type SessionTitleResultLike =
+  | {
+    status: 'fulfilled'
+    /** Requested session id — the join key. Do not use `value.session.id`. */
+    sessionId: string
+    value: { session: { id: string }; title?: { title: string } }
+  }
+  | { status: 'rejected'; sessionId?: string }
+
+type SessionQueryLike = {
+  readTitleSnapshots(ids: readonly string[], signal?: AbortSignal): Promise<readonly SessionTitleResultLike[]>
 }
 
 type ToolsLike = {
@@ -751,18 +777,37 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const agentOptions = config.provider !== undefined && config.model !== undefined
     ? { provider: config.provider, model: config.model }
     : undefined
-  const handle: AgentHandle = resume
-    ? await ctx.agents.resume({
-      resumeSessionId: sessionId,
-      setup: withSelection,
-      ...agentOptions === undefined ? {} : { agentOptions },
-    })
-    : await ctx.agents.create({
-      sessionId,
-      meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
-      setup: withSelection,
-      ...agentOptions === undefined ? {} : { agentOptions },
-    })
+  const createArgs = {
+    sessionId,
+    meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
+    setup: withSelection,
+    ...agentOptions === undefined ? {} : { agentOptions },
+  }
+  let resumed = false
+  let handle: AgentHandle
+  if (resume) {
+    try {
+      handle = await ctx.agents.resume({
+        resumeSessionId: sessionId,
+        setup: withSelection,
+        ...agentOptions === undefined ? {} : { agentOptions },
+      })
+      resumed = true
+    } catch {
+      // Stale marker: the recorded session is gone. Clear it so the next
+      // `dsh-cc` boot does not loop on the same failure, then degrade to a
+      // fresh session. The empty session must not steal the (now-cleared)
+      // marker — persistResumeTarget only fires after real content.
+      clearResumeTarget()
+      showNotice('上次会话已失效，已开启新会话，可 /resume 手动选择')
+      handle = await ctx.agents.create({
+        ...createArgs,
+        sessionId: SessionId(`tui-${randomUUID()}`),
+      })
+    }
+  } else {
+    handle = await ctx.agents.create(createArgs)
+  }
 
   // Rebindable holder: switchSession replaces handle/agent in-place so every
   // event handler and closure reads the LIVE agent at fire time. The session
@@ -855,7 +900,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
   await seedDefaultModel()
-  writeResumeTarget(String(current.agent.session.id))
+  // Marker semantics: write on resume (self-heal) and after the first real
+  // user prompt — never on an empty fresh boot, which would steal the
+  // previous session from the launcher's auto-resume channel. persistResumeTarget
+  // is idempotent (equal id → skip).
+  let markedContent = resumed
+  const persistResumeTarget = (): void => {
+    const id = String(current.agent.session.id)
+    if (readResumeTarget() === id) return
+    writeResumeTarget(id)
+  }
+  if (resumed) persistResumeTarget()
   // Composer history: load once at boot (oldest→newest); seeded into the
   // editor by root.ts. New prompts are appended on submit (see submit()).
   const historyDir = config.historyDir
@@ -1551,10 +1606,91 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // history through foldHistory (same as boot). Ordering is resume-first-
   // dispose-after so a failed resume leaves the old session alive.
 
-  const listSessions = async (): Promise<readonly { id: string; cwd?: string; createdAt: number }[]> => {
+  const listSessions = async (): Promise<readonly SessionListEntry[]> => {
     const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
     if (persistence === undefined) return []
     return persistence.list()
+  }
+
+  // /resume picker working set: the full unfiltered list lives here while the
+  // overlay is open (state.sessionSwitcher.sessions is the visible slice
+  // only), and a generation token invalidates an in-flight title decoration
+  // when the picker closes or reopens.
+  let allSessions: SessionListEntry[] = []
+  let switcherGeneration = 0
+
+  const toSessionEntryView = (s: SessionListEntry): SessionEntryView => ({
+    id: s.id,
+    ...s.cwd === undefined ? {} : { cwd: s.cwd },
+    createdAt: s.createdAt,
+    ...s.updatedAtMs === undefined ? {} : { updatedAtMs: s.updatedAtMs },
+    ...s.title === undefined ? {} : { title: s.title },
+    ...s.parentSession === undefined ? {} : { parentSession: s.parentSession },
+  })
+
+  /**
+   * Async title decoration for the open picker. The generation token read
+   * before the await guards the continuation: a result landing after the
+   * picker closed (or was reopened, which re-bumped the token) is dropped
+   * instead of mutating a stale view. Per-id rejections are skipped; a
+   * whole-call failure or abort just skips decoration — the overlay never
+   * fails because titles are missing.
+   */
+  const decorateSessionTitles = async (ids: readonly string[]): Promise<void> => {
+    const generation = switcherGeneration
+    const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
+    if (sessionQuery === undefined || ids.length === 0) return
+    let results: readonly SessionTitleResultLike[]
+    try {
+      results = await sessionQuery.readTitleSnapshots(ids)
+    } catch {
+      return
+    }
+    if (generation !== switcherGeneration || state.sessionSwitcher === undefined) return
+    const titles = new Map<string, string>()
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue
+      const title = result.value.title?.title
+      if (title === undefined || title.length === 0) continue
+      // Join on the requested id (`sessionId`), not `value.session.id`.
+      // The latter is a cloned header and is not the batch's identity key —
+      // using it stamps one title onto every row when headers collide.
+      titles.set(result.sessionId, title)
+    }
+    if (titles.size === 0) return
+    const withTitle = (entry: SessionListEntry): SessionListEntry => {
+      const title = titles.get(entry.id)
+      return title === undefined ? entry : { ...entry, title }
+    }
+    allSessions = allSessions.map(withTitle)
+    const sw = state.sessionSwitcher
+    if (sw !== undefined) {
+      emit(setSessionSwitcher(state, { ...sw, sessions: sw.sessions.map(withTitle) }))
+    }
+  }
+
+  // Re-derive the visible list from the working set after a query/scope edit.
+  // Focus follows the current session when it survives the filter, else row 0.
+  const refilterSessionSwitcher = (): void => {
+    const sw = state.sessionSwitcher
+    if (sw === undefined) return
+    const visible = filterSessions(allSessions, {
+      cwd: current.agent.session.header.cwd ?? cwd,
+      scope: sw.scope,
+      query: sw.query,
+      currentId: sw.currentId,
+    })
+    const index = visible.findIndex(s => s.id === sw.currentId)
+    emit(setSessionSwitcher(state, {
+      ...sw,
+      sessions: visible.map(toSessionEntryView),
+      focused: index >= 0 ? index : 0,
+      totalCount: allSessions.length,
+    }))
+    // Second-chance decoration for newly visible, still-untitled rows
+    // (same generation rules, same 50-id cap as the initial open).
+    const untitled = visible.filter(s => s.title === undefined).slice(0, 50).map(s => s.id)
+    if (untitled.length > 0) void decorateSessionTitles(untitled)
   }
 
   const openSessionSwitcher = async (): Promise<void> => {
@@ -1563,21 +1699,40 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
       return
     }
-    const sorted = sessions.slice().sort((a, b) => b.createdAt - a.createdAt)
+    switcherGeneration += 1
+    allSessions = sortByActivity(sessions)
+    // Live header cwd wins over the process cwd: a marker-resumed session can
+    // have been created elsewhere, and the current session must always be
+    // visible in the default (cwd) scope.
+    const scopeCwd = current.agent.session.header.cwd ?? cwd
     const currentId = String(current.agent.session.id)
-    let focused = sorted.findIndex(s => s.id === currentId)
-    if (focused < 0) focused = 0
-    const entries: SessionEntryView[] = sorted.map(s => ({
-      id: s.id,
-      ...s.cwd === undefined ? {} : { cwd: s.cwd },
-      createdAt: s.createdAt,
-    }))
+    const visible = filterSessions(allSessions, {
+      cwd: scopeCwd,
+      scope: 'cwd',
+      query: '',
+      currentId,
+    })
+    const index = visible.findIndex(s => s.id === currentId)
     emit(setSessionSwitcher(state, {
-      sessions: entries,
-      focused,
+      sessions: visible.map(toSessionEntryView),
+      focused: index >= 0 ? index : 0,
       switching: false,
       currentId,
+      query: '',
+      scope: 'cwd',
+      totalCount: allSessions.length,
     }))
+    // Decorate the first screenful asynchronously — the overlay must appear
+    // immediately, not wait for the title reads.
+    void decorateSessionTitles(visible.slice(0, 50).map(s => s.id))
+  }
+
+  const closeSessionSwitcher = (): void => {
+    // Bump the generation so an in-flight decoration lands nowhere, and drop
+    // the working set with the overlay.
+    switcherGeneration += 1
+    allSessions = []
+    emit(setSessionSwitcher(state, undefined))
   }
 
   const switchSession = async (id: string): Promise<void> => {
@@ -1628,6 +1783,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // from the previous session never leaks across a switch.
     await seedDefaultModel(true)
     writeResumeTarget(id)
+    markedContent = false
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.
     emit(clearRows(state))
@@ -1667,7 +1823,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       await switchSession(session.id)
     } finally {
       // Close the overlay whether the switch succeeded or failed.
-      emit(setSessionSwitcher(state, undefined))
+      closeSessionSwitcher()
     }
   }
 
@@ -1707,6 +1863,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
 
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
+      if (markedContent) persistResumeTarget()
       await current.handle.dispose()
       return
     }
@@ -2002,8 +2159,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
     // Persist the prompt (not slash commands — they are commands, not
     // prompts, and would dilute the recall signal). Consecutive duplicates
-    // and the cap are handled inside saveHistory.
+    // and the cap are handled inside saveHistory. This is also the first
+    // real-content signal: mark the session so the launcher can resume it.
     history = saveHistory([...history, draft], historyDir)
+    markedContent = true
+    persistResumeTarget()
     if (state.busy) {
       // Outbox: park the text as a pending chip only. It reaches the agent on
       // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
@@ -2278,11 +2438,38 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     sessionSwitcherMove(delta) {
       emit(moveSessionSwitcherFocus(state, delta))
     },
+    sessionSwitcherType(text) {
+      const sw = state.sessionSwitcher
+      if (sw === undefined || text.length === 0) return
+      emit(setSessionSwitcher(state, { ...sw, query: sw.query + text }))
+      refilterSessionSwitcher()
+    },
+    sessionSwitcherBackspace() {
+      const sw = state.sessionSwitcher
+      if (sw === undefined || sw.query.length === 0) return
+      emit(setSessionSwitcher(state, { ...sw, query: sw.query.slice(0, -1) }))
+      refilterSessionSwitcher()
+    },
+    sessionSwitcherToggleScope() {
+      const sw = state.sessionSwitcher
+      if (sw === undefined) return
+      emit(setSessionSwitcher(state, { ...sw, scope: sw.scope === 'cwd' ? 'all' : 'cwd' }))
+      refilterSessionSwitcher()
+    },
     async sessionSwitcherSubmit() {
       await sessionSwitcherSubmit()
     },
     sessionSwitcherCancel() {
-      emit(setSessionSwitcher(state, undefined))
+      const sw = state.sessionSwitcher
+      if (sw === undefined) return
+      // Two-stage escape: a non-empty query clears the filter first (the
+      // overlay stays open); an empty query closes it.
+      if (sw.query.length > 0) {
+        emit(setSessionSwitcher(state, { ...sw, query: '' }))
+        refilterSessionSwitcher()
+        return
+      }
+      closeSessionSwitcher()
     },
     toggleTodoPanel() {
       if (state.todoPanel !== undefined) {
@@ -2329,6 +2516,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         noticeTimer = undefined
       }
       questionsDispose?.()
+      if (markedContent) persistResumeTarget()
       await current.handle.dispose()
     },
   }

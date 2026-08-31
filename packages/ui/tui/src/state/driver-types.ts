@@ -163,17 +163,28 @@ export interface Driver {
    */
   permissionPickerCancel(): void
   /**
-   * Open the `/resume` session-switcher overlay: loads the session list
-   * (newest-first), parks `sessionSwitcher` state focused on the current
-   * session, or falls back to a status-row notice when no sessions exist.
-   * The arg path (`/resume <id>`) bypasses the overlay and switches directly.
+   * Open the `/resume` session-switcher overlay: loads the session list,
+   * sorts it by last activity, filters it to the current project's cwd (Tab
+   * toggles to all projects), parks `sessionSwitcher` state focused on the
+   * current session, and decorates titles asynchronously — or falls back to
+   * a status-row notice when no sessions exist at all. The arg path
+   * (`/resume <id>`) bypasses the overlay and switches directly.
    */
   openSessionSwitcher(): Promise<void>
   /** Move the session-switcher focus by one row (clamped; no wrap). */
   sessionSwitcherMove(delta: -1 | 1): void
+  /** Append text to the picker's query filter and re-filter (focus resets). */
+  sessionSwitcherType(text: string): void
+  /** Drop the picker query's last character (no-op when empty) and re-filter. */
+  sessionSwitcherBackspace(): void
+  /** Flip the picker scope between this project's cwd and all projects. */
+  sessionSwitcherToggleScope(): void
   /** Switch to the focused session (await {@link Driver.switchSession}) and close the overlay. */
   sessionSwitcherSubmit(): Promise<void>
-  /** Close the overlay without switching. */
+  /**
+   * Two-stage escape: a non-empty query is cleared first (overlay stays
+   * open); an empty query closes the overlay without switching.
+   */
   sessionSwitcherCancel(): void
   /**
    * Toggle the Ctrl+T todo panel: open it focused on the first row when

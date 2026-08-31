@@ -17,16 +17,28 @@ interface FakeSession {
 }
 
 /**
+ * Every session in this spec lives in the `/proj` project by default: the
+ * resume picker filters to the cwd scope by default, so entries without a
+ * cwd would drop out of the visible list.
+ */
+const PROJ_CWD = '/proj'
+
+/** Fill in the default project cwd without overriding an explicit one. */
+const withCwd = (s: FakeSession): FakeSession => ({ cwd: PROJ_CWD, ...s })
+
+/**
  * Minimal ctx stub that supports in-process session switching:
  * - `agents.create` returns the boot session
  * - `agents.resume({ resumeSessionId })` returns a NEW agent for that id
  * - `dispose` on each handle is a spy so tests assert the old handle was torn down
  * - `sessionPersistence.list()` returns the configured session headers
+ * - `sessionQuery` (optional) is passed through for title-decoration tests
  */
 function makeSwitchableCtx(opts: {
   createSession?: FakeSession
   resumeSessions?: Record<string, FakeSession>
-  sessionList?: { id: string; cwd?: string; createdAt: number }[]
+  sessionList?: { id: string; cwd?: string; createdAt: number; updatedAtMs?: number; parentSession?: string }[]
+  sessionQuery?: unknown
 }): {
   ctx: Record<string, unknown>
   disposed: string[]
@@ -34,7 +46,7 @@ function makeSwitchableCtx(opts: {
 } {
   const disposed: string[] = []
   const resumeCalls: { resumeSessionId: string; agentOptions?: unknown }[] = []
-  const createSession = opts.createSession ?? { id: 's-a', events: [], status: 'idle' }
+  const createSession = withCwd(opts.createSession ?? { id: 's-a', events: [], status: 'idle' })
 
   const makeAgent = (s: FakeSession): Record<string, unknown> => ({
     options: s.provider !== undefined && s.model !== undefined
@@ -63,7 +75,10 @@ function makeSwitchableCtx(opts: {
         }
       }
       if (key === 'sessionPersistence') {
-        return { list: async () => opts.sessionList ?? [] }
+        return { list: async () => (opts.sessionList ?? []).map(e => ({ cwd: PROJ_CWD, ...e })) }
+      }
+      if (key === 'sessionQuery') {
+        return opts.sessionQuery
       }
       return undefined
     },
@@ -72,9 +87,9 @@ function makeSwitchableCtx(opts: {
       create: async () => makeHandle(createSession),
       resume: async (req: { resumeSessionId: string; agentOptions?: unknown }) => {
         resumeCalls.push(req)
-        const s = opts.resumeSessions?.[req.resumeSessionId]
-        if (s === undefined) throw new Error(`unknown session: ${req.resumeSessionId}`)
-        return makeHandle(s)
+        const raw = opts.resumeSessions?.[req.resumeSessionId]
+        if (raw === undefined) throw new Error(`unknown session: ${req.resumeSessionId}`)
+        return makeHandle(withCwd(raw))
       },
     },
   }
@@ -105,7 +120,7 @@ describe('createDriver switchSession', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       resumeSessions: { 's-b': { id: 's-b', events: newEvents, status: 'running' } },
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     // Boot session is s-a
     expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
     expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
@@ -132,7 +147,7 @@ describe('createDriver switchSession', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       resumeSessions: { 's-a': { id: 's-a', events: [], status: 'idle' } },
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     await driver.switchSession('s-a')
 
@@ -145,7 +160,7 @@ describe('createDriver switchSession', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       resumeSessions: {}, // 's-b' not registered → resume throws
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     const originalRows = [...driver.state.rows]
 
     await driver.switchSession('s-b')
@@ -215,7 +230,7 @@ describe('createDriver switchSession', () => {
       },
     }
 
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     // Simulate a pending approval by firing the approval/request event.
     const fakeReq = {
@@ -249,7 +264,7 @@ describe('createDriver switchSession', () => {
         { id: 's-2', cwd: '/tmp', createdAt: 2000 },
       ],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     const sessions = await driver.listSessions()
     expect(sessions).toHaveLength(2)
     expect(sessions.map(s => s.id)).toEqual(['s-1', 's-2'])
@@ -294,7 +309,7 @@ describe('createDriver switchSession', () => {
         }),
       },
     }
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     const sessions = await driver.listSessions()
     expect(sessions).toEqual([])
   })
@@ -324,7 +339,7 @@ describe('createDriver /resume session switcher overlay', () => {
         { id: 's-newest', createdAt: 3000 },
       ],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     await driver.submit('/resume')
     const sw = driver.state.sessionSwitcher
@@ -347,7 +362,7 @@ describe('createDriver /resume session switcher overlay', () => {
         { id: 's-b', createdAt: 2000 },
       ],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     expect(driver.state.sessionSwitcher?.focused).toBe(0)
   })
@@ -357,7 +372,7 @@ describe('createDriver /resume session switcher overlay', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       sessionList: [],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     expect(driver.state.sessionSwitcher).toBeUndefined()
     const last = driver.state.rows.at(-1)
@@ -374,7 +389,7 @@ describe('createDriver /resume session switcher overlay', () => {
         { id: 's-c', createdAt: 3000 },
       ],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     // Focus starts at 1 (current = s-b)
     driver.sessionSwitcherMove(-1) // → 0
@@ -393,7 +408,7 @@ describe('createDriver /resume session switcher overlay', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       sessionList: [{ id: 's-b', createdAt: 1000 }],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     driver.sessionSwitcherCancel()
     expect(driver.state.sessionSwitcher).toBeUndefined()
@@ -411,7 +426,7 @@ describe('createDriver /resume session switcher overlay', () => {
         { id: 's-b', createdAt: 2000 },
       ],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     // Focus starts at 1 (current = s-a, sorted newest-first: s-b, s-a)
     expect(driver.state.sessionSwitcher?.focused).toBe(1)
@@ -439,7 +454,7 @@ describe('createDriver /resume session switcher overlay', () => {
         's-b': { id: 's-b', events: [{ type: 'user/message', data: { content: [{ type: 'text', text: 'direct switch' }], source: { kind: 'user' } } }], status: 'idle' },
       },
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     await driver.submit('/resume s-b')
 
@@ -459,7 +474,7 @@ describe('createDriver /resume session switcher overlay', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       resumeSessions: {}, // 's-unknown' not registered
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     await driver.submit('/resume s-unknown')
 
@@ -474,7 +489,7 @@ describe('createDriver /resume session switcher overlay', () => {
       createSession: { id: 's-a', events: [], status: 'idle' },
       sessionList: [{ id: 's-b', createdAt: 1000 }],
     })
-    const driver = await createDriver(ctx as never, {})
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     await driver.submit('/resume')
     // The old restart notice must not appear anywhere in the transcript.
     for (const row of driver.state.rows) {
@@ -482,5 +497,230 @@ describe('createDriver /resume session switcher overlay', () => {
         expect(row.text).not.toMatch(/Restart with/)
       }
     }
+  })
+
+  it('defaults to cwd scope: other-project sessions stay hidden until Tab', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-cur', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-cur', createdAt: 2000 },
+        { id: 's-far', cwd: '/away', createdAt: 3000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+
+    await driver.submit('/resume')
+
+    expect(driver.state.sessionSwitcher?.scope).toBe('cwd')
+    expect(driver.state.sessionSwitcher?.query).toBe('')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-cur'])
+    expect(driver.state.sessionSwitcher?.totalCount).toBe(2)
+
+    // Tab reveals the other project, ordered by activity, with the focus
+    // following the current session into the wider list.
+    driver.sessionSwitcherToggleScope()
+    expect(driver.state.sessionSwitcher?.scope).toBe('all')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-far', 's-cur'])
+    expect(driver.state.sessionSwitcher?.focused).toBe(1)
+
+    // Tab back: the other project hides again.
+    driver.sessionSwitcherToggleScope()
+    expect(driver.state.sessionSwitcher?.scope).toBe('cwd')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-cur'])
+  })
+
+  it('hides forked child sessions from the picker (same inherited title, different ids)', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-root', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-root', createdAt: 1000 },
+        { id: 's-child-a', createdAt: 2000, parentSession: 's-root' },
+        { id: 's-child-b', createdAt: 3000, parentSession: 's-root' },
+        { id: 's-other', createdAt: 4000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-other', 's-root'])
+  })
+
+  it('opens the overlay on an empty cwd scope when other projects have sessions', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-cur', events: [], status: 'idle' },
+      sessionList: [{ id: 's-far', cwd: '/away', createdAt: 3000 }],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+
+    await driver.submit('/resume')
+
+    // The overlay still opens (Tab can reveal the rest) — no status fallback.
+    expect(driver.state.sessionSwitcher?.sessions).toEqual([])
+    expect(driver.state.sessionSwitcher?.totalCount).toBe(1)
+    expect(driver.state.sessionSwitcher?.focused).toBe(0)
+  })
+
+  it('types a query filter, backspaces it away, and refilters with focus tracking', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-alpha', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-alpha', createdAt: 2000 },
+        { id: 's-beta', createdAt: 3000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+
+    driver.sessionSwitcherType('b')
+    expect(driver.state.sessionSwitcher?.query).toBe('b')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-beta'])
+    expect(driver.state.sessionSwitcher?.focused).toBe(0)
+
+    driver.sessionSwitcherType('eta')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-beta'])
+
+    // Backspace past the whole query; the full (cwd-scoped) list returns and
+    // the focus lands back on the current session.
+    driver.sessionSwitcherBackspace()
+    driver.sessionSwitcherBackspace()
+    driver.sessionSwitcherBackspace()
+    driver.sessionSwitcherBackspace()
+    driver.sessionSwitcherBackspace() // already empty — no-op
+    expect(driver.state.sessionSwitcher?.query).toBe('')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-beta', 's-alpha'])
+    expect(driver.state.sessionSwitcher?.focused).toBe(1)
+  })
+
+  it('escape is two-stage: clears a non-empty query first, then closes', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-a', createdAt: 1000 },
+        { id: 's-b', createdAt: 2000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+
+    driver.sessionSwitcherType('zzz') // matches nothing
+    expect(driver.state.sessionSwitcher?.sessions).toEqual([])
+
+    driver.sessionSwitcherCancel()
+    // First stage: query cleared, overlay stays open, list restored.
+    expect(driver.state.sessionSwitcher).toBeDefined()
+    expect(driver.state.sessionSwitcher?.query).toBe('')
+    expect(driver.state.sessionSwitcher?.sessions).toHaveLength(2)
+
+    driver.sessionSwitcherCancel()
+    // Second stage: overlay closes.
+    expect(driver.state.sessionSwitcher).toBeUndefined()
+  })
+
+  it('decorates titles asynchronously from sessionQuery (rejections skipped)', async () => {
+    let release: (() => void) | undefined
+    const sessionQuery = {
+      readTitleSnapshots: async (ids: readonly string[]) => {
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+        return ids.map(id => {
+          if (id === 's-alpha') return { status: 'rejected' as const, sessionId: id }
+          return {
+            status: 'fulfilled' as const,
+            sessionId: id,
+            value: { session: { id }, ...id === 's-beta' ? { title: { title: 'Beta title' } } : {} },
+          }
+        })
+      },
+    }
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-alpha', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-alpha', createdAt: 2000 },
+        { id: 's-beta', createdAt: 3000 },
+      ],
+      sessionQuery,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+
+    await driver.submit('/resume')
+    // The overlay opens immediately, titles not yet applied.
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-beta')?.title).toBeUndefined()
+
+    release?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // Fulfilled title merged; the rejected id and the title-less id stay clean.
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-beta')?.title).toBe('Beta title')
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-alpha')?.title).toBeUndefined()
+  })
+
+  it('drops a late title result after the overlay closed (generation guard)', async () => {
+    let release: (() => void) | undefined
+    const sessionQuery = {
+      readTitleSnapshots: async (ids: readonly string[]) => {
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+        return ids.map(id => ({
+          status: 'fulfilled' as const,
+          sessionId: id,
+          value: { session: { id }, title: { title: `late ${id}` } },
+        }))
+      },
+    }
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      sessionList: [{ id: 's-b', createdAt: 1000 }],
+      sessionQuery,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+
+    await driver.submit('/resume')
+    driver.sessionSwitcherCancel() // closes the overlay before the read resolves
+    release?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The stale result must not resurrect or mutate any overlay state.
+    expect(driver.state.sessionSwitcher).toBeUndefined()
+  })
+
+  it('joins titles on result.sessionId, not value.session.id (cloned headers are not the identity)', async () => {
+    const sessionQuery = {
+      readTitleSnapshots: async (ids: readonly string[]) => ids.map(id => ({
+        status: 'fulfilled' as const,
+        sessionId: id,
+        // Cloned/reused header whose id does NOT match the requested session —
+        // the real sessionQuery API's join key is `sessionId`.
+        value: {
+          session: { id: 's-alpha' },
+          title: { title: id === 's-beta' ? 'Beta title' : 'Alpha title' },
+        },
+      })),
+    }
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-alpha', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-alpha', createdAt: 2000 },
+        { id: 's-beta', createdAt: 3000 },
+      ],
+      sessionQuery,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-alpha')?.title).toBe('Alpha title')
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-beta')?.title).toBe('Beta title')
+  })
+
+  it('skips title decoration when no sessionQuery service is mounted', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      sessionList: [{ id: 's-b', createdAt: 1000 }],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(driver.state.sessionSwitcher?.sessions[0]!.title).toBeUndefined()
   })
 })

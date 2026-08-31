@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootstrapCommand, interceptResume, PROFILE } from '../bootstrap.mjs'
+import { bootstrapCommand, continueHint, interceptResume, PROFILE } from '../bootstrap.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ownVersion = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version
@@ -38,15 +38,20 @@ if (add !== undefined) {
   }
 }
 
-const { env, args } = interceptResume(undefined, process.argv.slice(2), { ...process.env })
+const { env, args, continueRequested } = interceptResume(undefined, process.argv.slice(2), {
+  ...process.env,
+})
+let marker = null
 if (env.DSH_CC_RESUME_SESSION === undefined) {
   try {
-    const marker = readFileSync(join(home, 'tui', 'resume.txt'), 'utf8').trim()
-    if (marker.length > 0) env.DSH_CC_RESUME_SESSION = marker
+    marker = readFileSync(join(home, 'tui', 'resume.txt'), 'utf8').trim()
   } catch {
     // No marker is the common first-run case.
   }
+  if (marker !== null && marker.length > 0) env.DSH_CC_RESUME_SESSION = marker
 }
+const hint = continueHint(continueRequested, env.DSH_CC_RESUME_SESSION, marker)
+if (hint !== null) console.error(hint)
 env.NODE_ENV ??= 'production'
 
 const child = spawn('dsh', ['--profile', PROFILE, ...args], { env, stdio: 'inherit' })
