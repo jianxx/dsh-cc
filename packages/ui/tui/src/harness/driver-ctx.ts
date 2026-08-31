@@ -10,7 +10,8 @@
 
 import type { TuiState } from '../store.ts'
 import type { ShellExecutorLike } from '../state/driver-types.ts'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Context } from '@deepseek-ai/cordis'
 
 /**
  * The slice of createDriver's closed-over state that `!` shell-command
@@ -72,4 +73,29 @@ export interface DriverModeCtx {
 /** Duck-typed surface for the permission-rules engine's mode writepath. */
 export interface PermissionRulesSeam {
   setMode(agent: Agent, mode: string): void
+}
+
+/**
+ * The slice of createDriver's closed-over state that the statusline HUD /
+ * sessionProjections feed needs (driver-hud.ts). `state()` returns the CURRENT
+ * view-model value — createDriver rebinds `state` on every emit, so the
+ * collaborator must read it through a getter rather than a stale snapshot.
+ * `current` and `selection` are passed by reference (createDriver rebinds them
+ * in place across switchSession), so the section always reads the live values.
+ */
+export interface DriverHudCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context for the sessionProjections service lookup. */
+  ctx: Context
+  /** Working directory (process cwd, fallback for the branch probe). */
+  cwd: string
+  /** The rebindable agent holder (switchSession replaces it in place). */
+  current: { agent: Agent }
+  /** Model selection ref; statusline reads reasoningEffort/model from it. */
+  selection: ModelSelectionRef
+  /** Best-effort git-branch probe for the statusline footer. */
+  branchProbe: (dir: string) => Promise<string | undefined>
 }

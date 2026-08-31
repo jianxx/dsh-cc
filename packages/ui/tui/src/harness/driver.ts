@@ -33,15 +33,11 @@ import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createModalQueue, type ModalEntry } from './driver-modal.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
+import { createHudSection } from './driver-hud.ts'
 import {
   breakdownOf,
   formatCostReport,
   occupancyOf,
-  percentOf,
-  sameTodos,
-  sameUsage,
-  todosOf,
-  tokensOf,
   totalsOf,
   usageViewOf,
 } from './usage-view.ts'
@@ -54,7 +50,6 @@ import type {
   DriverConfig,
   LlmLike,
   PersistenceLike,
-  SessionProjectionsLike,
   SessionQueryLike,
   SessionTitleResultLike,
   ShellExecutorLike,
@@ -72,7 +67,7 @@ import { parseEffortChoice } from '../effort-catalog.ts'
 import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
-import { formatStatusLine, shortenSession } from '../statusline.ts'
+import { shortenSession } from '../statusline.ts'
 import {
   applySessionEvent,
   type SessionEventLike,
@@ -104,15 +99,12 @@ import {
   setDraft,
   setEffortPicker,
   setPermissionPicker,
-  setHud,
   setModelPicker,
   setNotice,
   setPermissionMode,
   setQuestion,
   setSessionSwitcher,
-  setTodos,
   setTurnActive,
-  setUsage,
   toggleQuestionOption,
   toggleGlobalCollapse,
   toggleThinking,
@@ -122,12 +114,10 @@ import {
   type ApprovalPreview,
   type ApprovalView,
   type CatalogEntryView,
-  type HudView,
   type QuestionView,
   type SessionEntryView,
   type SubagentRunView,
   type TuiState,
-  type UsageView,
 } from '../store.ts'
 
 export type { DriverConfig, TokenUsageTotals } from '../state/driver-types.ts'
@@ -420,137 +410,22 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   emit(setBusy(state, current.agent.status === 'running'))
 
   // --- Statusline HUD: git branch + sessionProjections feed -----------------
-  // Branch: one best-effort probe at boot and after each switchSession (the
-  // cwd may differ per session). Async is fine — a late landing re-emits so
-  // the footer picks it up; a probe superseded by a switch is dropped by the
-  // sequence check. The probe never throws; failures just omit the segment.
-  // No timer, one probe per (re)bind — zero polling.
-  const branchProbe = config.branchProbe ?? gitBranchOf
-  let branch: string | undefined
-  let branchSeq = 0
-  const refreshBranch = (): void => {
-    const seq = ++branchSeq
-    const dir = current.agent.session.header.cwd ?? cwd
-    void Promise.resolve(branchProbe(dir))
-      .catch(() => undefined)
-      .then(next => {
-        if (seq !== branchSeq || next === branch) return
-        branch = next
-        // Same-reference emit: re-notifies subscribers so root re-reads the
-        // statusline getter with the fresh branch.
-        emit(state)
-      })
-  }
-  refreshBranch()
-
-  // Projections: seed once from stateOf (a resumed session may already be
-  // populated), then keep the hud fresh from the change feed — event-driven,
-  // filtered to the live session so late events from a disposed session are
-  // dropped by the id mismatch.
-  const projections = ctx.get('sessionProjections') as SessionProjectionsLike | undefined
-  const applyHud = (patch: Partial<HudView>): void => {
-    const hud = state.hud
-    const percentSame = patch.contextPercent === undefined || hud?.contextPercent === patch.contextPercent
-    const tokens = patch.tokens
-    const tokensSame = tokens === undefined
-      || (hud?.tokens !== undefined && hud.tokens.input === tokens.input && hud.tokens.output === tokens.output)
-    const detail = patch.contextTokens
-    const detailSame = detail === undefined
-      || (hud?.contextTokens !== undefined
-        && hud.contextTokens.used === detail.used
-        && hud.contextTokens.window === detail.window)
-    if (percentSame && tokensSame && detailSame) return // emit only on an actual change
-    emit(setHud(state, patch))
-  }
-  // Usage panel: each of the three token-meter projections folds its own
-  // section (totals / context occupancy / role breakdown) into one live
-  // snapshot through the same merge — a section its projection never reports
-  // stays absent, and the panel renders that section `n/a`. A read that
-  // yields no section at all (patch undefined) is a no-op.
-  const applyUsage = (patch: UsageView | undefined): void => {
-    if (patch === undefined) return
-    const merged: UsageView = { ...state.usage, ...patch }
-    if (sameUsage(state.usage, merged)) return
-    emit(setUsage(state, merged))
-  }
-  const seedHud = (): void => {
-    const patch: Partial<HudView> = {}
-    if (projections !== undefined) {
-      const tokens = tokensOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
-      if (tokens !== undefined) patch.tokens = tokens
-      const pressure = projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined
-      const percent = percentOf(pressure)
-      if (percent !== undefined) patch.contextPercent = percent
-      const occupancy = occupancyOf(pressure)
-      if (occupancy !== undefined) patch.contextTokens = occupancy
-    }
-    // Replace wholesale: clear first so stale fields from a previous session
-    // never leak, then apply whatever the new session actually has.
-    let next = setHud(state, undefined)
-    if (patch.contextPercent !== undefined || patch.tokens !== undefined || patch.contextTokens !== undefined) {
-      next = setHud(next, patch)
-    }
-    if (next !== state) emit(next)
-  }
-  // Todos: same seeding contract as the HUD — stateOf at (re)bind, then the
-  // change feed. Absent (`null` before the first write) clears the strip so
-  // no cross-session leak survives a switch.
-  const seedTodos = (): void => {
-    const value = projections === undefined
-      ? undefined
-      : projections.stateOf(current.agent.session, 'todos')
-    const todos = todosOf(value)
-    if (sameTodos(state.todos, todos)) return
-    emit(setTodos(state, todos))
-  }
-  seedHud()
-  seedTodos()
-  // Boot may resume a log that ended mid-turn (crashed process): the setBusy
-  // sync above flipped busy from the ground-truth agent status, so anchor the
-  // working line here — deliberately after seedHud, so outputBase reads the
-  // seeded token totals instead of pinning an unseeded baseline.
-  if (state.busy) {
-    emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
-  if (projections !== undefined) {
-    projections.onChanged((session, key, value) => {
-      if (session.id !== current.agent.session.id) return
-      if (key === 'tokenUsage') {
-        const usage = value as TokenUsageStateLike | undefined
-        const tokens = tokensOf(usage)
-        if (tokens !== undefined) applyHud({ tokens })
-        applyUsage(usageViewOf(totalsOf(usage), undefined, undefined))
-        // Working-line rebase guard: an anchor created before the HUD was
-        // seeded carries outputBase === undefined; the first tokenUsage
-        // change pins it. Strictly turn-MODIFYING (turn must already exist) —
-        // a tokenUsage emit while idle must never conjure a phantom anchor.
-        // setTurnActive re-derives verbIndex deterministically from the
-        // unchanged startedAt, so this is a pure baseline pin; the live
-        // stepStartedAt passes through so pinning never resets a mid-step
-        // clock.
-        const turn = state.turn
-        if (turn !== undefined && turn.outputBase === undefined && tokens !== undefined) {
-          emit(setTurnActive(state, { startedAt: turn.startedAt, outputBase: tokens.output, stepStartedAt: turn.stepStartedAt }))
-        }
-      } else if (key === 'contextPressure') {
-        const pressure = value as ContextPressureStateLike | undefined
-        const percent = percentOf(pressure)
-        const occupancy = occupancyOf(pressure)
-        if (percent === undefined && occupancy === undefined) return
-        applyHud({
-          ...percent === undefined ? {} : { contextPercent: percent },
-          ...occupancy === undefined ? {} : { contextTokens: occupancy },
-        })
-        applyUsage(usageViewOf(undefined, occupancy, undefined))
-      } else if (key === 'todos') {
-        const todos = todosOf(value)
-        if (sameTodos(state.todos, todos)) return
-        emit(setTodos(state, todos))
-      } else if (key === 'contextBreakdown') {
-        applyUsage(usageViewOf(undefined, undefined, breakdownOf(value)))
-      }
-    })
-  }
+  // Migrated to a free-function collaborator (harness/driver-hud.ts) so the
+  // factory stays under budget. Boot sequence runs inside the section on
+  // construction; switchSession re-seeds via the exposed handles.
+  const hud = createHudSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    current,
+    selection,
+    branchProbe: config.branchProbe ?? gitBranchOf,
+  })
+  // Handles createDriver still calls directly: the usage panel (runLocal)
+  // applies live projections, the public driver getters read the statusline,
+  // and switchSession re-seeds HUD/todos/branch after a rebind.
+  const { refreshBranch, seedHud, seedTodos, applyUsage, projections, statusLineOf } = hud
 
   ctx.on('session/event', (session, event: SessionEvent) => {
     if (session.id !== current.agent.session.id) return
@@ -1524,21 +1399,6 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit(setTurnActive(setBusy(state, true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
   }
 
-  const statusLineOf = (width?: number): string => {
-    const effort = selection.current?.reasoningEffort
-    return formatStatusLine({
-      cwd: current.agent.session.header.cwd ?? cwd,
-      sessionId: String(current.agent.session.id),
-      permissionMode: state.permissionMode,
-      ...selection.current === undefined ? {} : { model: selection.current.model },
-      ...effort === undefined ? {} : { effort },
-      ...branch === undefined ? {} : { branch },
-      ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
-      ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
-      ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
-      busy: state.busy,
-    }, width === undefined ? {} : { width })
-  }
 
   return {
     get state() {
