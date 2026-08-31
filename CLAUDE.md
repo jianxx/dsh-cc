@@ -74,7 +74,8 @@ vite-tsconfig-paths resolve @jianxx/dsh-cc-* to source. A mid-work
   worktree): use symbol tools (find_symbol, find_referencing_symbols)
   instead of whole-file reads. `.serena/` is untracked, so memories
   don't follow worktrees yet.
-- sequential_thinking: do not use — route reasoning to deep-reasoner.
+- sequential_thinking: orchestrator never uses it — route reasoning to
+  deep-reasoner (who may use it for multi-branch explorations).
 
 ### Config is prompt
 Changes to CLAUDE.md or agent contracts are prompt changes: state the
