@@ -279,6 +279,12 @@ export interface DriverRunLocalCtx {
   persistResumeTarget(): void
   /** Whether real content has been produced this boot (drives /quit resume). */
   getMarkedContent(): boolean
+  /**
+   * Set the `markedContent` flag (createDriver owns the binding). The
+   * worktree remove path sets it `false` so dispose() does not re-persist a
+   * resume marker pointing into the just-deleted worktree.
+   */
+  setMarkedContent(marked: boolean): void
 }
 
 /**

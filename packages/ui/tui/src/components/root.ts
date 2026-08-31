@@ -22,7 +22,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routePermissionPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
+import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routePermissionPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput, routeWorktreeExitInput } from '../input.ts'
 import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
@@ -41,6 +41,7 @@ import {
   createSessionSwitcherBox,
   createTodoPanelBox,
   createUsagePanelBox,
+  createWorktreeExitBox,
 } from './overlays.ts'
 
 import type { BuildRootOptions, RootHandle } from './root-types.ts'
@@ -114,7 +115,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// recalled on the first ↑ press).
 	for (const entry of driver.promptHistory) editor.addToHistory(entry)
 
-	const bashMode = attachBashMode({ editor, driver, tui, theme, onQuit: opts.onQuit })
+	const bashMode = attachBashMode({ editor, driver, tui, theme })
 	const { bashRunning, inShellMode, browseBashHistory, resetBashHistoryBrowsing } = bashMode
 
 	// Slash-command + @-file autocomplete. The provider is rebuilt only when the
@@ -191,7 +192,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				live.modelPicker !== undefined || live.effortPicker !== undefined ||
 				live.permissionPicker !== undefined ||
 				live.sessionSwitcher !== undefined ||
-				live.todoPanel !== undefined || live.usagePanel !== undefined) {
+				live.todoPanel !== undefined || live.usagePanel !== undefined ||
+				live.worktreeExit !== undefined) {
 				return undefined
 			}
 			const now = Date.now()
@@ -251,6 +253,13 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			// Modal usage panel: pure display with no navigation — esc closes,
 			// everything else is consumed. The open path is the /usage command.
 			routeUsagePanelInput(driver, data)
+			return { consume: true }
+		}
+		if (live.worktreeExit !== undefined) {
+			// Modal /quit worktree-exit confirmation: arrows/enter/esc only,
+			// everything else consumed. While `busy` (a removal in flight) all
+			// keys are swallowed by the router.
+			routeWorktreeExitInput(driver, data)
 			return { consume: true }
 		}
 		if (matchesKey(data, 'shift+tab')) {
@@ -377,6 +386,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			// The panel rebuilds from the live snapshot on every emit, so
 			// projection changes refresh it in place while it is open.
 			overlays.addChild(createUsagePanelBox(state.usage, theme))
+		}
+		if (state.worktreeExit !== undefined) {
+			overlays.addChild(createWorktreeExitBox(state.worktreeExit, theme))
 		}
 		overlays.invalidate()
 

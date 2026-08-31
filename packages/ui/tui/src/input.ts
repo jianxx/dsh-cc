@@ -46,6 +46,12 @@ export interface InputSink {
   todoPanelClose(): void
   /** Close the `/usage` panel. */
   usagePanelClose(): void
+  /** Move the `/quit` worktree-exit focus by one row. */
+  worktreeExitMove(delta: -1 | 1): void
+  /** Confirm the focused worktree-exit option. */
+  worktreeExitSubmit(): Promise<void>
+  /** Dismiss the `/quit` worktree-exit overlay without quitting. */
+  worktreeExitCancel(): void
   dispose(): Promise<void>
 }
 
@@ -176,6 +182,33 @@ export function routeEffortPickerInput(driver: InputSink, data: string): void {
   }
   if (matchesKey(data, Key.enter)) {
     driver.effortPickerSubmit()
+    return
+  }
+  // All other keys are consumed and ignored (modal).
+}
+
+/**
+ * Route one raw keypress into the open `/quit` worktree-exit confirmation.
+ * Only arrows, enter, and escape are recognized; everything else is dropped
+ * — the overlay is modal and the composer editor must never see keystrokes
+ * while it is open. Enter on the focused row (keep/remove/cancel) is
+ * adjudicated by the driver.
+ */
+export function routeWorktreeExitInput(driver: InputSink, data: string): void {
+  if (matchesKey(data, Key.escape)) {
+    driver.worktreeExitCancel()
+    return
+  }
+  if (matchesKey(data, Key.up)) {
+    driver.worktreeExitMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    driver.worktreeExitMove(1)
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    void driver.worktreeExitSubmit()
     return
   }
   // All other keys are consumed and ignored (modal).
@@ -331,6 +364,11 @@ export function handleComposerInput(driver: InputSink, data: string): InputActio
 
   if (live.usagePanel !== undefined) {
     routeUsagePanelInput(driver, data)
+    return { kind: 'none' }
+  }
+
+  if (live.worktreeExit !== undefined) {
+    routeWorktreeExitInput(driver, data)
     return { kind: 'none' }
   }
 

@@ -313,6 +313,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     resolveEfforts: agent.resolveEfforts,
     persistResumeTarget: agent.persistResumeTarget,
     getMarkedContent: agent.getMarkedContent,
+    setMarkedContent: agent.setMarkedContent,
   })
   const { runLocal, runHarness } = runLocalSection
   actions.runHarness = runHarness
@@ -399,6 +400,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     todoPanelMove: (delta) => emit(moveTodoPanelFocus(state, delta)),
     todoPanelClose: () => emit(closeTodoPanel(state)),
     usagePanelClose: () => emit(closeUsagePanel(state)),
+    worktreeExitMove: (delta) => runLocalSection.worktreeExitMove(delta),
+    worktreeExitSubmit: () => runLocalSection.worktreeExitSubmit(),
+    worktreeExitCancel: () => runLocalSection.worktreeExitCancel(),
     showNotice,
     markExitAttempt: (now) => emit(markExitAttempt(state, now ?? Date.now())),
     switchSession: (id) => sessions.switchSession(id),

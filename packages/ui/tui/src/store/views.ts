@@ -262,6 +262,39 @@ export interface UsageView {
  */
 export type UsagePanelView = Record<string, never>
 
+/**
+ * Live view of the `/quit` worktree-exit confirmation overlay: the session
+ * descriptor under decision, the removal evidence shown next to the
+ * destructive option, and the focused row (`0` keep, `1` remove, `2`
+ * cancel). `busy` marks an in-flight removal — keys stay swallowed.
+ * Plain fields only: the store must not import from harness/.
+ */
+export interface WorktreeExitView {
+  /** Canonical repository root (where `.claude/worktrees` lives). */
+  repoRoot: string
+  /** Absolute worktree path (the session cwd). */
+  worktreePath: string
+  /** The branch checked out in the worktree. */
+  branch: string
+  /** True when created via the launcher's `--worktree` (branch is owned). */
+  managed: boolean
+  /** Whether removal may also delete the backing branch. */
+  ownsBranch: boolean
+  /** Managed sessions only: the commit the worktree was created from. */
+  baseHead?: string
+  /** Uncommitted changes; undefined when the probe failed. */
+  dirtyFiles?: number
+  /** Managed sessions only: commits past baseHead; undefined when unknown. */
+  commitsAhead?: number
+  /** Focused option row: 0 keep, 1 remove, 2 cancel. */
+  focused: number
+  /** Removal in flight. */
+  busy: boolean
+}
+
+/** Number of rows in the worktree-exit overlay (keep / remove / cancel). */
+export const WORKTREE_EXIT_OPTION_COUNT = 3
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -307,6 +340,8 @@ export interface TuiState {
   usage?: UsageView
   /** Open `/usage` panel; absent while closed. */
   usagePanel?: UsagePanelView
+  /** Open `/quit` worktree-exit confirmation overlay; absent while closed. */
+  worktreeExit?: WorktreeExitView
   /**
    * Timestamp (`Date.now()`) of the last idle Ctrl+C press — the anchor for
    * the double-press-to-exit window. Never cleared: a stale anchor simply

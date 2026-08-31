@@ -44,6 +44,13 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
     copyWrite: (sequence) => {
       root.tui.terminal.write(sequence)
     },
+    // The driver owns the /quit finalizer (worktree-exit decisions included),
+    // so process shutdown hooks here as a late-bound closure — `shutdown` is
+    // defined just below and not yet assigned, which is safe because this
+    // only runs once a quit decision actually settles.
+    onQuit: () => {
+      shutdown()
+    },
   })
 
   if (process.stdin.isTTY) {

@@ -22,7 +22,6 @@ export interface AttachBashModeArgs {
 	driver: Driver
 	tui: TUI
 	theme: Theme
-	onQuit: (() => void) | undefined
 }
 
 export interface BashModeHandle {
@@ -39,7 +38,7 @@ export interface BashModeHandle {
  * editor.onSubmit exactly as root.ts did inline, so behavior is unchanged.
  */
 export function attachBashMode(args: AttachBashModeArgs): BashModeHandle {
-  const { editor, driver, tui, theme, onQuit } = args
+  const { editor, driver, tui, theme } = args
 
   let bashBrowsing = false
   let bashBrowsingIndex = -1
@@ -124,10 +123,10 @@ export function attachBashMode(args: AttachBashModeArgs): BashModeHandle {
     const parsed = parseSlash(text)
     // Only prompts join editor recall; slash commands are not prompts.
     if (parsed.kind === 'none') editor.addToHistory(text)
+    // Submit is fire-and-forget. Quit/exit finalization — including the
+    // /quit worktree-exit confirmation — is owned by the driver's quit path
+    // (config.onQuit), not by the onSubmit special-case it used to have here.
     void driver.submit(text)
-    if (parsed.kind === 'local' && (parsed.name === 'quit' || parsed.name === 'exit')) {
-      onQuit?.()
-    }
   }
 
   return { bashRunning: () => bashRunning, inShellMode, browseBashHistory, resetBashHistoryBrowsing }
