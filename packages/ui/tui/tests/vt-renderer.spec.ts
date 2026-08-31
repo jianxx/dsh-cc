@@ -142,7 +142,7 @@ function fakeDriver(
       state = setBusy(state, false)
       for (const l of listeners) l(state)
     },
-    cyclePermissionMode() {},
+    cyclePermissionMode: async () => {},
     toggleThinking() {
       state = { ...state, thinkingExpanded: !state.thinkingExpanded }
       for (const l of listeners) l(state)

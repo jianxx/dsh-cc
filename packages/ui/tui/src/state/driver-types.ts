@@ -53,7 +53,13 @@ export interface Driver {
    * `undefined` when the queue is empty (same-reference no-op).
    */
   recallQueued(): string | undefined
-  cyclePermissionMode(): void
+  /**
+   * Advance the Shift+Tab permission-mode cycle. Mode writes are serialized
+   * per driver; the returned promise settles when this step's write chain
+   * (command-channel dispatch + engine setMode) has finished, so tests and
+   * callers that care about ordering can await it.
+   */
+  cyclePermissionMode(): Promise<void>
   /**
    * Flip the global collapse state (Ctrl+O): thinking rows and tool output
    * collapse together, or both expand back. Supersedes {@link Driver.toggleThinking},

@@ -94,7 +94,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
     setDraft() {},
     async submit() {},
     interrupt() {},
-    cyclePermissionMode() {},
+    cyclePermissionMode: async () => {},
     answerApproval() {},
     questionMove() {},
     questionToggle() {},

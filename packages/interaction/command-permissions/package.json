@@ -60,6 +60,8 @@
     "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
     "@deepseek-ai/dsh-plan-mode": "link:../../../../deepseek-harness/packages/plan/plan-mode",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../../deepseek-harness/packages/core/tools",
     "tsdown": "0.22.2"
   },
   "publishConfig": {

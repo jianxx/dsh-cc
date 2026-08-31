@@ -4,6 +4,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
+import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { PermissionRuleSet } from '@jianxx/dsh-cc-permission-rules/types'
 import * as commandPermissions from '@jianxx/dsh-cc-command-permissions'
@@ -29,17 +30,20 @@ async function harness(withService: boolean): Promise<{
   agent: Agent
   plugin: Awaited<ReturnType<Context['plugin']>>
   setMode: ReturnType<typeof vi.fn>
-  planSet: ReturnType<typeof vi.fn>
+  calls: string[]
 }> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(AgentRegistry)
-  const setMode = vi.fn()
-  const planSet = vi.fn()
+  // Shared write-order log: the plan command stub and the engine setMode
+  // both append here so tests assert cross-service ordering.
+  const calls: string[] = []
+  const setMode = vi.fn((_agent: Agent, mode: string) => {
+    calls.push(`setMode:${mode}`)
+  })
   if (withService) {
     ctx.reflect.provide('permissionRules', { ruleSet: RULESET(), setMode })
-    ctx.reflect.provide('planMode', { set: planSet })
   }
   const plugin = await ctx.plugin(commandPermissions)
   const session = ctx.sessions.create(SessionId(`command-permissions-${Math.random()}`))
@@ -59,7 +63,25 @@ async function harness(withService: boolean): Promise<{
     whenIdle: () => Promise.resolve(),
   }
   ctx.agents.register(agent)
-  return { ctx, agent, plugin, setMode, planSet }
+  return { ctx, agent, plugin, setMode, calls }
+}
+
+/**
+ * Stub plan-mode's `/plan` command on the REAL command registry, so tests
+ * exercise the genuine nested dispatch (`/permissions` → `commands.execute`
+ * → `/plan`) rather than a mocked service seam.
+ */
+function stubPlan(
+  ctx: Context,
+  calls: string[],
+  result: CommandResult = { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' },
+): ReturnType<typeof vi.fn> {
+  const handler = vi.fn((invocation: CommandInvocation): CommandResult => {
+    calls.push(`plan:${invocation.rawInput}`)
+    return result
+  })
+  ctx.commands.register({ name: 'plan', description: 'Enter or leave plan mode', handler })
+  return handler
 }
 
 describe('@jianxx/dsh-cc-command-permissions registration', () => {
@@ -112,12 +134,66 @@ describe('/permissions human command', () => {
     expect(text).toContain('acceptEdits')
   })
 
-  it('/permissions plan routes to planMode.set and does not call setMode', async () => {
-    const { ctx, agent, setMode, planSet } = await harness(true)
+  it('/permissions plan relays the /plan command result verbatim and never touches setMode', async () => {
+    const { ctx, agent, setMode, calls } = await harness(true)
+    const inner: CommandResult = { kind: 'success', text: 'Plan mode on. Use /plan off to leave.' }
+    const plan = stubPlan(ctx, calls, inner)
     const execution = await ctx.commands.execute(agent, '/permissions plan', [], new AbortController().signal)
-    expect(planSet).toHaveBeenCalledWith(agent, true)
+    expect(execution?.result).toEqual(inner)
+    expect(plan).toHaveBeenCalledTimes(1)
+    // Bare '/plan': the upstream handler steers any non-'off' argument into
+    // the conversation as a user message, so the dispatch line is pinned.
+    expect(plan.mock.calls[0]![0].rawInput).toBe('')
     expect(setMode).not.toHaveBeenCalled()
-    expect((execution?.result as { text: string }).text).toContain('plan')
+    expect(calls).toEqual(['plan:'])
+  })
+
+  it('/permissions plan is a no-op when plan is already committed', async () => {
+    const { ctx, agent, calls } = await harness(true)
+    ctx.reflect.provide('sessionProjections', {
+      stateOf: () => ({ active: true, wanted: null, running: null }),
+    })
+    const plan = stubPlan(ctx, calls)
+    const execution = await ctx.commands.execute(agent, '/permissions plan', [], new AbortController().signal)
+    expect((execution?.result as { text: string }).text).toBe('Permission mode is now "plan".')
+    expect(plan).not.toHaveBeenCalled()
+  })
+
+  it('/permissions plan reports not-mounted when no /plan command exists', async () => {
+    const { ctx, agent } = await harness(true)
+    const execution = await ctx.commands.execute(agent, '/permissions plan', [], new AbortController().signal)
+    expect(execution?.result).toEqual({ kind: 'error', text: 'plan mode is not mounted in this composition' })
+  })
+
+  it('/permissions auto leaves an active plan through /plan off before switching the engine', async () => {
+    const { ctx, agent, setMode, calls } = await harness(true)
+    agent.session.append('plan/mode', { active: true })
+    stubPlan(ctx, calls, { kind: 'success', text: 'Plan mode off.' })
+    const execution = await ctx.commands.execute(agent, '/permissions auto', [], new AbortController().signal)
+    expect(calls).toEqual(['plan: off', 'setMode:auto'])
+    expect(setMode).toHaveBeenCalledWith(agent, 'auto')
+    expect((execution?.result as { text: string }).text).toContain('auto')
+  })
+
+  it('/permissions auto cancels a queued plan entry (projection entering) before switching', async () => {
+    const { ctx, agent, calls } = await harness(true)
+    ctx.reflect.provide('sessionProjections', {
+      stateOf: () => ({ active: false, wanted: true, running: null }),
+    })
+    stubPlan(ctx, calls, { kind: 'success', text: 'Plan mode entry cancelled.' })
+    const execution = await ctx.commands.execute(agent, '/permissions auto', [], new AbortController().signal)
+    expect(calls).toEqual(['plan: off', 'setMode:auto'])
+    expect((execution?.result as { text: string }).text).toContain('auto')
+  })
+
+  it('a failing /plan off blocks the engine switch', async () => {
+    const { ctx, agent, setMode, calls } = await harness(true)
+    agent.session.append('plan/mode', { active: true })
+    const inner: CommandResult = { kind: 'error', text: 'boom' }
+    stubPlan(ctx, calls, inner)
+    const execution = await ctx.commands.execute(agent, '/permissions auto', [], new AbortController().signal)
+    expect(execution?.result).toEqual(inner)
+    expect(setMode).not.toHaveBeenCalled()
   })
 
   it('/permissions bogus errors and lists the available modes', async () => {
@@ -139,12 +215,12 @@ describe('/permissions human command', () => {
     expect(text).toContain('not mounted')
   })
 
-  it('/permissions default leaves an active plan before switching', async () => {
-    const { ctx, agent, setMode, planSet } = await harness(true)
+  it('/permissions default leaves an active plan through /plan off before switching (fold fallback)', async () => {
+    const { ctx, agent, setMode, calls } = await harness(true)
     agent.session.append('plan/mode', { active: true })
+    stubPlan(ctx, calls, { kind: 'success', text: 'Plan mode off.' })
     const execution = await ctx.commands.execute(agent, '/permissions default', [], new AbortController().signal)
-    expect(planSet).toHaveBeenCalledWith(agent, false)
-    expect(setMode).toHaveBeenCalledWith(agent, 'default')
+    expect(calls).toEqual(['plan: off', 'setMode:default'])
     expect((execution?.result as { text: string }).text).toContain('default')
   })
 })

@@ -1,8 +1,11 @@
 /**
  * Human-facing `/permissions` command: render the effective permission rule
  * state (allow/deny/ask counts per source), or switch the session's permission
- * mode with `/permissions <mode>`. Switching is durable — it routes through the
- * permission-rules engine's `setMode` (and plan-mode's `set` for `plan`).
+ * mode with `/permissions <mode>`. Switching is durable — engine modes route
+ * through the permission-rules engine's `setMode`; `plan` routes through the
+ * `/plan` command channel, the only cross-plane write seam plan-mode exposes
+ * (its `planMode` service lives inside the preset's isolate realm, invisible
+ * to `ctx.get` from here). See docs/plan-mode-command-channel.md.
  *
  * The host command remains the write path. A client decoration (see
  * `./client`) hangs the same popupSelect on the BARE invocation, mirroring the
@@ -29,8 +32,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@jianxx/dsh-cc-permission-rules'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_COMMAND_MODES } from './modes.ts'
+import { planPhaseOf, type PlanPhase, type PlanUnitStateLike } from './plan-phase.ts'
 import { renderPermissions } from './permissions.ts'
 
 export {
@@ -41,6 +44,7 @@ export {
   type PermissionCommandMode,
   type PermissionModeOption,
 } from './modes.ts'
+export { planPhaseOf, type PlanPhase, type PlanUnitStateLike } from './plan-phase.ts'
 
 export const name = 'command-permissions'
 /**
@@ -68,8 +72,21 @@ function renderState(service: PermissionRulesLike): CommandResult {
   }
 }
 
+/**
+ * Resolve the pending-aware plan phase for the invocation's agent. The plan
+ * projection (host-plane registry) sees queued intent; without it the fold
+ * sees only committed `plan/mode` events.
+ */
+function planPhaseFor(ctx: Context, agent: Agent): PlanPhase {
+  const projections = ctx.get('sessionProjections') as
+    | { stateOf(session: Agent['session'], key: string): unknown }
+    | undefined
+  const planState = projections?.stateOf(agent.session, 'plan') as PlanUnitStateLike | undefined
+  return planPhaseOf(agent.session.events, planState)
+}
+
 /** Execute `/permissions` against the mounted permission-rules engine. */
-function executePermissions(ctx: Context, invocation: CommandInvocation): CommandResult {
+async function executePermissions(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
   const service = ctx.get('permissionRules') as PermissionRulesLike | undefined
   const raw = invocation.rawInput.trim()
   if (raw === '') {
@@ -87,22 +104,31 @@ function executePermissions(ctx: Context, invocation: CommandInvocation): Comman
   }
   const agent = invocation.agent
   try {
+    // `plan` is owned by plan-mode, never the engine's setMode. The write
+    // goes through the /plan command channel — the only cross-plane seam —
+    // dispatched bare ('/plan', never '/plan on'): the upstream handler
+    // steers any non-'off' argument into the conversation as a user message.
     if (mode === 'plan') {
-      const planMode = ctx.get('planMode') as { set(agent: Agent, active: boolean): unknown } | undefined
-      if (planMode === undefined) {
+      if (planPhaseFor(ctx, agent) === 'on') {
+        return { kind: 'success', text: 'Permission mode is now "plan".' }
+      }
+      const execution = await ctx.commands.execute(agent, '/plan', [], invocation.signal)
+      if (execution === undefined) {
         return { kind: 'error', text: 'plan mode is not mounted in this composition' }
       }
-      planMode.set(agent, true)
-    } else {
-      if (foldPlanMode(agent.session.events)) {
-        const planMode = ctx.get('planMode') as { set(agent: Agent, active: boolean): unknown } | undefined
-        if (planMode === undefined) {
-          return { kind: 'error', text: 'leave plan mode with /plan off first' }
-        }
-        planMode.set(agent, false)
-      }
-      service.setMode(agent, mode)
+      return execution.result
     }
+    // Leave plan first: the engine overlays plan over every other mode at
+    // evaluation time, so switching underneath an active (or queued) plan is
+    // invisible work at best. A failed or unmatched exit aborts the switch.
+    if (planPhaseFor(ctx, agent) !== 'off') {
+      const execution = await ctx.commands.execute(agent, '/plan off', [], invocation.signal)
+      if (execution === undefined) {
+        return { kind: 'error', text: 'plan mode is not mounted in this composition' }
+      }
+      if (execution.result.kind === 'error') return execution.result
+    }
+    service.setMode(agent, mode)
     return { kind: 'success', text: `Permission mode is now "${mode}".` }
   } catch (error) {
     return { kind: 'error', text: error instanceof Error ? error.message : String(error) }

@@ -23,7 +23,7 @@ import {
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
-import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
+import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
@@ -131,10 +131,6 @@ type PermissionRulesLike = {
     readonly bypassImmune: readonly unknown[]
   }
   setMode(agent: Agent, mode: string): void
-}
-
-type PlanModeLike = {
-  set(agent: Agent, active: boolean): unknown
 }
 
 type CommandsLike = {
@@ -1303,21 +1299,48 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     })
   }
 
+  // Mode writes serialize per driver: Shift+Tab fires synchronously and rapid
+  // presses must not interleave a '/plan off' with the engine setMode. The
+  // chain is failure-contained — rejections surface as notices, never as
+  // unhandled rejections. The picker and typed '/permissions …' bypass this
+  // chain deliberately: the host command re-derives the plan phase per
+  // dispatch and plan-mode's set() is convergent
+  // (docs/plan-mode-command-channel.md §6.2).
+  let modeWrites: Promise<void> = Promise.resolve()
   const applyMode = (mode: PermissionCommandMode): void => {
-    const rules = ctx.get('permissionRules') as PermissionRulesLike | undefined
-    const planMode = ctx.get('planMode') as PlanModeLike | undefined
+    modeWrites = modeWrites.then(() => applyModeInner(mode)).catch((error: unknown) => {
+      showNotice(error instanceof Error ? error.message : String(error))
+    })
+  }
+
+  const applyModeInner = async (mode: PermissionCommandMode): Promise<void> => {
+    // plan is owned by plan-mode inside the preset's isolate realm; the ONLY
+    // cross-plane write seam is the /plan command channel — dispatched bare,
+    // never '/plan on' (the upstream handler steers any non-'off' argument
+    // into the conversation as a user message).
     if (mode === 'plan') {
-      if (planMode === undefined) {
+      const result = await runHarness('/plan')
+      if (result === undefined) showNotice('plan mode is not mounted in this composition')
+      // No optimistic emit: the display re-folds from the committed plan/mode
+      // event (see the session/event listener), so a queued mid-turn entry
+      // stays truthful until it applies.
+      return
+    }
+    const phase = planPhaseOf(
+      current.agent.session.events,
+      projections?.stateOf(current.agent.session, 'plan') as PlanUnitStateLike | undefined,
+    )
+    if (phase !== 'off') {
+      const exit = await runHarness('/plan off')
+      if (exit === null) return // no command registry — runHarness already noticed
+      if (exit === undefined) {
         showNotice('plan mode is not mounted in this composition')
         return
       }
-      planMode.set(current.agent, true)
-      emit(setPermissionMode(state, 'plan'))
-      return
+      // A failed exit must not strand the switch half-done.
+      if (exit.kind === 'error') return
     }
-    if (foldPlanMode(current.agent.session.events)) {
-      planMode?.set(current.agent, false)
-    }
+    const rules = ctx.get('permissionRules') as PermissionRulesLike | undefined
     if (rules === undefined) {
       showNotice('The permission-rules engine is not mounted in this composition.')
       return
@@ -1815,17 +1838,25 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
 
-  const runHarness = async (line: string): Promise<void> => {
+  /**
+   * Execute a slash command line through the host registry and echo its
+   * result text as a status row. Tri-state return:
+   * - `null` — no command registry is mounted (already noticed here).
+   * - `undefined` — the registry matched nothing (the caller decides the notice).
+   * - otherwise the command result.
+   */
+  const runHarness = async (line: string): Promise<{ kind: string; text?: string } | undefined | null> => {
     const commands = ctx.get('commands') as CommandsLike | undefined
     if (commands === undefined) {
       showNotice('No command registry is mounted.')
-      return
+      return null
     }
     const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
-    const text = execution?.result?.text
-    if (text !== undefined && text.length > 0) {
-      emit(upsertRow(state, { kind: 'status', text }))
+    const result = execution?.result
+    if (result !== undefined && result.text !== undefined && result.text.length > 0) {
+      emit(upsertRow(state, { kind: 'status', text: result.text }))
     }
+    return result
   }
 
   /**
@@ -2055,8 +2086,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     cyclePermissionMode() {
       const live = liveMode(current.agent, state.permissionMode)
       const next = nextPermissionMode(live)
-      if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return
+      if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return modeWrites
       applyMode(next)
+      return modeWrites
     },
     toggleGlobalCollapse() {
       emit(toggleGlobalCollapse(state))

@@ -115,7 +115,7 @@ function fakeDriver(initial: TuiState = createInitialState()): Driver & { setSta
       emit()
     },
     interrupt() { state = { ...state, busy: false }; emit() },
-    cyclePermissionMode: noop,
+    cyclePermissionMode: async () => {},
     toggleThinking() { state = { ...state, thinkingExpanded: !state.thinkingExpanded }; emit() },
     toggleGlobalCollapse() { state = toggleGlobalCollapse(state); emit() },
     answerApproval() { state = { ...state, approval: undefined }; emit() },

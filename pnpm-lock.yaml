@@ -760,6 +760,12 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../../deepseek-harness/packages/core/system-prompt
+        version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../../deepseek-harness/packages/core/tools
+        version: link:../../../../deepseek-harness/packages/core/tools
       tsdown:
         specifier: 0.22.2
         version: 0.22.2(tsx@4.22.4)(typescript@6.0.3)

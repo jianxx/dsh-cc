@@ -136,7 +136,7 @@ function sink(initial: TuiState = createInitialState()): InputSink & {
     interrupt() {
       this.interrupted = true
     },
-    cyclePermissionMode() {
+    async cyclePermissionMode() {
       this.cycled = true
     },
     toggleThinking() {
