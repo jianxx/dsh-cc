@@ -17,7 +17,6 @@ import {
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
-import { BYPASS_MODE, PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import {
@@ -31,6 +30,7 @@ import { createCatalogSection } from './driver-catalog.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
 import { createHudSection } from './driver-hud.ts'
+import { createPickersSection } from './driver-pickers.ts'
 import {
   breakdownOf,
   formatCostReport,
@@ -56,7 +56,7 @@ import type {
 
 import { parseSlash } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
-import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
+import { parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
@@ -77,9 +77,6 @@ import {
   createInitialState,
   enqueue,
   markExitAttempt,
-  moveEffortPickerFocus,
-  movePermissionPickerFocus,
-  moveModelPickerFocus,
   moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
@@ -89,8 +86,6 @@ import {
   setApproval,
   setBusy,
   setDraft,
-  setEffortPicker,
-  setPermissionPicker,
   setModelPicker,
   setNotice,
   setPermissionMode,
@@ -100,7 +95,6 @@ import {
   toggleGlobalCollapse,
   toggleThinking,
   upsertRow,
-  type CatalogEntryView,
   type SessionEntryView,
   type TuiState,
 } from '../store.ts'
@@ -513,112 +507,36 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     return entries
   }
 
-  // `/model` (no args) opens a modal picker instead of dumping a text catalog.
-  // The arg path (`/model <n|provider/id>`) stays text-based for scripts.
-  const openModelPicker = async (): Promise<void> => {
-    const catalog = await loadCatalog()
-    const currentRoute = selection.current === undefined
-      ? undefined
-      : { provider: selection.current.provider, model: selection.current.model }
-    if (catalog.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, currentRoute) }))
-      return
-    }
-    const entries: CatalogEntryView[] = catalog.map(entry => ({
-      provider: entry.provider,
-      id: entry.id,
-      name: entry.name,
-    }))
-    let focused = 0
-    if (currentRoute !== undefined) {
-      const index = entries.findIndex(
-        entry => entry.provider === currentRoute.provider && entry.id === currentRoute.model,
-      )
-      if (index >= 0) focused = index
-    }
-    emit(setModelPicker(state, {
-      entries,
-      focused,
-      ...currentRoute === undefined ? {} : { current: currentRoute },
-    }))
-  }
-
-  /**
-   * Apply a `/model` switch to `provider`/`model`, carrying the live effort
-   * when the new model still supports it. The bare pair needs no validation,
-   * so the no-carried-effort path writes synchronously in the caller's tick;
-   * the carried path validates via {@link resolveEfforts} and degrades to a
-   * bare pair + reset notice when the effort is unsupported OR unresolvable —
-   * the switch itself never fails on validation. The stale-pair guard covers
-   * the detached continuation: a selection that moved while validation was in
-   * flight is never clobbered.
-   */
-  const applyModelSwitch = async (provider: string, model: string): Promise<void> => {
-    const captured = selection.current
-    const carried = captured?.reasoningEffort
-    if (captured === undefined || carried === undefined) {
-      selection.current = { provider, model }
-      emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
-      return
-    }
-    const efforts = await resolveEfforts(provider, model)
-    if (stalePair(captured)) return
-    const supported = efforts?.some(level => level.id === carried) === true
-    selection.current = supported
-      ? { provider, model, reasoningEffort: ReasoningEffortId(carried) }
-      : { provider, model }
-    emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
-    if (!supported) {
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: `Effort "${carried}" not supported by ${model}; reset to default.`,
-      }))
-    }
-  }
-
-  /**
-   * Open the `/effort` picker: resolve the live model's advertised efforts
-   * and park `effortPicker` state — entries are the effort ids plus the
-   * trailing reserved `default` entry, focus on the live effort (the
-   * `default` entry when none is set or it is no longer in the list). Fail
-   * closed: an unresolved model emits the no-model notice and unresolvable
-   * levels emit a notice — never a fabricated list.
-   */
-  const openEffortPicker = async (): Promise<void> => {
-    const route = selection.current
-    if (route === undefined) {
-      emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-      return
-    }
-    const efforts = await resolveEfforts(route.provider, route.model)
-    if (efforts === undefined || efforts.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
-      return
-    }
-    const entries = [...efforts.map(level => level.id), 'default']
-    const index = route.reasoningEffort === undefined ? -1 : entries.indexOf(route.reasoningEffort)
-    emit(setEffortPicker(state, {
-      entries,
-      focused: index >= 0 ? index : entries.length - 1,
-      current: route.reasoningEffort,
-    }))
-  }
-
-  /**
-   * Open the `/permissions` picker: park the five CC rule-engine modes,
-   * focused on the live mode (row 0 when the live mode is not in the list).
-   * The overlay always opens — an unmounted engine surfaces as a host-command
-   * error on submit, matching the argued `/permissions <mode>` path.
-   */
-  const openPermissionPicker = (): void => {
-    const currentMode = liveMode(current.agent, state.permissionMode)
-    const index = PERMISSION_MODE_OPTIONS.findIndex(option => option.id === currentMode)
-    emit(setPermissionPicker(state, {
-      entries: PERMISSION_MODE_OPTIONS,
-      focused: index >= 0 ? index : 0,
-      current: currentMode,
-    }))
-  }
+  // Model/effort/permission pickers live in a collaborator that reads all
+  // shared state/functions through a ctx; createDriver keeps resolveEfforts /
+  // stalePair / loadCatalog (they read `llm` off the host ctx) and passes them
+  // in. pickers.* return-literal bodies delegate back to these locals.
+  const pickers = createPickersSection({
+    emit,
+    state: () => state,
+    selection,
+    current,
+    liveMode,
+    resolveEfforts,
+    stalePair,
+    loadCatalog,
+    runHarness: (line) => actions.runHarness(line),
+  })
+  const {
+    openModelPicker,
+    applyModelSwitch,
+    openEffortPicker,
+    openPermissionPicker,
+    modelPickerMove,
+    modelPickerSubmit,
+    modelPickerCancel,
+    effortPickerMove,
+    effortPickerSubmit,
+    effortPickerCancel,
+    permissionPickerMove,
+    permissionPickerSubmit,
+    permissionPickerCancel,
+  } = pickers
 
   // --- Session switching: /resume overlay + driver.switchSession ----------
   // The overlay mirrors the model picker: state field + open/move/submit/cancel.
@@ -1244,103 +1162,37 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       await openModelPicker()
     },
     modelPickerMove(delta) {
-      emit(moveModelPickerFocus(state, delta))
+      modelPickerMove(delta)
     },
     modelPickerSubmit(): Promise<void> {
-      const picker = state.modelPicker
-      if (picker === undefined) return Promise.resolve()
-      const entry = picker.entries[picker.focused]
-      // Read-then-close: capture the focused entry BEFORE the synchronous
-      // close-emit so the overlay never lingers while validation runs.
-      emit(setModelPicker(state, undefined))
-      if (entry === undefined) return Promise.resolve()
-      // Effort-preserving switch with the stale-pair guard inside; the bare
-      // fast path writes synchronously, a carried effort continues detached.
-      return applyModelSwitch(entry.provider, entry.id)
+      return modelPickerSubmit()
     },
     modelPickerCancel() {
-      emit(setModelPicker(state, undefined))
+      modelPickerCancel()
     },
     async openEffortPicker() {
       await openEffortPicker()
     },
     effortPickerMove(delta) {
-      emit(moveEffortPickerFocus(state, delta))
+      effortPickerMove(delta)
     },
     async effortPickerSubmit() {
-      const picker = state.effortPicker
-      if (picker === undefined) return
-      const entry = picker.entries[picker.focused]
-      // Read-then-close (mirror modelPickerSubmit): capture the focused entry
-      // BEFORE the synchronous close-emit, then validate+write detached.
-      emit(setEffortPicker(state, undefined))
-      if (entry === undefined) return
-      const captured = selection.current
-      if (captured === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-        return
-      }
-      // The reserved `default` entry resets to the bare pair with zero
-      // validation (the provider default is always legal); the stale-pair
-      // guard still applies.
-      if (entry === 'default') {
-        if (stalePair(captured)) return
-        selection.current = { provider: captured.provider, model: captured.model }
-        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
-        return
-      }
-      const efforts = await resolveEfforts(captured.provider, captured.model)
-      // Stale-pair guard: the captured model must still be the live selection
-      // when the validation continuation resumes — a concurrent /model or
-      // switchSession re-seed in between refuses the write.
-      if (stalePair(captured)) return
-      const level = efforts?.find(candidate => candidate.id === entry)
-      if (level === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${captured.model}.` }))
-        return
-      }
-      selection.current = {
-        provider: captured.provider,
-        model: captured.model,
-        reasoningEffort: ReasoningEffortId(level.id),
-      }
-      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
+      await effortPickerSubmit()
     },
     effortPickerCancel() {
-      emit(setEffortPicker(state, undefined))
+      effortPickerCancel()
     },
     async openPermissionPicker() {
       openPermissionPicker()
     },
     permissionPickerMove(delta) {
-      emit(movePermissionPickerFocus(state, delta))
+      permissionPickerMove(delta)
     },
     async permissionPickerSubmit() {
-      const picker = state.permissionPicker
-      if (picker === undefined) return
-      const entry = picker.entries[picker.focused]
-      if (entry === undefined) {
-        emit(setPermissionPicker(state, undefined))
-        return
-      }
-      // bypassPermissions parks an in-overlay confirmation first; a second
-      // enter (or any other mode) closes then writes through the host command.
-      if (entry.id === BYPASS_MODE && picker.confirmingBypass !== true) {
-        emit(setPermissionPicker(state, { ...picker, confirmingBypass: true }))
-        return
-      }
-      emit(setPermissionPicker(state, undefined))
-      await runHarness(`/permissions ${entry.id}`)
+      await permissionPickerSubmit()
     },
     permissionPickerCancel() {
-      const picker = state.permissionPicker
-      if (picker === undefined) return
-      if (picker.confirmingBypass === true) {
-        const { confirmingBypass: _dropped, ...rest } = picker
-        emit(setPermissionPicker(state, rest))
-        return
-      }
-      emit(setPermissionPicker(state, undefined))
+      permissionPickerCancel()
     },
     async openSessionSwitcher() {
       await openSessionSwitcher()
@@ -1408,14 +1260,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       return listSessions()
     },
     async loadModelCatalog() {
-      return loadCatalog()
+      return pickers.loadModelCatalog()
     },
     async loadModelEfforts() {
-      const route = selection.current
-      if (route === undefined) return []
-      const efforts = await resolveEfforts(route.provider, route.model)
-      if (efforts === undefined) return []
-      return [...efforts.map(level => level.id), 'default']
+      return pickers.loadModelEfforts()
     },
     listCommands() {
       return catalog.listCommands()

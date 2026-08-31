@@ -12,6 +12,7 @@ import type { TuiState } from '../store.ts'
 import type { ShellExecutorLike } from '../state/driver-types.ts'
 import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import type { CatalogEntry } from '../model-catalog.ts'
 
 /**
  * The slice of createDriver's closed-over state that `!` shell-command
@@ -138,4 +139,37 @@ export interface DriverApprovalsCtx {
   current: { agent: Agent }
   /** Surface a transient notice line (rule-persist outcomes and failures). */
   showNotice(text: string): void
+}
+
+/**
+ * The slice of createDriver's closed-over state that the model/effort/
+ * permission pickers need (driver-pickers.ts). `state()` returns the CURRENT
+ * view-model value — createDriver rebinds `state` on every emit, so the
+ * section must read it through a getter rather than a stale snapshot.
+ * `selection` is passed by reference so writes land on createDriver's live
+ * ref across switchSession. resolveEfforts / stalePair / loadCatalog stay in
+ * createDriver and arrive on the ctx (they read `llm` off the host ctx).
+ */
+export interface DriverPickersCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Model selection ref; the section reads current and rewrites it in place. */
+  selection: ModelSelectionRef
+  /** The rebindable agent holder (openPermissionPicker reads the live agent). */
+  current: { agent: Agent }
+  /** Fold the live plan/permission mode for the picker's focus row. */
+  liveMode(agent: Agent, fallback: string): string
+  /** Resolve a model's advertisement list (never a fabricated list). */
+  resolveEfforts(
+    provider: string,
+    model: string,
+  ): Promise<readonly { id: string; name: string }[] | undefined>
+  /** Stale-pair guard: refuse a detached write when the selection moved. */
+  stalePair(captured: { provider: string; model: string }): boolean
+  /** Build the full model catalog for the `/model` picker. */
+  loadCatalog(): Promise<CatalogEntry[]>
+  /** Run a bare /plan-/permissions channel command. Late-bound (after ini). */
+  runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
 }
