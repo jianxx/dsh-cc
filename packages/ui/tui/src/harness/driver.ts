@@ -30,6 +30,7 @@ import {
   gitBranchOf,
 } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
+import { createModalQueue, type ModalEntry } from './driver-modal.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
 import {
   breakdownOf,
@@ -606,44 +607,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // approval and question slots is set), answering or aborting the head
   // promotes the next entry, and `ask()` during an active modal queues behind
   // it instead of stacking a second box.
-  type ApprovalEntry = {
-    kind: 'approval'
-    view: ApprovalView
-    resolve: (outcome: ApprovalOutcome) => void
-    signal?: AbortSignal
-  }
-  type QuestionEntry = {
-    kind: 'question'
-    id: string
-    view: QuestionView
-    resolve: (answer: AskUserQuestionAnswer) => void
-    reject: (error: unknown) => void
-    signal?: AbortSignal
-  }
-  type ModalEntry = ApprovalEntry | QuestionEntry
-  const modalQueue: ModalEntry[] = []
-
-  /** Publish the queue head into exactly one of the two modal slots. */
-  const publishHead = (): void => {
-    const head = modalQueue[0]
-    const behind = modalQueue.length - 1
-    if (head === undefined || head.kind !== 'approval') emit(setApproval(state, undefined))
-    if (head === undefined || head.kind !== 'question') emit(setQuestion(state, undefined))
-    if (head === undefined) return
-    if (head.kind === 'approval') {
-      emit(setApproval(state, { ...head.view, ...behind === 0 ? {} : { pendingCount: behind } }))
-    } else {
-      emit(setQuestion(state, head.view))
-    }
-  }
-
-  /** Remove an entry from the queue (no-op if already gone) and republish. */
-  const dequeueModal = (entry: ModalEntry): void => {
-    const index = modalQueue.indexOf(entry)
-    if (index < 0) return
-    modalQueue.splice(index, 1)
-    publishHead()
-  }
+  const modal = createModalQueue({ emit, state: () => state })
 
   // --- Approvals ------------------------------------------------------------
   // The head approval is parked in state.approval together with the
@@ -665,18 +629,18 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       ...preview.kind === 'none' ? {} : { preview },
     }
     return await new Promise<ApprovalOutcome>(resolve => {
-      const entry: ApprovalEntry = {
+      const entry: ModalEntry = {
         kind: 'approval',
         view,
         resolve,
         ...req.signal === undefined ? {} : { signal: req.signal },
       }
-      modalQueue.push(entry)
+      modal.push(entry)
       req.signal?.addEventListener('abort', () => {
-        dequeueModal(entry)
+        modal.dequeue(entry)
         resolve('cancelled')
       }, { once: true })
-      publishHead()
+      modal.publishHead()
     })
   })
 
@@ -749,7 +713,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
           // Queue behind any active modal; when the pipeline is empty this
           // entry becomes the head and renders immediately.
           return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-            const entry: QuestionEntry = {
+            const entry: ModalEntry = {
               kind: 'question',
               id: first?.id ?? '',
               view,
@@ -763,12 +727,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
               reject,
               ...request.signal === undefined ? {} : { signal: request.signal },
             }
-            modalQueue.push(entry)
+            modal.push(entry)
             request.signal?.addEventListener('abort', () => {
-              dequeueModal(entry)
+              modal.dequeue(entry)
               reject(new UserQuestionError('question cancelled', 'CANCELLED'))
             }, { once: true })
-            publishHead()
+            modal.publishHead()
           })
         },
       })
@@ -783,10 +747,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
    * label string, never an inferred or re-indexed one.
    */
   const resolveQuestion = (selected: readonly string[], custom?: string): void => {
-    const head = modalQueue[0]
+    const head = modal.peekHead()
     if (head === undefined || head.kind !== 'question') return
-    modalQueue.shift()
-    publishHead()
+    modal.shiftHead()
+    modal.publishHead()
     head.resolve({
       answers: [{
         id: head.id,
@@ -1185,7 +1149,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // every parked approval resolves cancelled and every parked question
     // rejects cancelled. The session switcher overlay itself is managed by the
     // caller (sessionSwitcherSubmit).
-    for (const entry of modalQueue.splice(0)) {
+    for (const entry of modal.spliceAll()) {
       if (entry.kind === 'approval') entry.resolve('cancelled')
       else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
     }
@@ -1655,21 +1619,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(toggleThinking(state))
     },
     answerApproval(kind: ApprovalAnswerKind) {
-      const head = modalQueue[0]
-      if (head === undefined || head.kind !== 'approval') return
-      // Advance the queue BEFORE resolving: a resolution can immediately fire
-      // the next approval/request, which must enqueue behind the survivors.
-      modalQueue.shift()
-      publishHead()
-      head.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
-      if (kind === 'always') {
-        // Fire-and-forget: the call proceeds while the rule persists; a write
-        // failure surfaces as a notice, never as an answer error.
-        void writeAllowRule(head.view.toolName, head.view.preview).catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
-        })
-      }
+      modal.answerApproval(kind, { writeAllowRule, showNotice })
     },
     questionMove(delta) {
       emit(moveQuestionFocus(state, delta))

@@ -29,3 +29,16 @@ export interface DriverBashCtx {
   /** Record a command in bash-mode history (dedup + cap + persist). */
   appendBashHistory(command: string): void
 }
+
+/**
+ * The slice of createDriver's closed-over state that the modal pipeline
+ * (approvals + questions sharing one FIFO) needs. `state()` returns the CURRENT
+ * view-model value — createDriver rebinds `state` on every emit, so the modal
+ * collaborator must read it through a getter rather than a stale snapshot.
+ */
+export interface DriverModalCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+}
