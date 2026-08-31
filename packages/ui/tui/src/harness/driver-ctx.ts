@@ -101,6 +101,25 @@ export interface DriverHudCtx {
 }
 
 /**
+ * The slice of createDriver's closed-over state that the slash-command
+ * catalog + subagent lifecycle section needs (driver-catalog.ts). `state()`
+ * returns the CURRENT view-model value — createDriver rebinds `state` on every
+ * emit, so the collaborator must read it through a getter rather than a stale
+ * snapshot. `current` is the rebindable agent holder (list() reads the live
+ * agent).
+ */
+export interface DriverCatalogCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** The rebindable agent holder (switchSession replaces it in place). */
+  current: { agent: Agent }
+  /** Host context for the commands service lookup + event subscriptions. */
+  ctx: Context
+}
+
+/**
  * The slice of createDriver's closed-over state that the approval + user
  * question pipeline needs (driver-approvals.ts). The section owns the modal
  * FIFO (via createModalQueue) so approvals and questions share one queue.

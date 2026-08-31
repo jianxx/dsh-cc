@@ -27,6 +27,7 @@ import {
 } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createApprovalsSection } from './driver-approvals.ts'
+import { createCatalogSection } from './driver-catalog.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
 import { createHudSection } from './driver-hud.ts'
@@ -49,13 +50,11 @@ import type {
   SessionQueryLike,
   SessionTitleResultLike,
   ShellExecutorLike,
-  SubagentRunEndInfoLike,
-  SubagentRunInfoLike,
   TokenUsageStateLike,
   ToolsLike,
 } from '../state/driver-types.ts'
 
-import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
+import { parseSlash } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
@@ -101,10 +100,8 @@ import {
   toggleGlobalCollapse,
   toggleThinking,
   upsertRow,
-  upsertSubagent,
   type CatalogEntryView,
   type SessionEntryView,
-  type SubagentRunView,
   type TuiState,
 } from '../store.ts'
 
@@ -499,81 +496,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     liveMode,
   })
 
-  // --- Slash-command catalog: merge local commands with the harness registry.
-  // The catalog is rebuilt at boot and whenever the harness fires
-  // `commands/change` (register/unregister). The cached array identity stays
-  // stable between refreshes so root.ts can detect a change by reference
-  // equality and rebuild the autocomplete provider only when needed.
-  const commandsService = ctx.get('commands') as CommandsLike | undefined
-  let commandCatalog: readonly { name: string; description?: string; argumentHint?: string }[] = []
-  const refreshCommandCatalog = (): void => {
-    const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
-    const merged: { name: string; description?: string; argumentHint?: string }[] =
-      LOCAL_COMMANDS.map(c => ({
-        name: c.name,
-        description: c.description,
-        ...c.argumentHint === undefined ? {} : { argumentHint: c.argumentHint },
-      }))
-    if (commandsService !== undefined) {
-      try {
-        const harnessList = commandsService.list(current.agent)
-        for (const cmd of harnessList) {
-          if (localNames.has(cmd.name)) continue // local wins, dedupe
-          merged.push({
-            name: cmd.name,
-            ...cmd.description === undefined ? {} : { description: cmd.description },
-            ...cmd.input?.hint === undefined ? {} : { argumentHint: cmd.input.hint },
-          })
-        }
-      } catch {
-        // A failing list() degrades to local-only; don't poison the catalog.
-      }
-    }
-    commandCatalog = merged
-  }
-  refreshCommandCatalog()
-  if (commandsService !== undefined) {
-    // `commands/change` is declared via module augmentation in
-    // @deepseek-ai/dsh-commands, but the tui package doesn't import that
-    // package directly, so the augmentation isn't in tsc's view here. The
-    // event exists at runtime (the commands service dispatches it on
-    // register/unregister); cast through the Events map to subscribe without
-    // pulling a new dep into the type graph.
-    const changeEvent = 'commands/change' as Parameters<typeof ctx.on>[0]
-    ctx.on(changeEvent, () => {
-      refreshCommandCatalog()
-    })
-  }
-
-  // Subagent lifecycle: `subagent/start`|`subagent/end` are global,
-  // process-scoped observe-only snapshots paired by `runId` (declared via
-  // module augmentation in @deepseek-ai/subagent, which tui doesn't import).
-  // Same cast pattern as `commands/change` above. Tracking is event-only —
-  // no `SubagentRuntime.listChildren` call — so the driver stays
-  // composition-agnostic (tool-cordis may be absent). Events are NOT
-  // session-filtered: per-session parentage isn't on the payload, so the
-  // list tracks all runs observed this process; `/agents` labels it
-  // accordingly and does not overclaim parentage.
-  const subagentStart = 'subagent/start' as Parameters<typeof ctx.on>[0]
-  const subagentEnd = 'subagent/end' as Parameters<typeof ctx.on>[0]
-  ctx.on(subagentStart, (info: SubagentRunInfoLike) => {
-    emit(upsertSubagent(state, {
-      runId: String(info.runId),
-      provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'running',
-    }))
-  })
-  ctx.on(subagentEnd, (info: SubagentRunEndInfoLike) => {
-    const view: SubagentRunView = {
-      runId: String(info.runId),
-      provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'done',
-      ...(info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
-    }
-    emit(upsertSubagent(state, view))
-  })
+  // Slash-command catalog + subagent lifecycle listeners live in a section so
+  // the harness factory stays lean. listCommands() back-ends the Driver API.
+  const catalog = createCatalogSection({ emit, state: () => state, current, ctx })
 
   const loadCatalog = async (): Promise<CatalogEntry[]> => {
     const llm = ctx.get('llm') as LlmLike | undefined
@@ -1493,7 +1418,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       return [...efforts.map(level => level.id), 'default']
     },
     listCommands() {
-      return commandCatalog
+      return catalog.listCommands()
     },
     async dispose() {
       if (noticeTimer !== undefined) {
