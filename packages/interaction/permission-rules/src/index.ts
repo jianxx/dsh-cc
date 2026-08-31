@@ -466,7 +466,7 @@ export class PermissionRulesService extends Service {
    */
   setMode(agent: Agent, mode: PermissionMode): void {
     if (mode === 'plan') {
-      throw new TypeError('permission mode "plan" is owned by plan-mode; use planMode.set or /permissions plan')
+      throw new TypeError('permission mode "plan" is owned by plan-mode; use /plan or /permissions plan')
     }
     if (!SWITCHABLE_PERMISSION_MODES.includes(mode)) {
       throw new TypeError(`permission mode must be one of ${[...SWITCHABLE_PERMISSION_MODES, 'plan'].join(', ')}`)

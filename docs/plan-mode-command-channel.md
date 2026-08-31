@@ -310,12 +310,16 @@ the root context (`command-permissions/tests/command-permissions.spec.ts:42`)
    host-command context resolves `/plan` through the scope layers
    (`commands.execute` resolves per-agent views,
    `deepseek-harness/packages/interaction/commands/src/index.ts:427-429`) —
-   which is exactly the assumption today's bug broke. In
-   `packages/preset/cc/tests`, boot the vendored cc preset in-process,
-   create an agent, and assert `commands.execute(agent, '/permissions plan')`
-   succeeds and `foldPlanMode` flips; then a cycle away exits plan and
-   switches the engine mode. This is the test that would have caught the
-   realm bug at introduction.
+   which is exactly the assumption today's bug broke. Landed as
+   `packages/interaction/command-permissions/tests/plan-channel.integration.spec.ts`:
+   boots the essential slice in-process with real services (session store,
+   command runtime, system prompt, tools) and plan-mode mounted behind a
+   real `ctx.isolate('planMode')` realm — pinning that
+   `ctx.get('planMode')` is undefined while `/permissions plan` still
+   switches, exits, and no-ops correctly. The full preset-roster boot is
+   intentionally not used: this slice discriminates the wiring with far
+   less boot weight. Verified red against the pre-fix source: it is the
+   test that would have caught the realm bug at introduction.
 5. **`mode-cycle.spec.ts`** — untouched: `plan` remains in the cycle; existing
    expectations keep passing and thereby pin constraint 1.
 6. Optional e2e mirroring upstream `plan-control-row.e2e.ts` — browser popup
