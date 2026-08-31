@@ -307,6 +307,9 @@ function fakeDriver(
     },
     async openSessionSwitcher() {},
     sessionSwitcherMove() {},
+    sessionSwitcherType() {},
+    sessionSwitcherBackspace() {},
+    sessionSwitcherToggleScope() {},
     async sessionSwitcherSubmit() {},
     sessionSwitcherCancel() {},
     async switchSession() {},
@@ -1462,6 +1465,8 @@ describe('vt-renderer', () => {
       focused: 1,
       switching: false,
       currentId: 's-cur',
+      query: '',
+      scope: 'cwd',
     })
     const driver = fakeDriver(state)
 
@@ -1482,8 +1487,10 @@ describe('vt-renderer', () => {
     expect(stripped).toMatch(/s-cur.*●/)
     // Footer
     expect(stripped).toContain('move')
-    expect(stripped).toContain('enter switch')
-    expect(stripped).toContain('esc cancel')
+    expect(stripped).toContain('enter resume')
+    expect(stripped).toContain('tab all projects')
+    expect(stripped).toContain('type to filter')
+    expect(stripped).toContain('esc close')
 
     root.tui.stop()
     root.destroy()
@@ -1500,6 +1507,8 @@ describe('vt-renderer', () => {
       focused: 0,
       switching: true,
       currentId: 's-a',
+      query: '',
+      scope: 'cwd',
     })
     const driver = fakeDriver(state)
 

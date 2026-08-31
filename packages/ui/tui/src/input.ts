@@ -33,6 +33,9 @@ export interface InputSink {
   permissionPickerSubmit(): void
   permissionPickerCancel(): void
   sessionSwitcherMove(delta: -1 | 1): void
+  sessionSwitcherType(text: string): void
+  sessionSwitcherBackspace(): void
+  sessionSwitcherToggleScope(): void
   sessionSwitcherSubmit(): Promise<void>
   sessionSwitcherCancel(): void
   /** Toggle the Ctrl+T todo panel: close it when open, open it when closed. */
@@ -204,15 +207,22 @@ export function routePermissionPickerInput(driver: InputSink, data: string): voi
 }
 
 /**
- * Route one raw keypress into the open session switcher. Only arrows, enter,
- * and escape are recognized; everything else is dropped — the switcher is
- * modal and the composer editor must never see keystrokes while it is open.
- * While `switching` is true, every key is consumed without action.
+ * Route one raw keypress into the open session switcher: arrows move, enter
+ * switches, tab toggles the cwd/all-projects scope, backspace and printable
+ * characters edit the query filter, and escape cancels (the two-stage
+ * clear-filter-then-close lives in the driver). Everything else is dropped —
+ * the switcher is modal and the composer editor must never see keystrokes
+ * while it is open. While `switching` is true, every key is consumed without
+ * action.
  */
 export function routeSessionSwitcherInput(driver: InputSink, data: string): void {
   if (driver.state.sessionSwitcher?.switching === true) return
   if (matchesKey(data, Key.escape)) {
     driver.sessionSwitcherCancel()
+    return
+  }
+  if (matchesKey(data, Key.tab)) {
+    driver.sessionSwitcherToggleScope()
     return
   }
   if (matchesKey(data, Key.up)) {
@@ -227,7 +237,12 @@ export function routeSessionSwitcherInput(driver: InputSink, data: string): void
     void driver.sessionSwitcherSubmit()
     return
   }
-  // All other keys consumed and ignored (modal).
+  if (matchesKey(data, Key.backspace)) {
+    driver.sessionSwitcherBackspace()
+    return
+  }
+  const printable = printableOf(data)
+  if (printable !== undefined) driver.sessionSwitcherType(printable)
 }
 
 /**

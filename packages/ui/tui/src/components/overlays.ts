@@ -21,6 +21,7 @@ import type {
 import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
 import { defaultTheme, type Theme } from './theme.ts'
+import { formatSessionRow } from '../harness/session-list.ts'
 
 /**
  * Cap on command/JSON preview lines in an approval box so a long payload
@@ -235,61 +236,57 @@ export function createPermissionPickerBox(picker: PermissionPickerView, theme: T
 const SESSION_SWITCHER_VISIBLE_ROWS = 10
 
 /**
- * Short relative-time label for a session timestamp. Renders as e.g.
- * "2m ago", "1h ago", "3d ago", or a `M/D` date for older entries.
- */
-function relativeDate(ts: number): string {
-  const diff = Date.now() - ts
-  const seconds = Math.floor(diff / 1000)
-  if (seconds < 60) return 'just now'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-  const d = new Date(ts)
-  return `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-/** First 8 chars of a session id — enough to distinguish in a short list. */
-function shortId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
-}
-
-/**
- * Session switcher box: title `Resume session`, rows of relative-date +
- * short id + dim cwd, a `❯` focus marker, a `●` on the current session,
- * windowed to {@link SESSION_SWITCHER_VISIBLE_ROWS} rows. A dim `Switching…`
- * footer replaces the key hint while a switch is in flight (input blocked).
+ * Session switcher box: title `Resume session` (plus the live query while a
+ * filter is typed), rows of relative last-activity time + title (or short
+ * id) + short id via {@link formatSessionRow}, with the cwd basename added
+ * in all-projects scope, a `❯` focus marker, and a `●` on the current
+ * session, windowed to {@link SESSION_SWITCHER_VISIBLE_ROWS} rows. An empty
+ * visible list explains itself (cwd scope hints at Tab → all projects). A
+ * dim `Switching…` footer replaces the key hint while a switch is in flight
+ * (input blocked).
  */
 export function createSessionSwitcherBox(sw: SessionSwitcherView, theme: Theme = defaultTheme): Container {
   const box = new Container()
-  box.addChild(new Text(theme.bold('Resume session'), 0, 0))
+  const querySuffix = sw.query.length > 0 ? theme.muted(`  /${sw.query}`) : ''
+  box.addChild(new Text(theme.bold('Resume session') + querySuffix, 0, 0))
 
   const total = sw.sessions.length
-  const cap = SESSION_SWITCHER_VISIBLE_ROWS
-  let start = 0
-  if (total > cap) {
-    start = Math.max(0, Math.min(sw.focused - Math.floor(cap / 2), total - cap))
-  }
-  const end = Math.min(start + cap, total)
+  if (total === 0) {
+    const empty = sw.scope === 'all'
+      ? 'No matching sessions'
+      : sw.totalCount === undefined
+      ? 'No sessions in this project — Tab to view all'
+      : `No sessions in this project — Tab to view all (${sw.totalCount})`
+    box.addChild(new Text(theme.muted(empty), 0, 0))
+  } else {
+    const cap = SESSION_SWITCHER_VISIBLE_ROWS
+    let start = 0
+    if (total > cap) {
+      start = Math.max(0, Math.min(sw.focused - Math.floor(cap / 2), total - cap))
+    }
+    const end = Math.min(start + cap, total)
 
-  for (let index = start; index < end; index += 1) {
-    const session = sw.sessions[index]!
-    const focused = sw.focused === index
-    const isCurrent = session.id === sw.currentId
-    const marker = focused ? '❯ ' : '  '
-    const currentMark = isCurrent ? ' ●' : ''
-    const cwdPart = session.cwd === undefined ? '' : theme.muted(` — ${session.cwd}`)
-    box.addChild(new Text(
-      `${marker}${relativeDate(session.createdAt)} ${shortId(session.id)}${cwdPart}${currentMark}`,
-      0, 0,
-    ))
+    for (let index = start; index < end; index += 1) {
+      const session = sw.sessions[index]!
+      const row = formatSessionRow(session, {
+        now: Date.now(),
+        currentId: sw.currentId,
+        showCwd: sw.scope === 'all',
+      })
+      const marker = sw.focused === index ? '❯ ' : '  '
+      const currentMark = row.current ? ' ●' : ''
+      const cwdPart = row.cwdPart === undefined ? '' : theme.muted(` — ${row.cwdPart}`)
+      box.addChild(new Text(
+        `${marker}${row.time} ${row.label} ${row.shortId}${cwdPart}${currentMark}`,
+        0, 0,
+      ))
+    }
   }
 
   box.addChild(new Text(
-    sw.switching ? theme.muted('Switching…') : theme.muted('↑↓ move · enter switch · esc cancel'),
+    sw.switching
+      ? theme.muted('Switching…')
+      : theme.muted('↑↓ move · enter resume · tab all projects · type to filter · esc close'),
     0, 0,
   ))
   return box

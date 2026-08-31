@@ -149,19 +149,31 @@ export interface SessionEntryView {
   id: string
   cwd?: string
   createdAt: number
+  /** Last-activity mtime from persistence when the backend can observe it. */
+  updatedAtMs?: number
+  /** Async-decorated session title; absent until the title read lands. */
+  title?: string
 }
 
 /**
- * Live view of the `/resume` session-switcher overlay: the session list
- * (newest-first), the focused index, a `switching` flag that dims input
- * while a switch is in flight, and the current session id so the renderer
- * can mark it with `●`.
+ * Live view of the `/resume` session-switcher overlay: the filtered,
+ * last-active-first session list, the focused index, a `switching` flag that
+ * dims input while a switch is in flight, the current session id (marked
+ * with `●`), the typed query filter, and the visibility scope. `sessions` is
+ * the visible list only — the full list stays in the driver and
+ * `totalCount` carries its length for the empty-cwd-scope hint.
  */
 export interface SessionSwitcherView {
   sessions: readonly SessionEntryView[]
   focused: number
   switching: boolean
   currentId: string
+  /** Free-text filter typed inside the picker ('' when none). */
+  query: string
+  /** Visibility scope: this project's cwd (default) or every project. */
+  scope: 'cwd' | 'all'
+  /** Length of the unfiltered list, for the "Tab to view all (N)" hint. */
+  totalCount?: number
 }
 
 /**
