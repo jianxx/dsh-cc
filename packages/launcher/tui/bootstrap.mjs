@@ -3,6 +3,8 @@
  * decision table without spawning dsh.
  */
 
+import { join } from 'node:path'
+
 export const PROFILE = 'tui'
 export const BUNDLES = [
   '@jianxx/dsh-cc-bundle-permissions',
@@ -95,4 +97,167 @@ export function continueHint(requested, envTarget, marker) {
 export function bootstrapCommand(profileExists, version) {
   if (profileExists) return undefined
   return ['plugin', '--profile', PROFILE, 'add', ...BUNDLES.map(name => `${name}@${version}`)]
+}
+
+// --- worktree support (--worktree) ------------------------------------------
+// Slug, path, and branch rules mirror
+// packages/workspace/tool-git-worktree/src/worktree.ts exactly — keep the two
+// in sync. The tool package cannot be imported here: the launcher is plain
+// dependency-free JS that runs before any build.
+
+/** Env var carrying the launcher's worktree-session descriptor to the TUI. */
+export const WORKTREE_ENV = 'DSH_CC_WORKTREE'
+
+const MAX_SLUG_LENGTH = 64
+const SEGMENT = /^[a-zA-Z0-9._-]+$/
+const ADJECTIVES = ['swift', 'bright', 'calm', 'keen', 'bold']
+const NOUNS = ['fox', 'owl', 'elm', 'oak', 'ray']
+
+/**
+ * Scan dsh-cc args for the `--worktree` flag and strip it. Name forms:
+ * `--worktree <name>`, `--worktree=<name>`, or bare `--worktree` (random
+ * name). A following token that starts with `-` is NOT taken as the name.
+ * @param {string[]} args
+ * @returns {{ name: string | null | undefined, args: string[] }}
+ *   `name` is undefined when the flag is absent, null when present without a
+ *   name, and the slug otherwise; `args` is the remainder to forward.
+ */
+export function parseWorktreeFlag(args) {
+  let name
+  const rest = []
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]
+    if (token === '--worktree') {
+      const value = args[i + 1]
+      if (value !== undefined && !value.startsWith('-')) {
+        name = value
+        i += 1
+      } else {
+        name = null
+      }
+      continue
+    }
+    if (token.startsWith('--worktree=')) {
+      const value = token.slice('--worktree='.length)
+      name = value.length > 0 ? value : null
+      continue
+    }
+    rest.push(token)
+  }
+  return { name, args: rest }
+}
+
+/**
+ * Validate a worktree slug. Identical rules and messages to the tool
+ * package's validateSlug.
+ * @param {string} slug
+ */
+export function validateWorktreeSlug(slug) {
+  if (slug.length > MAX_SLUG_LENGTH) {
+    throw new Error(
+      `invalid worktree name: must be ${MAX_SLUG_LENGTH} characters or fewer (got ${slug.length})`,
+    )
+  }
+  for (const segment of slug.split('/')) {
+    if (segment === '.' || segment === '..') {
+      throw new Error(
+        `invalid worktree name "${slug}": must not contain "." or ".." path segments`,
+      )
+    }
+    if (!SEGMENT.test(segment)) {
+      throw new Error(
+        `invalid worktree name "${slug}": each "/"-separated segment must be non-empty and contain only letters, digits, dots, underscores, and dashes`,
+      )
+    }
+  }
+}
+
+/**
+ * @param {string} slug - A validated worktree slug.
+ * @returns {string} the flattened single-directory name (`user/feature` → `user+feature`).
+ */
+export function flattenSlug(slug) {
+  return slug.replaceAll('/', '+')
+}
+
+/**
+ * @param {string} slug - A validated worktree slug.
+ * @returns {string} the branch backing the worktree.
+ */
+export function worktreeBranch(slug) {
+  return `worktree-${flattenSlug(slug)}`
+}
+
+/**
+ * @param {string} repoRoot
+ * @param {string} slug - A validated worktree slug.
+ * @returns {string} the absolute on-disk worktree path.
+ */
+export function worktreePathFor(repoRoot, slug) {
+  return join(repoRoot, '.claude', 'worktrees', flattenSlug(slug))
+}
+
+/**
+ * Generate a random slug (`swift-fox-8f3a`), same word lists as the tool
+ * package. Injectable `rand` keeps tests deterministic.
+ * @param {() => number} [rand]
+ * @returns {string}
+ */
+export function randomWorktreeSlug(rand = Math.random) {
+  const adjective = ADJECTIVES[Math.floor(rand() * ADJECTIVES.length)]
+  const noun = NOUNS[Math.floor(rand() * NOUNS.length)]
+  const suffix = rand().toString(36).slice(2, 6)
+  return `${adjective}-${noun}-${suffix}`
+}
+
+/**
+ * @param {string} repoRoot
+ * @param {string | null} name - Requested slug, or null for a random one.
+ * @param {() => number} [rand]
+ * @returns {{ slug: string, worktreePath: string, branch: string }}
+ */
+export function planWorktree(repoRoot, name, rand) {
+  const slug = name === null || name === undefined ? randomWorktreeSlug(rand) : name
+  validateWorktreeSlug(slug)
+  return { slug, worktreePath: worktreePathFor(repoRoot, slug), branch: worktreeBranch(slug) }
+}
+
+/**
+ * argv for `git worktree add -B <branch> <path> HEAD` (execFile form — no
+ * shell, so no quoting concerns). `-B` resets a stale orphan branch left by
+ * a removed worktree.
+ * @param {{ worktreePath: string, branch: string }} plan
+ * @returns {string[]}
+ */
+export function worktreeAddArgv(plan) {
+  return ['worktree', 'add', '-B', plan.branch, plan.worktreePath, 'HEAD']
+}
+
+/**
+ * Env fragment handed to the spawned dsh process so the TUI can recognize
+ * this session as launcher-managed worktree session at /quit time.
+ * @param {{ worktreePath: string, branch: string }} plan
+ * @param {string} repoRoot
+ * @param {string} baseHead - The commit the worktree was based on.
+ * @returns {Record<string, string>}
+ */
+export function worktreeEnv(plan, repoRoot, baseHead) {
+  return {
+    [WORKTREE_ENV]: JSON.stringify({
+      repoRoot,
+      worktreePath: plan.worktreePath,
+      branch: plan.branch,
+      baseHead,
+    }),
+  }
+}
+
+/**
+ * Collision policy for `git worktree add`: a random slug may retry with a
+ * fresh name; a user-named slug fails immediately with an actionable error.
+ * @param {{ named: boolean, attempt: number, maxAttempts?: number }} params
+ * @returns {'retry' | 'fail'}
+ */
+export function slugRetryDecision({ named, attempt, maxAttempts = 5 }) {
+  return !named && attempt < maxAttempts ? 'retry' : 'fail'
 }

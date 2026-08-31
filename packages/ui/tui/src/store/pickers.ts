@@ -3,7 +3,8 @@
  * park-or-clear plus clamped focus/move pattern per picker overlay.
  * @module @jianxx/dsh-cc-tui/store/pickers
  */
-import type { EffortPickerView, ModelPickerView, PermissionPickerView, SessionSwitcherView, TuiState } from './views.ts'
+import { WORKTREE_EXIT_OPTION_COUNT } from './views.ts'
+import type { EffortPickerView, ModelPickerView, PermissionPickerView, SessionSwitcherView, TuiState, WorktreeExitView } from './views.ts'
 
 /** Park or clear the `/model` picker overlay. */
 export function setModelPicker(state: TuiState, picker: ModelPickerView | undefined): TuiState {
@@ -97,4 +98,18 @@ export function moveSessionSwitcherFocus(state: TuiState, delta: -1 | 1): TuiSta
   const sw = state.sessionSwitcher
   if (sw === undefined) return state
   return focusSessionSwitcher(state, sw.focused + delta)
+}
+
+/** Park or clear the `/quit` worktree-exit confirmation overlay. */
+export function setWorktreeExit(state: TuiState, view: WorktreeExitView | undefined): TuiState {
+  const { worktreeExit: _dropped, ...rest } = state
+  return view === undefined ? rest : { ...rest, worktreeExit: view }
+}
+
+/** Move the worktree-exit focus by one row (clamped; no wrap). */
+export function moveWorktreeExitFocus(state: TuiState, delta: -1 | 1): TuiState {
+  const view = state.worktreeExit
+  if (view === undefined) return state
+  const focused = Math.max(0, Math.min(view.focused + delta, WORKTREE_EXIT_OPTION_COUNT - 1))
+  return setWorktreeExit(state, { ...view, focused })
 }

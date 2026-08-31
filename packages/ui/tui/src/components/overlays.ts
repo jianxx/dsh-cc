@@ -17,6 +17,7 @@ import type {
   TodoItemView,
   UsageTotalsView,
   UsageView,
+  WorktreeExitView,
 } from '../store.ts'
 import { renderDiffLines } from './diff-card.ts'
 import { createMarkdownTheme } from './markdown-theme.ts'
@@ -448,5 +449,45 @@ export function createUsagePanelBox(view: UsageView | undefined, theme: Theme = 
   }
 
   box.addChild(new Text(theme.muted('quota data unavailable · Esc close'), 0, 0))
+  return box
+}
+
+/**
+ * `/quit` worktree-exit confirmation box: the session descriptor, the
+ * removal evidence next to the destructive option, and the three choices
+ * (keep / remove / cancel). Focused row carries a `❯` prefix. While a
+ * removal is in flight (`busy`) the footer reports progress and keys are
+ * swallowed upstream.
+ */
+export function createWorktreeExitBox(view: WorktreeExitView, theme: Theme = defaultTheme): Container {
+  const box = new Container()
+  box.addChild(new Text(theme.bold('Exit worktree session?'), 0, 0))
+  box.addChild(new Text(`Worktree: ${view.worktreePath}`, 0, 0))
+  box.addChild(new Text(`Branch: ${view.branch}`, 0, 0))
+
+  if (view.dirtyFiles !== undefined) {
+    box.addChild(new Text(`Uncommitted changes: ${view.dirtyFiles}`, 0, 0))
+  }
+  // Commits-ahead is only ever known for launcher-managed sessions (it needs
+  // the base commit); detected sessions show dirtiness alone.
+  if (view.commitsAhead !== undefined) {
+    box.addChild(new Text(`Commits ahead of base: ${view.commitsAhead}`, 0, 0))
+  }
+
+  const options = [
+    'Keep worktree and exit',
+    view.ownsBranch ? `Remove worktree and exit (and delete branch ${view.branch})` : 'Remove worktree and exit',
+    'Cancel',
+  ]
+  for (let index = 0; index < options.length; index += 1) {
+    const marker = view.focused === index ? '❯ ' : '  '
+    box.addChild(new Text(`${marker}${options[index]}`, 0, 0))
+  }
+
+  if (view.busy) {
+    box.addChild(new Text(theme.muted('Removing worktree…'), 0, 0))
+  } else {
+    box.addChild(new Text(theme.muted('↑↓ move · enter confirm · esc cancel'), 0, 0))
+  }
   return box
 }

@@ -28,7 +28,9 @@ export type {
   UsagePanelView,
   UsageTotalsView,
   UsageView,
+  WorktreeExitView,
 } from './store/views.ts'
+export { WORKTREE_EXIT_OPTION_COUNT } from './store/views.ts'
 export {
   clearRows,
   clearTurn,
@@ -55,10 +57,12 @@ export {
   moveModelPickerFocus,
   movePermissionPickerFocus,
   moveSessionSwitcherFocus,
+  moveWorktreeExitFocus,
   setEffortPicker,
   setModelPicker,
   setPermissionPicker,
   setSessionSwitcher,
+  setWorktreeExit,
 } from './store/pickers.ts'
 export {
   backspaceQuestionText,

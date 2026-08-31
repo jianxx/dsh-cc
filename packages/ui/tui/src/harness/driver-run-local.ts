@@ -26,7 +26,12 @@ import {
 import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { shortenSession } from '../statusline.ts'
-import { clearRows, openUsagePanel, upsertRow } from '../store.ts'
+import { clearRows, moveWorktreeExitFocus, openUsagePanel, setWorktreeExit, upsertRow } from '../store.ts'
+import {
+  createWorktreeExitHooks,
+  ownsBranch,
+  type WorktreeExitSession,
+} from './worktree-exit.ts'
 import type {
   ContextPressureStateLike,
   TokenUsageStateLike,
@@ -55,10 +60,30 @@ export interface RunLocalSection {
   copyLatestReply(): void
   runLocal(name: string, rawInput: string): Promise<void>
   runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+  /** Move the `/quit` worktree-exit confirmation focus by one row. */
+  worktreeExitMove(delta: -1 | 1): void
+  /** Confirm the focused worktree-exit option (keep / remove / cancel). */
+  worktreeExitSubmit(): Promise<void>
+  /** Dismiss the `/quit` worktree-exit overlay without quitting. */
+  worktreeExitCancel(): void
 }
 
 export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
   const { emit, showNotice } = rt
+  const worktreeExit = rt.config.worktreeExit ?? createWorktreeExitHooks()
+
+  // The section owns the quit finalizer: after a `/quit` decision settles it
+  // persists the resume target (unless the worktree is being removed), tears
+  // down the session handle, then hands control to `config.onQuit` (the
+  // plugin's shutdown) when wired. `persist` is false on the remove path —
+  // resuming into a deleted worktree is meaningless.
+  const finalizeQuit = async (persist: boolean): Promise<void> => {
+    if (persist && rt.getMarkedContent()) {
+      rt.persistResumeTarget()
+    }
+    await rt.current.handle.dispose()
+    rt.config.onQuit?.()
+  }
 
   // --- /export-md: local transcript utilities --------------------------------
   // /export-md serializes the live rows via rowsToMarkdown — an explicit path
@@ -96,8 +121,32 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
 
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
-      if (rt.getMarkedContent()) rt.persistResumeTarget()
-      await rt.current.handle.dispose()
+      // When the session cwd is a recognized worktree, `/quit` parks a
+      // confirmation overlay instead of exiting: the user decides whether to
+      // keep the worktree or remove it (with its owned branch) on exit.
+      let session: WorktreeExitSession | undefined
+      try {
+        session = await worktreeExit.probe(rt.cwd)
+      } catch {
+        session = undefined
+      }
+      if (session !== undefined) {
+        const evidence = await worktreeExit.evidence(session)
+        emit(setWorktreeExit(rt.state(), {
+          repoRoot: session.repoRoot,
+          worktreePath: session.worktreePath,
+          branch: session.branch,
+          managed: session.kind === 'managed',
+          ownsBranch: ownsBranch(session),
+          ...(session.baseHead === undefined ? {} : { baseHead: session.baseHead }),
+          ...(evidence.dirtyFiles === undefined ? {} : { dirtyFiles: evidence.dirtyFiles }),
+          ...(evidence.commitsAhead === undefined ? {} : { commitsAhead: evidence.commitsAhead }),
+          focused: 0,
+          busy: false,
+        }))
+        return
+      }
+      await finalizeQuit(true)
       return
     }
     if (name === 'clear') {
@@ -249,5 +298,70 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
     return result
   }
 
-  return { exportTranscript, copyLatestReply, runLocal, runHarness }
+  // --- /quit worktree-exit confirmation overlay ------------------------------
+  // Parked by the quit branch above when the session cwd is a recognized
+  // worktree; these three methods drive the overlay. State is re-read fresh
+  // via rt.state() (createDriver rebinds it on every emit).
+  const worktreeExitMove = (delta: -1 | 1): void => {
+    const view = rt.state().worktreeExit
+    if (view === undefined || view.busy) return
+    emit(moveWorktreeExitFocus(rt.state(), delta))
+  }
+
+  const worktreeExitCancel = (): void => {
+    const view = rt.state().worktreeExit
+    if (view === undefined || view.busy) return
+    emit(setWorktreeExit(rt.state(), undefined))
+  }
+
+  const worktreeExitSubmit = async (): Promise<void> => {
+    const view = rt.state().worktreeExit
+    if (view === undefined || view.busy) return
+    // Cancel row: just dismiss, session stays.
+    if (view.focused === 2) {
+      emit(setWorktreeExit(rt.state(), undefined))
+      return
+    }
+    // Keep row: standard quit with resume persistence.
+    if (view.focused === 0) {
+      emit(setWorktreeExit(rt.state(), undefined))
+      await finalizeQuit(true)
+      return
+    }
+    // Remove row: destructive — gather the session back, run the cleanup,
+    // and only tear down on success. A failed removal leaves the session
+    // and the worktree fully intact (never a half-disposed TUI).
+    emit(setWorktreeExit(rt.state(), { ...view, busy: true }))
+    const session: WorktreeExitSession = {
+      kind: view.managed ? 'managed' : 'detected',
+      repoRoot: view.repoRoot,
+      worktreePath: view.worktreePath,
+      branch: view.branch,
+      ...(view.baseHead === undefined ? {} : { baseHead: view.baseHead }),
+    }
+    try {
+      await worktreeExit.cleanup(session)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      emit(setWorktreeExit(rt.state(), undefined))
+      showNotice(`Worktree cleanup failed: ${message}. Session kept alive; worktree left in place.`)
+      return
+    }
+    emit(setWorktreeExit(rt.state(), undefined))
+    // The worktree is gone; clear the marked-content flag so dispose() (which
+    // the plugin's shutdown invokes) does not re-persist a resume marker that
+    // points into the deleted worktree.
+    rt.setMarkedContent(false)
+    await finalizeQuit(false)
+  }
+
+  return {
+    exportTranscript,
+    copyLatestReply,
+    runLocal,
+    runHarness,
+    worktreeExitMove,
+    worktreeExitSubmit,
+    worktreeExitCancel,
+  }
 }

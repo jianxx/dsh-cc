@@ -8,6 +8,7 @@
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { TuiState } from '../store.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
+import type { WorktreeExitHooks } from '../harness/worktree-exit.ts'
 
 /** The three approval answers: grant once, grant persistently, reject. */
 export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
@@ -203,6 +204,21 @@ export interface Driver {
    */
   usagePanelClose(): void
   /**
+   * Move the `/quit` worktree-exit confirmation focus by one row (clamped;
+   * no wrap). Overlay options: 0 keep, 1 remove, 2 cancel.
+   */
+  worktreeExitMove(delta: -1 | 1): void
+  /**
+   * Confirm the focused worktree-exit option. Keep exits normally; Remove
+   * runs the cleanup and only exits on success (failure keeps the session
+   * alive); Cancel dismisses the overlay. No-op while `busy`.
+   */
+  worktreeExitSubmit(): Promise<void>
+  /**
+   * Dismiss the worktree-exit overlay without quitting. No-op while `busy`.
+   */
+  worktreeExitCancel(): void
+  /**
    * Show a one-line transient notice above the composer. The notice clears
    * itself after `ttlMs` (default 3000); a newer notice replaces the pending
    * clear timer of the previous one.
@@ -270,23 +286,16 @@ export interface DriverConfig {
   model?: string
   /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
   historyDir?: string
-  /**
-   * Git-branch probe used by the statusline (best-effort, never throws).
-   * Injectable so tests avoid a real child process; defaults to
-   * `gitBranchOf`.
-   */
+  /** Git-branch probe for the statusline (best-effort); injectable for tests. */
   branchProbe?: (cwd: string) => Promise<string | undefined>
-  /**
-   * Output directory for `/export-md` when no path is given. Defaults to
-   * `$DSH_HOME/tui/exports` (same resolution as `resume-target`).
-   */
+  /** Output directory for `/export-md` (default `$DSH_HOME/tui/exports`). */
   exportDir?: string
-  /**
-   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
-   * Injectable so tests capture the sequence; production wires it to the live
-   * terminal in plugin.ts (safe inline — the sequence paints nothing).
-   */
+  /** Sink for the OSC 52 clipboard sequence `/copy` emits; injectable. */
   copyWrite?: (sequence: string) => void
+  /** `/quit` worktree-exit seam (probe/evidence/cleanup); injectable for tests. */
+  worktreeExit?: WorktreeExitHooks
+  /** Quit finalizer invoked after a `/quit` decision settles. */
+  onQuit?: () => void
 }
 
 export type ToolsLike = {
