@@ -153,6 +153,8 @@ export interface SessionEntryView {
   updatedAtMs?: number
   /** Async-decorated session title; absent until the title read lands. */
   title?: string
+  /** Parent session id when this entry is a fork/child. */
+  parentSession?: string
 }
 
 /**

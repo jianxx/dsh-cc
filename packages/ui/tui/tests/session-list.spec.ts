@@ -86,6 +86,23 @@ describe('filterSessions', () => {
     expect(filterSessions(unsorted, { cwd: undefined, scope: 'all', query: 'same' }).map(e => e.id))
       .toEqual(['c', 'a', 'b'])
   })
+
+  it('hides child/fork sessions unless they are the live current session', () => {
+    const forked = entries(
+      { id: 'root', cwd: '/proj', createdAt: 1, title: 'Root work' },
+      { id: 'child-a', cwd: '/proj', createdAt: 2, parentSession: 'root', title: 'Root work' },
+      { id: 'child-b', cwd: '/proj', createdAt: 3, parentSession: 'root', title: 'Root work' },
+      { id: 'other-root', cwd: '/proj', createdAt: 4, title: 'Other work' },
+    )
+    expect(filterSessions(forked, { cwd: '/proj', scope: 'cwd', query: '' }).map(e => e.id))
+      .toEqual(['root', 'other-root'])
+    expect(filterSessions(forked, {
+      cwd: '/proj',
+      scope: 'cwd',
+      query: '',
+      currentId: 'child-a',
+    }).map(e => e.id)).toEqual(['root', 'child-a', 'other-root'])
+  })
 })
 
 describe('formatSessionRow', () => {

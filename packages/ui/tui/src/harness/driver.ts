@@ -170,7 +170,13 @@ type LlmLike = {
 }
 
 type PersistenceLike = {
-  list(signal?: AbortSignal): Promise<{ id: string; cwd?: string; createdAt: number; updatedAtMs?: number }[]>
+  list(signal?: AbortSignal): Promise<{
+    id: string
+    cwd?: string
+    createdAt: number
+    updatedAtMs?: number
+    parentSession?: string
+  }[]>
 }
 
 /**
@@ -180,8 +186,13 @@ type PersistenceLike = {
  * fulfilled value carries the session header plus its latest title snapshot.
  */
 type SessionTitleResultLike =
-  | { status: 'fulfilled'; value: { session: { id: string }; title?: { title: string } } }
-  | { status: 'rejected' }
+  | {
+    status: 'fulfilled'
+    /** Requested session id — the join key. Do not use `value.session.id`. */
+    sessionId: string
+    value: { session: { id: string }; title?: { title: string } }
+  }
+  | { status: 'rejected'; sessionId?: string }
 
 type SessionQueryLike = {
   readTitleSnapshots(ids: readonly string[], signal?: AbortSignal): Promise<readonly SessionTitleResultLike[]>
@@ -1614,6 +1625,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     createdAt: s.createdAt,
     ...s.updatedAtMs === undefined ? {} : { updatedAtMs: s.updatedAtMs },
     ...s.title === undefined ? {} : { title: s.title },
+    ...s.parentSession === undefined ? {} : { parentSession: s.parentSession },
   })
 
   /**
@@ -1639,7 +1651,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     for (const result of results) {
       if (result.status !== 'fulfilled') continue
       const title = result.value.title?.title
-      if (title !== undefined && title.length > 0) titles.set(result.value.session.id, title)
+      if (title === undefined || title.length === 0) continue
+      // Join on the requested id (`sessionId`), not `value.session.id`.
+      // The latter is a cloned header and is not the batch's identity key —
+      // using it stamps one title onto every row when headers collide.
+      titles.set(result.sessionId, title)
     }
     if (titles.size === 0) return
     const withTitle = (entry: SessionListEntry): SessionListEntry => {
@@ -1662,6 +1678,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       cwd: current.agent.session.header.cwd ?? cwd,
       scope: sw.scope,
       query: sw.query,
+      currentId: sw.currentId,
     })
     const index = visible.findIndex(s => s.id === sw.currentId)
     emit(setSessionSwitcher(state, {
@@ -1688,8 +1705,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // have been created elsewhere, and the current session must always be
     // visible in the default (cwd) scope.
     const scopeCwd = current.agent.session.header.cwd ?? cwd
-    const visible = filterSessions(allSessions, { cwd: scopeCwd, scope: 'cwd', query: '' })
     const currentId = String(current.agent.session.id)
+    const visible = filterSessions(allSessions, {
+      cwd: scopeCwd,
+      scope: 'cwd',
+      query: '',
+      currentId,
+    })
     const index = visible.findIndex(s => s.id === currentId)
     emit(setSessionSwitcher(state, {
       sessions: visible.map(toSessionEntryView),

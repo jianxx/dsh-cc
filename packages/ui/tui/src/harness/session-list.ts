@@ -14,6 +14,8 @@ export type SessionListEntry = {
   updatedAtMs?: number
   /** Async-decorated session title; absent until the title read lands. */
   title?: string
+  /** Parent session id when this entry is a fork/child; omitted for top-level sessions. */
+  parentSession?: string
 }
 
 /** Picker visibility scope: this project's cwd, or every project. */
@@ -35,17 +37,21 @@ export function sortByActivity(entries: readonly SessionListEntry[]): SessionLis
 }
 
 /**
- * Filter sessions for the picker: cwd scope keeps only entries from the given
- * directory (entries without a cwd drop out of cwd scope; a missing or empty
- * cwd disables the scope), then a non-empty query keeps entries whose title,
- * id, or cwd contains it case-insensitively. Never re-sorts — the caller
- * controls order.
+ * Filter sessions for the picker: child/fork sessions (those with
+ * `parentSession`) are hidden unless they are the live session, cwd scope
+ * keeps only entries from the given directory (entries without a cwd drop
+ * out of cwd scope; a missing or empty cwd disables the scope), then a
+ * non-empty query keeps entries whose title, id, or cwd contains it
+ * case-insensitively. Never re-sorts — the caller controls order.
  */
 export function filterSessions(
   entries: readonly SessionListEntry[],
-  opts: { cwd?: string; scope: SessionScope; query: string },
+  opts: { cwd?: string; scope: SessionScope; query: string; currentId?: string },
 ): SessionListEntry[] {
   let result = entries.slice()
+  result = result.filter(entry =>
+    entry.parentSession === undefined || entry.id === opts.currentId,
+  )
   if (opts.scope === 'cwd' && opts.cwd !== undefined && opts.cwd.length > 0) {
     result = result.filter(entry => entry.cwd === opts.cwd)
   }

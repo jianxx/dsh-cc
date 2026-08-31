@@ -37,7 +37,7 @@ const withCwd = (s: FakeSession): FakeSession => ({ cwd: PROJ_CWD, ...s })
 function makeSwitchableCtx(opts: {
   createSession?: FakeSession
   resumeSessions?: Record<string, FakeSession>
-  sessionList?: { id: string; cwd?: string; createdAt: number; updatedAtMs?: number }[]
+  sessionList?: { id: string; cwd?: string; createdAt: number; updatedAtMs?: number; parentSession?: string }[]
   sessionQuery?: unknown
 }): {
   ctx: Record<string, unknown>
@@ -529,6 +529,21 @@ describe('createDriver /resume session switcher overlay', () => {
     expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-cur'])
   })
 
+  it('hides forked child sessions from the picker (same inherited title, different ids)', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-root', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-root', createdAt: 1000 },
+        { id: 's-child-a', createdAt: 2000, parentSession: 's-root' },
+        { id: 's-child-b', createdAt: 3000, parentSession: 's-root' },
+        { id: 's-other', createdAt: 4000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toEqual(['s-other', 's-root'])
+  })
+
   it('opens the overlay on an empty cwd scope when other projects have sessions', async () => {
     const { ctx } = makeSwitchableCtx({
       createSession: { id: 's-cur', events: [], status: 'idle' },
@@ -608,9 +623,10 @@ describe('createDriver /resume session switcher overlay', () => {
           release = resolve
         })
         return ids.map(id => {
-          if (id === 's-alpha') return { status: 'rejected' as const }
+          if (id === 's-alpha') return { status: 'rejected' as const, sessionId: id }
           return {
             status: 'fulfilled' as const,
+            sessionId: id,
             value: { session: { id }, ...id === 's-beta' ? { title: { title: 'Beta title' } } : {} },
           }
         })
@@ -647,6 +663,7 @@ describe('createDriver /resume session switcher overlay', () => {
         })
         return ids.map(id => ({
           status: 'fulfilled' as const,
+          sessionId: id,
           value: { session: { id }, title: { title: `late ${id}` } },
         }))
       },
@@ -665,6 +682,35 @@ describe('createDriver /resume session switcher overlay', () => {
 
     // The stale result must not resurrect or mutate any overlay state.
     expect(driver.state.sessionSwitcher).toBeUndefined()
+  })
+
+  it('joins titles on result.sessionId, not value.session.id (cloned headers are not the identity)', async () => {
+    const sessionQuery = {
+      readTitleSnapshots: async (ids: readonly string[]) => ids.map(id => ({
+        status: 'fulfilled' as const,
+        sessionId: id,
+        // Cloned/reused header whose id does NOT match the requested session —
+        // the real sessionQuery API's join key is `sessionId`.
+        value: {
+          session: { id: 's-alpha' },
+          title: { title: id === 's-beta' ? 'Beta title' : 'Alpha title' },
+        },
+      })),
+    }
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-alpha', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-alpha', createdAt: 2000 },
+        { id: 's-beta', createdAt: 3000 },
+      ],
+      sessionQuery,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-alpha')?.title).toBe('Alpha title')
+    expect(driver.state.sessionSwitcher?.sessions.find(s => s.id === 's-beta')?.title).toBe('Beta title')
   })
 
   it('skips title decoration when no sessionQuery service is mounted', async () => {
