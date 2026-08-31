@@ -10,9 +10,10 @@
 
 import type { TuiState } from '../store.ts'
 import type { ShellExecutorLike } from '../state/driver-types.ts'
-import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentSetup, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CatalogEntry } from '../model-catalog.ts'
+import type { ModalEntry } from './driver-modal.ts'
 
 /**
  * The slice of createDriver's closed-over state that `!` shell-command
@@ -172,4 +173,47 @@ export interface DriverPickersCtx {
   loadCatalog(): Promise<CatalogEntry[]>
   /** Run a bare /plan-/permissions channel command. Late-bound (after ini). */
   runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+}
+
+/**
+ * The slice of createDriver's closed-over state that the session switcher /
+ * /resume section needs (driver-sessions.ts). `state()` returns the CURRENT
+ * view-model value — createDriver rebinds `state` on every emit, so the
+ * collaborator must read it through a getter rather than a stale snapshot.
+ * `current` and `selection` are passed by reference (createDriver rebinds them
+ * in place across switchSession), and the section writes both in place.
+ */
+export interface DriverSessionsCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context for sessionPersistence/sessionQuery service lookup + agents.resume. */
+  ctx: Context
+  /** Working directory (fallback when the live header cwd is absent). */
+  cwd: string
+  /** The rebindable agent holder (switchSession disposes old, binds new). */
+  current: { handle: AgentHandle; agent: Agent }
+  /** Model selection ref; switchSession reseeds it after the rebind. */
+  selection: ModelSelectionRef
+  /** Fold the live plan/permission mode for the new session. */
+  liveMode(agent: Agent, fallback: string): string
+  /** Reset-and-reseed the model selection from the new agent's options. */
+  seedDefaultModel(reset?: boolean): Promise<void>
+  /** Fold the new session's history into a fresh TuiState. */
+  foldHistory(): TuiState
+  /** Re-seed the statusline HUD / todos / branch for the new session. */
+  seedHud(): void
+  seedTodos(): void
+  refreshBranch(): void
+  /** Persist the resume marker for a session id (idempotent). */
+  writeResumeTarget(id: string): void
+  /** Set the `markedContent` flag (createDriver owns the binding). */
+  setMarkedContent(value: boolean): void
+  /** Drain the shared approval/question FIFO (returns parked entries). */
+  spliceAll(): ModalEntry[]
+  /** The agent setup closure (wraps presetSetup + installModelSelection). */
+  withSelection: AgentSetup
+  /** Explicit provider/model override, or undefined when unset. */
+  agentOptions: { provider: string; model: string } | undefined
 }

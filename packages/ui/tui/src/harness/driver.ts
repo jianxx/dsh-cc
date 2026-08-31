@@ -12,13 +12,10 @@ import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, t
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import {
-  UserQuestionError,
-} from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { composePreset } from './preset.ts'
-import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
+import { createSessionsSection } from './driver-sessions.ts'
 import {
   defaultExportDir,
   exportStamp,
@@ -46,9 +43,6 @@ import type {
   ContextPressureStateLike,
   DriverConfig,
   LlmLike,
-  PersistenceLike,
-  SessionQueryLike,
-  SessionTitleResultLike,
   ShellExecutorLike,
   TokenUsageStateLike,
   ToolsLike,
@@ -77,25 +71,19 @@ import {
   createInitialState,
   enqueue,
   markExitAttempt,
-  moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
   openUsagePanel,
   popQueued,
   resetTurnStep,
-  setApproval,
   setBusy,
   setDraft,
-  setModelPicker,
   setNotice,
   setPermissionMode,
-  setQuestion,
-  setSessionSwitcher,
   setTurnActive,
   toggleGlobalCollapse,
   toggleThinking,
   upsertRow,
-  type SessionEntryView,
   type TuiState,
 } from '../store.ts'
 
@@ -539,232 +527,38 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   } = pickers
 
   // --- Session switching: /resume overlay + driver.switchSession ----------
-  // The overlay mirrors the model picker: state field + open/move/submit/cancel.
-  // switchSession is the in-process engine: dispose old, resume new, replay
-  // history through foldHistory (same as boot). Ordering is resume-first-
-  // dispose-after so a failed resume leaves the old session alive.
-
-  const listSessions = async (): Promise<readonly SessionListEntry[]> => {
-    const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
-    if (persistence === undefined) return []
-    return persistence.list()
-  }
-
-  // /resume picker working set: the full unfiltered list lives here while the
-  // overlay is open (state.sessionSwitcher.sessions is the visible slice
-  // only), and a generation token invalidates an in-flight title decoration
-  // when the picker closes or reopens.
-  let allSessions: SessionListEntry[] = []
-  let switcherGeneration = 0
-
-  const toSessionEntryView = (s: SessionListEntry): SessionEntryView => ({
-    id: s.id,
-    ...s.cwd === undefined ? {} : { cwd: s.cwd },
-    createdAt: s.createdAt,
-    ...s.updatedAtMs === undefined ? {} : { updatedAtMs: s.updatedAtMs },
-    ...s.title === undefined ? {} : { title: s.title },
-    ...s.parentSession === undefined ? {} : { parentSession: s.parentSession },
+  // Delegated to a free-function collaborator (harness/driver-sessions.ts);
+  // see that file for the switch engine, overlay picker, and session listing.
+  const sessions = createSessionsSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    current,
+    selection,
+    liveMode,
+    seedDefaultModel,
+    foldHistory,
+    seedHud,
+    seedTodos,
+    refreshBranch,
+    writeResumeTarget,
+    setMarkedContent: (value) => { markedContent = value },
+    spliceAll: () => approvals.spliceAll(),
+    withSelection,
+    agentOptions,
   })
-
-  /**
-   * Async title decoration for the open picker. The generation token read
-   * before the await guards the continuation: a result landing after the
-   * picker closed (or was reopened, which re-bumped the token) is dropped
-   * instead of mutating a stale view. Per-id rejections are skipped; a
-   * whole-call failure or abort just skips decoration — the overlay never
-   * fails because titles are missing.
-   */
-  const decorateSessionTitles = async (ids: readonly string[]): Promise<void> => {
-    const generation = switcherGeneration
-    const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
-    if (sessionQuery === undefined || ids.length === 0) return
-    let results: readonly SessionTitleResultLike[]
-    try {
-      results = await sessionQuery.readTitleSnapshots(ids)
-    } catch {
-      return
-    }
-    if (generation !== switcherGeneration || state.sessionSwitcher === undefined) return
-    const titles = new Map<string, string>()
-    for (const result of results) {
-      if (result.status !== 'fulfilled') continue
-      const title = result.value.title?.title
-      if (title === undefined || title.length === 0) continue
-      // Join on the requested id (`sessionId`), not `value.session.id`.
-      // The latter is a cloned header and is not the batch's identity key —
-      // using it stamps one title onto every row when headers collide.
-      titles.set(result.sessionId, title)
-    }
-    if (titles.size === 0) return
-    const withTitle = (entry: SessionListEntry): SessionListEntry => {
-      const title = titles.get(entry.id)
-      return title === undefined ? entry : { ...entry, title }
-    }
-    allSessions = allSessions.map(withTitle)
-    const sw = state.sessionSwitcher
-    if (sw !== undefined) {
-      emit(setSessionSwitcher(state, { ...sw, sessions: sw.sessions.map(withTitle) }))
-    }
-  }
-
-  // Re-derive the visible list from the working set after a query/scope edit.
-  // Focus follows the current session when it survives the filter, else row 0.
-  const refilterSessionSwitcher = (): void => {
-    const sw = state.sessionSwitcher
-    if (sw === undefined) return
-    const visible = filterSessions(allSessions, {
-      cwd: current.agent.session.header.cwd ?? cwd,
-      scope: sw.scope,
-      query: sw.query,
-      currentId: sw.currentId,
-    })
-    const index = visible.findIndex(s => s.id === sw.currentId)
-    emit(setSessionSwitcher(state, {
-      ...sw,
-      sessions: visible.map(toSessionEntryView),
-      focused: index >= 0 ? index : 0,
-      totalCount: allSessions.length,
-    }))
-    // Second-chance decoration for newly visible, still-untitled rows
-    // (same generation rules, same 50-id cap as the initial open).
-    const untitled = visible.filter(s => s.title === undefined).slice(0, 50).map(s => s.id)
-    if (untitled.length > 0) void decorateSessionTitles(untitled)
-  }
-
-  const openSessionSwitcher = async (): Promise<void> => {
-    const sessions = await listSessions()
-    if (sessions.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
-      return
-    }
-    switcherGeneration += 1
-    allSessions = sortByActivity(sessions)
-    // Live header cwd wins over the process cwd: a marker-resumed session can
-    // have been created elsewhere, and the current session must always be
-    // visible in the default (cwd) scope.
-    const scopeCwd = current.agent.session.header.cwd ?? cwd
-    const currentId = String(current.agent.session.id)
-    const visible = filterSessions(allSessions, {
-      cwd: scopeCwd,
-      scope: 'cwd',
-      query: '',
-      currentId,
-    })
-    const index = visible.findIndex(s => s.id === currentId)
-    emit(setSessionSwitcher(state, {
-      sessions: visible.map(toSessionEntryView),
-      focused: index >= 0 ? index : 0,
-      switching: false,
-      currentId,
-      query: '',
-      scope: 'cwd',
-      totalCount: allSessions.length,
-    }))
-    // Decorate the first screenful asynchronously — the overlay must appear
-    // immediately, not wait for the title reads.
-    void decorateSessionTitles(visible.slice(0, 50).map(s => s.id))
-  }
-
-  const closeSessionSwitcher = (): void => {
-    // Bump the generation so an in-flight decoration lands nowhere, and drop
-    // the working set with the overlay.
-    switcherGeneration += 1
-    allSessions = []
-    emit(setSessionSwitcher(state, undefined))
-  }
-
-  const switchSession = async (id: string): Promise<void> => {
-    // No-op guard: same id → stay.
-    if (id === String(current.agent.session.id)) return
-
-    // Clear pending overlays and the modal queue (mirror the abort paths):
-    // every parked approval resolves cancelled and every parked question
-    // rejects cancelled. The session switcher overlay itself is managed by the
-    // caller (sessionSwitcherSubmit).
-    for (const entry of approvals.spliceAll()) {
-      if (entry.kind === 'approval') entry.resolve('cancelled')
-      else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
-    }
-    emit(setApproval(state, undefined))
-    emit(setQuestion(state, undefined))
-    emit(setModelPicker(state, undefined))
-    emit(closeTodoPanel(state))
-    emit(clearQueue(setBusy(state, false)))
-
-    // Resume first: keeps the old session alive if resume throws. The harness
-    // supports multiple concurrent agents (each independently scoped), so a
-    // brief overlap is safe. On the SESSION's stored options — omit
-    // agentOptions unless config.provider/model were explicitly set (same
-    // logic as boot).
-    let newHandle: AgentHandle
-    try {
-      newHandle = await ctx.agents.resume({
-        resumeSessionId: SessionId(id),
-        setup: withSelection,
-        ...agentOptions === undefined ? {} : { agentOptions },
-      })
-    } catch (error) {
-      const message = (error as Error)?.message ?? String(error)
-      emit(upsertRow(state, { kind: 'status', text: `Resume failed: ${message}` }))
-      return
-    }
-
-    // Success — dispose old, bind new. dispose() stops the loop, unregisters
-    // the agent, and removes its session from the in-memory store; it does NOT
-    // delete the durable session log.
-    await current.handle.dispose()
-    current.handle = newHandle
-    current.agent = newHandle.agent
-
-    // Refresh the model selection from the new agent's resolved options,
-    // falling back to the deployment default. Reset first so a stale selection
-    // from the previous session never leaks across a switch.
-    await seedDefaultModel(true)
-    writeResumeTarget(id)
-    markedContent = false
-
-    // Reset the transcript: clear + boot banner + fold new history + mode/busy.
-    emit(clearRows(state))
-    const modelLabel = selection.current?.model ?? 'default model'
-    emit(upsertRow(state, {
-      kind: 'status',
-      text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
-    }))
-    emit(foldHistory())
-    emit(setPermissionMode(state, liveMode(current.agent, 'default')))
-    // Success path: drop the previous session's anchor together with the busy
-    // sync (a failed resume returned above and keeps it), then re-anchor
-    // below once the new session's HUD is seeded.
-    emit(clearTurn(setBusy(state, current.agent.status === 'running')))
-    // Refresh the HUD, todos, and branch for the new session: stateOf may
-    // already be populated (or absent — stale fields must not leak), and the
-    // cwd may point at a different repo.
-    seedHud()
-    seedTodos()
-    // Resumed log may end mid-turn: re-anchor the working line after seedHud
-    // so outputBase reads the new session's seeded token totals.
-    if (state.busy) {
-      emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-    }
-    refreshBranch()
-  }
-
-  const sessionSwitcherSubmit = async (): Promise<void> => {
-    const sw = state.sessionSwitcher
-    if (sw === undefined || sw.switching) return
-    const session = sw.sessions[sw.focused]
-    if (session === undefined) return
-    // Show the dim 'Switching…' state and block input while the switch is
-    // in flight.
-    emit(setSessionSwitcher(state, { ...sw, switching: true }))
-    try {
-      await switchSession(session.id)
-    } finally {
-      // Close the overlay whether the switch succeeded or failed.
-      closeSessionSwitcher()
-    }
-  }
-
+  const {
+    listSessions,
+    openSessionSwitcher,
+    switchSession,
+    sessionSwitcherMove,
+    sessionSwitcherType,
+    sessionSwitcherBackspace,
+    sessionSwitcherToggleScope,
+    sessionSwitcherSubmit,
+    sessionSwitcherCancel,
+  } = sessions
   // --- /export-md + /copy: local transcript utilities ------------------------
   // /export-md serializes the live rows via rowsToMarkdown — an explicit path
   // is resolved against the session cwd; no argument lands under the export
@@ -1198,40 +992,22 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       await openSessionSwitcher()
     },
     sessionSwitcherMove(delta) {
-      emit(moveSessionSwitcherFocus(state, delta))
+      sessionSwitcherMove(delta)
     },
     sessionSwitcherType(text) {
-      const sw = state.sessionSwitcher
-      if (sw === undefined || text.length === 0) return
-      emit(setSessionSwitcher(state, { ...sw, query: sw.query + text }))
-      refilterSessionSwitcher()
+      sessionSwitcherType(text)
     },
     sessionSwitcherBackspace() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined || sw.query.length === 0) return
-      emit(setSessionSwitcher(state, { ...sw, query: sw.query.slice(0, -1) }))
-      refilterSessionSwitcher()
+      sessionSwitcherBackspace()
     },
     sessionSwitcherToggleScope() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined) return
-      emit(setSessionSwitcher(state, { ...sw, scope: sw.scope === 'cwd' ? 'all' : 'cwd' }))
-      refilterSessionSwitcher()
+      sessionSwitcherToggleScope()
     },
     async sessionSwitcherSubmit() {
       await sessionSwitcherSubmit()
     },
     sessionSwitcherCancel() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined) return
-      // Two-stage escape: a non-empty query clears the filter first (the
-      // overlay stays open); an empty query closes it.
-      if (sw.query.length > 0) {
-        emit(setSessionSwitcher(state, { ...sw, query: '' }))
-        refilterSessionSwitcher()
-        return
-      }
-      closeSessionSwitcher()
+      sessionSwitcherCancel()
     },
     toggleTodoPanel() {
       if (state.todoPanel !== undefined) {
