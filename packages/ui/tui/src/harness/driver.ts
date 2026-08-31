@@ -12,25 +12,21 @@ import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, t
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import {
   UserQuestionError,
-  type AskUserQuestionAnswer,
-  type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { BYPASS_MODE, PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
-import { allowRuleOf, isSettingsConflict, payloadOf } from './approval-preview.ts'
 import {
   defaultExportDir,
   exportStamp,
   gitBranchOf,
 } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
-import { createModalQueue, type ModalEntry } from './driver-modal.ts'
+import { createApprovalsSection } from './driver-approvals.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
 import { createHudSection } from './driver-hud.ts'
@@ -53,7 +49,6 @@ import type {
   SessionQueryLike,
   SessionTitleResultLike,
   ShellExecutorLike,
-  SettingsProviderLike,
   SubagentRunEndInfoLike,
   SubagentRunInfoLike,
   TokenUsageStateLike,
@@ -75,7 +70,6 @@ import {
 } from '../transcript.ts'
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
-  backspaceQuestionText,
   clearQueue,
   clearRows,
   clearTurn,
@@ -87,7 +81,6 @@ import {
   moveEffortPickerFocus,
   movePermissionPickerFocus,
   moveModelPickerFocus,
-  moveQuestionFocus,
   moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
@@ -105,16 +98,11 @@ import {
   setQuestion,
   setSessionSwitcher,
   setTurnActive,
-  toggleQuestionOption,
   toggleGlobalCollapse,
   toggleThinking,
-  typeQuestionText,
   upsertRow,
   upsertSubagent,
-  type ApprovalPreview,
-  type ApprovalView,
   type CatalogEntryView,
-  type QuestionView,
   type SessionEntryView,
   type SubagentRunView,
   type TuiState,
@@ -475,166 +463,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   })
 
   // --- Modal pipeline: approvals + questions share one FIFO ------------------
-  // Concurrent approval requests used to overwrite a single slot (leaving the
-  // first request's promise hanging) and a question arriving mid-approval
-  // rendered both boxes while input routing favored the approval. Instead,
-  // every modal enters one FIFO; only the head renders (exactly one of the
-  // approval and question slots is set), answering or aborting the head
-  // promotes the next entry, and `ask()` during an active modal queues behind
-  // it instead of stacking a second box.
-  const modal = createModalQueue({ emit, state: () => state })
-
-  // --- Approvals ------------------------------------------------------------
-  // The head approval is parked in state.approval together with the
-  // recoverable payload preview. The "always" answer resolves the current call
-  // like a one-shot grant AND persists a derived permission rule through the
-  // settings provider (see writeAllowRule). Already-queued requests are decided
-  // one by one even after a rule lands — grants never apply retroactively.
-  // Requests from the current agent and from tracked subagents (their session
-  // id was seen on `subagent/start`, which fires before a subagent's first
-  // approval) queue here; anything else passes through to the next provider.
-  ctx.on('approval/request', async (req: ApprovalRequest, next) => {
-    const ownSessions = new Set(state.subagents.map(run => run.sessionId))
-    ownSessions.add(String(current.agent.session.id))
-    if (!ownSessions.has(String(req.agent.session.id))) return next()
-    const preview = payloadOf(req)
-    const view: ApprovalView = {
-      toolName: req.toolName,
-      ...req.reason === undefined ? {} : { reason: req.reason },
-      ...preview.kind === 'none' ? {} : { preview },
-    }
-    return await new Promise<ApprovalOutcome>(resolve => {
-      const entry: ModalEntry = {
-        kind: 'approval',
-        view,
-        resolve,
-        ...req.signal === undefined ? {} : { signal: req.signal },
-      }
-      modal.push(entry)
-      req.signal?.addEventListener('abort', () => {
-        modal.dequeue(entry)
-        resolve('cancelled')
-      }, { once: true })
-      modal.publishHead()
-    })
+  // Extracted to harness/driver-approvals.ts: the section owns the FIFO
+  // (createModalQueue), routes `approval/request`, persists allow rules, and
+  // answers user questions. `state`/`current` are read live via the ctx so the
+  // section always sees the current view-model.
+  const approvals = createApprovalsSection({
+    emit,
+    state: () => state,
+    ctx,
+    current,
+    showNotice,
   })
-
-  /**
-   * Persist the allow rule an "always" answer grants: read the `permissions`
-   * namespace descriptor, merge the rule into the raw user section's allow
-   * list (re-attaching every passthrough field — `replace` overwrites the
-   * whole section), and write it back at the observed revision. One retry on
-   * a revision conflict (re-describe, re-merge, replace). Degradations
-   * (provider missing, namespace unregistered, write failure) leave the call
-   * allowed once and say so in a notice — never a crash after the fact.
-   */
-  const writeAllowRule = async (toolName: string, preview: ApprovalPreview | undefined): Promise<void> => {
-    const rule = allowRuleOf(toolName, preview)
-    if (rule === undefined) return
-    const settings = ctx.get('settings') as SettingsProviderLike | undefined
-    if (settings === undefined || settings.writable === false || typeof settings.describe !== 'function') {
-      showNotice('Allowed once only — no writable settings provider is mounted.')
-      return
-    }
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const descriptor = settings.describe().find(
-        entry => String(entry.ns) === String(PERMISSION_SETTINGS_NAMESPACE),
-      )
-      if (descriptor === undefined) {
-        showNotice('Allowed once only — the "permissions" settings namespace is not mounted.')
-        return
-      }
-      const user = descriptor.user !== null && typeof descriptor.user === 'object'
-        ? descriptor.user as Record<string, unknown>
-        : {}
-      const current = Array.isArray(user.allow) ? [...user.allow as unknown[]] : []
-      const allow = current.includes(rule) ? current : [...current, rule]
-      try {
-        await settings.replace(PERMISSION_SETTINGS_NAMESPACE, { ...user, allow }, descriptor.revision)
-        showNotice(`Always allow: ${rule}`)
-        return
-      } catch (error) {
-        if (attempt === 0 && isSettingsConflict(error)) continue
-        const message = error instanceof Error ? error.message : String(error)
-        showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
-        return
-      }
-    }
-  }
-
-  const userQuestions = ctx.get('userQuestions') as
-    | { registerProvider(provider: { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
-    | undefined
-  let questionsDispose: (() => void) | undefined
-  if (userQuestions !== undefined) {
-    try {
-      questionsDispose = userQuestions.registerProvider({
-        ask: async (request: AskUserQuestionRequest) => {
-          const first = request.questions[0]
-          const view: QuestionView = {
-            header: first?.header ?? 'Question',
-            question: first?.question ?? '',
-            ...first?.detail === undefined ? {} : { detail: first.detail },
-            options: (first?.options ?? []).map(option => ({
-              label: option.label,
-              ...option.description === undefined ? {} : { description: option.description },
-            })),
-            multiSelect: first?.multiSelect === true,
-            ...first?.intent === undefined ? {} : { intent: first.intent },
-            focused: 0,
-            selected: [],
-            custom: '',
-          }
-          // Queue behind any active modal; when the pipeline is empty this
-          // entry becomes the head and renders immediately.
-          return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-            const entry: ModalEntry = {
-              kind: 'question',
-              id: first?.id ?? '',
-              view,
-              resolve: (answer) => resolve({
-                answers: answer.answers.map((item, index) => ({
-                  id: request.questions[index]?.id ?? item.id,
-                  selected: item.selected,
-                  ...item.custom === undefined ? {} : { custom: item.custom },
-                })),
-              }),
-              reject,
-              ...request.signal === undefined ? {} : { signal: request.signal },
-            }
-            modal.push(entry)
-            request.signal?.addEventListener('abort', () => {
-              modal.dequeue(entry)
-              reject(new UserQuestionError('question cancelled', 'CANCELLED'))
-            }, { once: true })
-            modal.publishHead()
-          })
-        },
-      })
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'DUPLICATE_PROVIDER') throw error
-    }
-  }
-
-  /**
-   * Resolve the head question and advance the modal queue. Labels are echoed
-   * verbatim — the plan-review `intent.approve` contract requires the exact
-   * label string, never an inferred or re-indexed one.
-   */
-  const resolveQuestion = (selected: readonly string[], custom?: string): void => {
-    const head = modal.peekHead()
-    if (head === undefined || head.kind !== 'question') return
-    modal.shiftHead()
-    modal.publishHead()
-    head.resolve({
-      answers: [{
-        id: head.id,
-        selected: [...selected],
-        ...custom === undefined ? {} : { custom },
-      }],
-    })
-  }
-
   // Mode writes serialize per driver: Shift+Tab fires synchronously and rapid
   // presses must not interleave a '/plan off' with the engine setMode. The
   // chain is failure-contained — rejections surface as notices, never as
@@ -999,7 +838,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // every parked approval resolves cancelled and every parked question
     // rejects cancelled. The session switcher overlay itself is managed by the
     // caller (sessionSwitcherSubmit).
-    for (const entry of modal.spliceAll()) {
+    for (const entry of approvals.spliceAll()) {
       if (entry.kind === 'approval') entry.resolve('cancelled')
       else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
     }
@@ -1453,64 +1292,28 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       emit(toggleThinking(state))
     },
     answerApproval(kind: ApprovalAnswerKind) {
-      modal.answerApproval(kind, { writeAllowRule, showNotice })
+      approvals.answerApproval(kind)
     },
     questionMove(delta) {
-      emit(moveQuestionFocus(state, delta))
+      approvals.questionMove(delta)
     },
     questionToggle() {
-      const question = state.question
-      if (question === undefined) return
-      if (question.focused >= question.options.length) {
-        emit(typeQuestionText(state, ' '))
-        return
-      }
-      if (question.multiSelect) {
-        emit(toggleQuestionOption(state, question.focused))
-        return
-      }
-      resolveQuestion([question.options[question.focused]!.label])
+      approvals.questionToggle()
     },
     questionPick(index) {
-      const question = state.question
-      if (question === undefined) return
-      const option = question.options[index]
-      if (option === undefined) return
-      if (question.multiSelect) {
-        emit(toggleQuestionOption(state, index))
-        return
-      }
-      resolveQuestion([option.label])
+      approvals.questionPick(index)
     },
     questionType(text) {
-      emit(typeQuestionText(state, text))
+      approvals.questionType(text)
     },
     questionBackspace() {
-      emit(backspaceQuestionText(state))
+      approvals.questionBackspace()
     },
     questionSubmit() {
-      const question = state.question
-      if (question === undefined) return
-      const custom = question.custom.trim()
-      let selected: string[]
-      if (question.selected.length > 0) {
-        selected = [...question.selected]
-      } else if (custom.length > 0) {
-        selected = []
-      } else {
-        // Nothing chosen and no free text: enter resolves the focused option
-        // (the first option when the "Other" row holds focus) so the question
-        // always gets an answer.
-        const fallback = question.focused < question.options.length
-          ? question.options[question.focused]!.label
-          : question.options[0]?.label
-        selected = fallback === undefined ? [] : [fallback]
-      }
-      resolveQuestion(selected, custom.length > 0 ? custom : undefined)
+      approvals.questionSubmit()
     },
     questionCancel() {
-      const question = state.question
-      resolveQuestion(question !== undefined && question.options.length > 0 ? [question.options[0]!.label] : [])
+      approvals.questionCancel()
     },
     async openModelPicker() {
       await openModelPicker()
@@ -1697,7 +1500,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         clearTimeout(noticeTimer)
         noticeTimer = undefined
       }
-      questionsDispose?.()
+      approvals.dispose()
       if (markedContent) persistResumeTarget()
       await current.handle.dispose()
     },

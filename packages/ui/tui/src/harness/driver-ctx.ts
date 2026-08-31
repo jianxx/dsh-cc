@@ -99,3 +99,24 @@ export interface DriverHudCtx {
   /** Best-effort git-branch probe for the statusline footer. */
   branchProbe: (dir: string) => Promise<string | undefined>
 }
+
+/**
+ * The slice of createDriver's closed-over state that the approval + user
+ * question pipeline needs (driver-approvals.ts). The section owns the modal
+ * FIFO (via createModalQueue) so approvals and questions share one queue.
+ * `state()` returns the CURRENT view-model value — createDriver rebinds
+ * `state` on every emit, so the collaborator must read it through a getter
+ * rather than a stale snapshot.
+ */
+export interface DriverApprovalsCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context: settings/userQuestions lookup + approval/request hook. */
+  ctx: Context
+  /** The rebindable agent holder (approval listener reads the live id). */
+  current: { agent: Agent }
+  /** Surface a transient notice line (rule-persist outcomes and failures). */
+  showNotice(text: string): void
+}
