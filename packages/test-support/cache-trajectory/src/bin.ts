@@ -19,6 +19,10 @@
  *   --no-cache-expected   shape-only verdict (mock usage carries no cache
  *                         buckets)
  *
+ * Forensics subcommands (offline, no composition boot):
+ *   .../bin.ts analyze-log <session.jsonl[.zstd]|->   per-request cache pattern
+ *   .../bin.ts compare-fork <parent-log> <child-log>   fork head byte-identity
+ *
  * Calibration tool, not a gate: ALWAYS exits 0. The verdict lives in the
  * report (`verdict`/`failures`); collect distributions with --out before
  * tightening the formal thresholds.
@@ -26,16 +30,20 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { loadEnv } from '@deepseek-ai/dsh-app-boot'
 import { Context } from '@deepseek-ai/cordis'
 import {
   CACHE_E2E_MIN_HIT_RATE_ENV,
+  analyzeSessionCache,
   cacheTrajectoryReportSchema,
+  compareForkPrefix,
   loadStandardTrajectory,
   parseTrajectory,
   renderReportTable,
   runCacheTrajectory,
   thresholdsFromEnv,
+  type SessionLogEvent,
 } from './index.ts'
 import { mountTrajectoryTestStack } from './testing.ts'
 
@@ -122,7 +130,81 @@ async function run(options: BinOptions): Promise<string> {
   return output
 }
 
+/** Parse a session log (plain JSONL, `-` for stdin, `.zstd` via the zstd CLI). */
+function readSessionEvents(path: string): SessionLogEvent[] {
+  let text: string
+  if (path === '-') {
+    text = readFileSync(0, 'utf8')
+  } else if (path.endsWith('.zstd')) {
+    const result = spawnSync('zstd', ['-dc', path], { encoding: 'utf8', maxBuffer: 1 << 30 })
+    if (result.status !== 0) {
+      throw new Error(`${NAME}: zstd -dc ${path} failed: ${result.stderr.trim() || `exit ${result.status}`}`)
+    }
+    text = result.stdout
+  } else {
+    text = readFileSync(path, 'utf8')
+  }
+  const events: SessionLogEvent[] = []
+  for (const line of text.split('\n')) {
+    if (line.trim().length === 0) continue
+    events.push(JSON.parse(line) as SessionLogEvent)
+  }
+  return events
+}
+
+function percent(value: number | undefined): string {
+  return value === undefined ? 'n/a' : `${(value * 100).toFixed(1)}%`
+}
+
+/** Render one session's cache analysis as a console summary. */
+function analyzeLog(path: string): string {
+  const analysis = analyzeSessionCache(readSessionEvents(path))
+  const lines = [
+    `pattern: ${analysis.pattern}  requests: ${analysis.requestCount}`
+    + `  steady read share: ${percent(analysis.steadyReadShare)}`
+    + `  first-request prompt: ${analysis.firstRequestPromptTotal ?? 'n/a'}`,
+    'routes:',
+    ...analysis.routes.map(r =>
+      `  ${r.provider}/${r.model}  requests=${r.requests} read=${r.cacheReadTokens}`
+      + ` input=${r.inputTokens} write=${r.cacheWriteTokens} readShare=${percent(r.readShare)}`),
+    'gap buckets:',
+    ...analysis.gapBuckets.map(b => `  ${b.label}  requests=${b.requests} readShare=${percent(b.readShare)}`),
+  ]
+  if (analysis.findings.length > 0) {
+    lines.push('findings:', ...analysis.findings.map(f => `  - ${f}`))
+  }
+  return lines.join('\n')
+}
+
+/** Render a fork parent/child head byte-identity comparison. */
+function compareFork(parentPath: string, childPath: string): string {
+  const comparison = compareForkPrefix(readSessionEvents(parentPath), readSessionEvents(childPath))
+  if (comparison === undefined) return 'compare-fork: one side recorded no request/header event'
+  const route = (r: { provider: string; model: string } | undefined) => r === undefined ? 'unknown' : `${r.provider}/${r.model}`
+  const lines = [
+    `parent route: ${route(comparison.parentRoute)}  child route: ${route(comparison.childRoute)}`
+    + `  sameRoute=${comparison.sameRoute}`,
+    `system prompt byte-identical: ${comparison.systemIdentical}`,
+  ]
+  if (comparison.divergenceByte !== undefined) {
+    lines.push(`first divergence at byte ${comparison.divergenceByte}: …${comparison.divergenceExcerpt ?? ''}…`)
+  }
+  return lines.join('\n')
+}
+
 async function main(): Promise<void> {
+  const [subcommand, ...rest] = process.argv.slice(2)
+  if (subcommand === 'analyze-log' || subcommand === 'compare-fork') {
+    const expected = subcommand === 'analyze-log' ? 1 : 2
+    if (rest.length !== expected) {
+      throw new Error(`${NAME}: ${subcommand} expects ${expected} path argument(s)`)
+    }
+    const output = subcommand === 'analyze-log'
+      ? analyzeLog(rest[0]!)
+      : compareFork(rest[0]!, rest[1]!)
+    process.stdout.write(`${output}\n`)
+    return
+  }
   const options = parseArgs(process.argv.slice(2))
   if (options.reportOnlyPath !== undefined) {
     reportOnly(options.reportOnlyPath)
