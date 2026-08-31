@@ -34,3 +34,15 @@ export {
   type RunCacheTrajectoryOptions,
   type TrajectoryRunResult,
 } from './runner.ts'
+export {
+  analyzeSessionCache,
+  compareForkPrefix,
+  type AnalyzedRequest,
+  type CachePattern,
+  type ForkPrefixComparison,
+  type GapBucket,
+  type RequestRoute,
+  type RouteBreakdown,
+  type SessionCacheAnalysis,
+  type SessionLogEvent,
+} from './session-log-analysis.ts'
