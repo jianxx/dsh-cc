@@ -20,7 +20,7 @@ import {
 } from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
-import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
+import { BYPASS_MODE, PERMISSION_MODE_OPTIONS } from '@jianxx/dsh-cc-command-permissions'
 import { composePreset } from './preset.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import { allowRuleOf, isSettingsConflict, payloadOf } from './approval-preview.ts'
@@ -32,6 +32,7 @@ import {
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createModalQueue, type ModalEntry } from './driver-modal.ts'
 import type { DriverBashCtx } from './driver-ctx.ts'
+import { createModeSection } from './driver-mode.ts'
 import {
   breakdownOf,
   formatCostReport,
@@ -64,7 +65,6 @@ import type {
   ToolsLike,
 } from '../state/driver-types.ts'
 
-import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
@@ -767,48 +767,23 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // chain deliberately: the host command re-derives the plan phase per
   // dispatch and plan-mode's set() is convergent
   // (docs/plan-mode-command-channel.md §6.2).
-  let modeWrites: Promise<void> = Promise.resolve()
-  const applyMode = (mode: PermissionCommandMode): void => {
-    modeWrites = modeWrites.then(() => applyModeInner(mode)).catch((error: unknown) => {
-      showNotice(error instanceof Error ? error.message : String(error))
-    })
-  }
+  // /plan writes run through a late-bound holder: runHarness is declared below
+  // this section, but the /plan channel is the only cross-plane mode seam, so
+  // the mode section reads it lazily after createDriver wires it up.
+  const actions: {
+    runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+  } = { runHarness: async () => { throw new Error('runHarness used before init') } }
 
-  const applyModeInner = async (mode: PermissionCommandMode): Promise<void> => {
-    // plan is owned by plan-mode inside the preset's isolate realm; the ONLY
-    // cross-plane write seam is the /plan command channel — dispatched bare,
-    // never '/plan on' (the upstream handler steers any non-'off' argument
-    // into the conversation as a user message).
-    if (mode === 'plan') {
-      const result = await runHarness('/plan')
-      if (result === undefined) showNotice('plan mode is not mounted in this composition')
-      // No optimistic emit: the display re-folds from the committed plan/mode
-      // event (see the session/event listener), so a queued mid-turn entry
-      // stays truthful until it applies.
-      return
-    }
-    const phase = planPhaseOf(
-      current.agent.session.events,
-      projections?.stateOf(current.agent.session, 'plan') as PlanUnitStateLike | undefined,
-    )
-    if (phase !== 'off') {
-      const exit = await runHarness('/plan off')
-      if (exit === null) return // no command registry — runHarness already noticed
-      if (exit === undefined) {
-        showNotice('plan mode is not mounted in this composition')
-        return
-      }
-      // A failed exit must not strand the switch half-done.
-      if (exit.kind === 'error') return
-    }
-    const rules = ctx.get('permissionRules') as PermissionRulesLike | undefined
-    if (rules === undefined) {
-      showNotice('The permission-rules engine is not mounted in this composition.')
-      return
-    }
-    rules.setMode(current.agent, mode)
-    emit(setPermissionMode(state, mode))
-  }
+  const modeSection = createModeSection({
+    emit,
+    state: () => state,
+    current,
+    projections,
+    showNotice,
+    runHarness: (line) => actions.runHarness(line),
+    getRules: () => ctx.get('permissionRules') as PermissionRulesLike | undefined,
+    liveMode,
+  })
 
   // --- Slash-command catalog: merge local commands with the harness registry.
   // The catalog is rebuilt at boot and whenever the harness fires
@@ -1421,6 +1396,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
     return result
   }
+  // Wire the late-bound holder so the mode section's /plan writes reach the
+  // real dispatch path (createDriver declares actions before runHarness).
+  actions.runHarness = runHarness
 
   /**
    * Outbox flush, anchored to the durable `turn/end` event: snapshot the
@@ -1606,11 +1584,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     steerQueued,
     recallQueued,
     cyclePermissionMode() {
-      const live = liveMode(current.agent, state.permissionMode)
-      const next = nextPermissionMode(live)
-      if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return modeWrites
-      applyMode(next)
-      return modeWrites
+      return modeSection.cyclePermissionMode()
     },
     toggleGlobalCollapse() {
       emit(toggleGlobalCollapse(state))

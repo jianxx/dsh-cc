@@ -10,6 +10,7 @@
 
 import type { TuiState } from '../store.ts'
 import type { ShellExecutorLike } from '../state/driver-types.ts'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 
 /**
  * The slice of createDriver's closed-over state that `!` shell-command
@@ -41,4 +42,34 @@ export interface DriverModalCtx {
   emit(next: TuiState): void
   /** Read the current view-model value (fresh, not a snapshot). */
   state(): TuiState
+}
+
+/**
+ * The slice of createDriver's closed-over state that the plan/mode writepath
+ * needs (driver-mode.ts). `state()` returns the CURRENT view-model value —
+ * createDriver rebinds `state` on every emit, so the collaborator must read it
+ * through a getter rather than a stale snapshot.
+ */
+export interface DriverModeCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** The rebindable agent holder (switchSession replaces it in place). */
+  current: { agent: Agent }
+  /** Plan-unit projector, when mounted. */
+  projections: { stateOf(session: unknown, unit: string): unknown } | undefined
+  /** Surface a transient notice line. */
+  showNotice(text: string): void
+  /** Run a bare /plan channel command. Late-bound (defined after this ctx). */
+  runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+  /** Returns the mounted permission-rules engine's setMode seam, if any. */
+  getRules(): PermissionRulesSeam | undefined
+  /** Fold the current plan/permission mode (live, not a snapshot). */
+  liveMode(agent: Agent, fallback: string): string
+}
+
+/** Duck-typed surface for the permission-rules engine's mode writepath. */
+export interface PermissionRulesSeam {
+  setMode(agent: Agent, mode: string): void
 }
