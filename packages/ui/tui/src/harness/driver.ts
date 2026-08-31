@@ -5,8 +5,6 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -16,11 +14,7 @@ import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { composePreset } from './preset.ts'
 import { createSessionsSection } from './driver-sessions.ts'
-import {
-  defaultExportDir,
-  exportStamp,
-  gitBranchOf,
-} from './shell-output.ts'
+import { gitBranchOf } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createApprovalsSection } from './driver-approvals.ts'
 import { createCatalogSection } from './driver-catalog.ts'
@@ -28,34 +22,23 @@ import type { DriverBashCtx } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
 import { createHudSection } from './driver-hud.ts'
 import { createPickersSection } from './driver-pickers.ts'
-import {
-  breakdownOf,
-  formatCostReport,
-  occupancyOf,
-  totalsOf,
-  usageViewOf,
-} from './usage-view.ts'
+import { createRunLocalSection } from './driver-run-local.ts'
 
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import type {
   AgentDefaultModelLike,
-  ContextPressureStateLike,
   DriverConfig,
   LlmLike,
   ShellExecutorLike,
-  TokenUsageStateLike,
   ToolsLike,
 } from '../state/driver-types.ts'
 
 import { parseSlash } from '../slash.ts'
-import { rowsToMarkdown } from '../export-markdown.ts'
-import { parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
-import { parseEffortChoice } from '../effort-catalog.ts'
+import { type CatalogEntry } from '../model-catalog.ts'
 import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
-import { shortenSession } from '../statusline.ts'
 import {
   applySessionEvent,
   type SessionEventLike,
@@ -64,7 +47,6 @@ import {
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
   clearQueue,
-  clearRows,
   clearTurn,
   closeTodoPanel,
   closeUsagePanel,
@@ -73,7 +55,6 @@ import {
   markExitAttempt,
   moveTodoPanelFocus,
   openTodoPanel,
-  openUsagePanel,
   popQueued,
   resetTurnStep,
   setBusy,
@@ -100,13 +81,6 @@ export { allowRuleOf, payloadOf } from './approval-preview.ts'
 /** Default lifetime of a transient `showNotice` hint. */
 const NOTICE_TTL_MS = 3000
 
-/**
- * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
- * with BEL. The sequence is zero-width — writing it inline never disturbs the
- * rendered frame.
- */
-const OSC52_PREFIX = '\x1b]52;c;'
-
 function liveMode(agent: Agent, fallback: string): string {
   if (foldPlanMode(agent.session.events)) return 'plan'
   return foldPermissionMode(agent.session.events) ?? fallback
@@ -120,20 +94,6 @@ type PermissionRulesLike = {
     readonly bypassImmune: readonly unknown[]
   }
   setMode(agent: Agent, mode: string): void
-}
-
-type CommandsLike = {
-  list(agent: Agent): readonly {
-    name: string
-    description?: string
-    input?: { hint?: string }
-  }[]
-  execute(
-    agent: Agent,
-    line: string,
-    images: readonly unknown[],
-    signal: AbortSignal,
-  ): Promise<{ result?: { kind: string; text?: string } } | undefined>
 }
 
 /**
@@ -559,196 +519,33 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     sessionSwitcherSubmit,
     sessionSwitcherCancel,
   } = sessions
-  // --- /export-md + /copy: local transcript utilities ------------------------
-  // /export-md serializes the live rows via rowsToMarkdown — an explicit path
-  // is resolved against the session cwd; no argument lands under the export
-  // dir as <sessionId>-<timestamp>.md. Failures degrade to a notice, never a
-  // throw into the composer path.
-  const exportTranscript = (rawInput: string): void => {
-    const target = rawInput.length > 0
-      ? resolve(cwd, rawInput)
-      : join(config.exportDir ?? defaultExportDir(), `${String(current.agent.session.id)}-${exportStamp()}.md`)
-    try {
-      mkdirSync(dirname(target), { recursive: true })
-      writeFileSync(target, rowsToMarkdown(state.rows))
-      showNotice(`Exported to ${target}`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      showNotice(`Export failed: ${message}`)
-    }
-  }
-
-  // /copy re-emits the latest assistant reply through an OSC 52 sequence so
-  // the terminal itself owns the clipboard (no child process, no permissions).
-  // The write sink is injected; without a sink the command still reports — it
-  // just has nowhere to hand the payload.
-  const copyLatestReply = (): void => {
-    const last = [...state.rows].reverse().find(row => row.kind === 'assistant')
-    if (last === undefined || last.kind !== 'assistant' || last.text.trim().length === 0) {
-      showNotice('Nothing to copy yet — no assistant reply in the transcript.')
-      return
-    }
-    const payload = Buffer.from(last.text, 'utf8').toString('base64')
-    config.copyWrite?.(`${OSC52_PREFIX}${payload}\x07`)
-    showNotice('Copied latest reply')
-  }
-
-  const runLocal = async (name: string, rawInput: string): Promise<void> => {
-    if (name === 'quit' || name === 'exit') {
-      if (markedContent) persistResumeTarget()
-      await current.handle.dispose()
-      return
-    }
-    if (name === 'clear') {
-      emit(clearRows(state))
-      return
-    }
-    if (name === 'tui-help') {
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
-      }))
-      return
-    }
-    if (name === 'resume') {
-      if (rawInput.length > 0) {
-        await switchSession(rawInput)
-        return
-      }
-      await openSessionSwitcher()
-      return
-    }
-    if (name === 'model') {
-      if (rawInput.length === 0) {
-        await openModelPicker()
-        return
-      }
-      const catalog = await loadCatalog()
-      const chosen = parseModelChoice(rawInput, catalog)
-      if (chosen === undefined) {
-        showNotice(`Unknown model "${rawInput}". Try /model for the catalog.`)
-        return
-      }
-      // Validates + preserves a carried effort when possible (never blocks the
-      // switch itself — see applyModelSwitch).
-      await applyModelSwitch(chosen.provider, chosen.model)
-    }
-    if (name === 'effort') {
-      if (rawInput.length === 0) {
-        await openEffortPicker()
-        return
-      }
-      const route = selection.current
-      if (route === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-        return
-      }
-      // `default` is a reserved keyword (it wins even over a model effort
-      // literally named "default"): reset to the bare pair with ZERO
-      // validation and zero adapter calls — the provider default is always
-      // legal, even when the llm service is unreachable.
-      if (parseEffortChoice(rawInput, [])?.kind === 'default') {
-        selection.current = { provider: route.provider, model: route.model }
-        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
-        return
-      }
-      // Fail closed: resolve before validating — selection must never hold an
-      // effort the llm layer would reject.
-      const efforts = await resolveEfforts(route.provider, route.model)
-      if (efforts === undefined || efforts.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
-        return
-      }
-      const choice = parseEffortChoice(rawInput, efforts.map(level => level.id))
-      // `choice.kind === 'default'` cannot occur here: the reserved keyword
-      // already returned above, so anything non-level is unknown.
-      if (choice?.kind !== 'level') {
-        emit(upsertRow(state, {
-          kind: 'status',
-          text: `Unknown effort "${rawInput.trim()}" for ${route.model}. Try /effort.`,
-        }))
-        return
-      }
-      const level = efforts.find(candidate => candidate.id === choice.level)!
-      // Single branding seam: view layers stay plain strings.
-      selection.current = {
-        provider: route.provider,
-        model: route.model,
-        reasoningEffort: ReasoningEffortId(level.id),
-      }
-      // User-facing text carries the effort NAME, not the raw id.
-      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
-    }
-    if (name === 'cost') {
-      const totals = projections === undefined
-        ? undefined
-        : totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
-      emit(upsertRow(state, { kind: 'status', text: formatCostReport(totals) }))
-      return
-    }
-    if (name === 'usage') {
-      // Seed from the live projections before opening: a resumed session (or
-      // one with no projection change since boot) already holds data the
-      // change feed has never delivered. From here on the onChanged feed
-      // keeps the snapshot fresh, so an open panel refreshes live.
-      if (projections !== undefined) {
-        applyUsage(usageViewOf(
-          totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined),
-          occupancyOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined),
-          breakdownOf(projections.stateOf(current.agent.session, 'contextBreakdown')),
-        ))
-      }
-      emit(openUsagePanel(state))
-      return
-    }
-    if (name === 'agents') {
-      const runs = state.subagents
-      if (runs.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: 'No subagent activity this session.' }))
-        return
-      }
-      const lines = ['Subagent activity:']
-      for (const run of runs) {
-        const marker = run.status === 'running' ? '●' : '✓'
-        const short = shortenSession(run.sessionId)
-        const reason = run.stopReason === undefined ? '' : ` [${run.stopReason}]`
-        lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
-      }
-      emit(upsertRow(state, { kind: 'status', text: lines.join('\n') }))
-      return
-    }
-    if (name === 'export-md') {
-      exportTranscript(rawInput)
-      return
-    }
-    if (name === 'copy') {
-      copyLatestReply()
-      return
-    }
-  }
-
-  /**
-   * Execute a slash command line through the host registry and echo its
-   * result text as a status row. Tri-state return:
-   * - `null` — no command registry is mounted (already noticed here).
-   * - `undefined` — the registry matched nothing (the caller decides the notice).
-   * - otherwise the command result.
-   */
-  const runHarness = async (line: string): Promise<{ kind: string; text?: string } | undefined | null> => {
-    const commands = ctx.get('commands') as CommandsLike | undefined
-    if (commands === undefined) {
-      showNotice('No command registry is mounted.')
-      return null
-    }
-    const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
-    const result = execution?.result
-    if (result !== undefined && result.text !== undefined && result.text.length > 0) {
-      emit(upsertRow(state, { kind: 'status', text: result.text }))
-    }
-    return result
-  }
-  // Wire the late-bound holder so the mode section's /plan writes reach the
-  // real dispatch path (createDriver declares actions before runHarness).
+  // Local slash commands (/export-md, /copy, runLocal) + host-command dispatch
+  // (runHarness) migrate to a free-function collaborator (harness/driver-run-
+  // local.ts) so the factory stays under budget. createDriver keeps the aliases
+  // submit() needs and the late-bound actions holder, then wires it after
+  // destructuring so the mode section's /plan writes reach the real dispatch.
+  const runLocalSection = createRunLocalSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    config,
+    current,
+    selection,
+    projections,
+    applyUsage,
+    showNotice,
+    switchSession,
+    openSessionSwitcher,
+    openModelPicker,
+    applyModelSwitch,
+    openEffortPicker,
+    loadCatalog,
+    resolveEfforts,
+    persistResumeTarget,
+    getMarkedContent: () => markedContent,
+  })
+  const { runLocal, runHarness } = runLocalSection
   actions.runHarness = runHarness
 
   /**

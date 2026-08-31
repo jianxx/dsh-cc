@@ -8,9 +8,18 @@
  * @module @jianxx/dsh-cc-tui/harness/driver-ctx
  */
 
-import type { TuiState } from '../store.ts'
-import type { ShellExecutorLike } from '../state/driver-types.ts'
-import type { Agent, AgentHandle, AgentSetup, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { TuiState, UsageView } from '../store.ts'
+import type {
+  DriverConfig,
+  SessionProjectionsLike,
+  ShellExecutorLike,
+} from '../state/driver-types.ts'
+import type {
+  Agent,
+  AgentHandle,
+  AgentSetup,
+  ModelSelectionRef,
+} from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { ModalEntry } from './driver-modal.ts'
@@ -216,4 +225,57 @@ export interface DriverSessionsCtx {
   withSelection: AgentSetup
   /** Explicit provider/model override, or undefined when unset. */
   agentOptions: { provider: string; model: string } | undefined
+}
+
+/**
+ * The slice of createDriver's closed-over state that the `/export-md`, `/copy`,
+ * runLocal (local slash-command) and runHarness (host command) pipeline needs
+ * (driver-run-local.ts). `state()` returns the CURRENT view-model value —
+ * createDriver rebinds `state` on every emit, so the collaborator must read it
+ * through a getter rather than a stale snapshot. `current`, `selection`, and
+ * `config` are passed by reference; `markedContent` is read through a getter
+ * because createDriver owns the live `let` binding.
+ */
+export interface DriverRunLocalCtx {
+  /** Publish the next view-model value (rebinds createDriver's `state`). */
+  emit(next: TuiState): void
+  /** Read the current view-model value (fresh, not a snapshot). */
+  state(): TuiState
+  /** Host context for the commands service lookup. */
+  ctx: Context
+  /** Working directory (resolution base for export paths). */
+  cwd: string
+  /** Driver configuration (exportDir, copyWrite, cwd, ...). */
+  config: DriverConfig
+  /** The rebindable agent holder (exports/cost/usage read the live agent). */
+  current: { handle: AgentHandle; agent: Agent }
+  /** Model selection ref; /effort and /model read and rewrite it in place. */
+  selection: ModelSelectionRef
+  /** Session projections feed for /cost and /usage (may be unmounted). */
+  projections: SessionProjectionsLike | undefined
+  /** Apply a usage-panel patch (HUD section's live-projections update fn). */
+  applyUsage(patch: UsageView | undefined): void
+  /** Surface a transient notice line. */
+  showNotice(text: string): void
+  /** /resume with an explicit id; the switch engine lives in driver-sessions. */
+  switchSession(id: string): Promise<void>
+  /** Open the /resume overlay (session switcher picker). */
+  openSessionSwitcher(): Promise<void>
+  /** Open the model picker. */
+  openModelPicker(): Promise<void>
+  /** Validate + apply a provider/model switch (never blocks on the switch). */
+  applyModelSwitch(provider: string, model: string): Promise<void>
+  /** Open the effort picker. */
+  openEffortPicker(): Promise<void>
+  /** Build the full model catalog for the /model path. */
+  loadCatalog(): Promise<CatalogEntry[]>
+  /** Resolve a model's advertised reasoning-effort levels (or undefined). */
+  resolveEfforts(
+    provider: string,
+    model: string,
+  ): Promise<readonly { id: string; name: string }[] | undefined>
+  /** Persist the resume marker (idempotent) — after first real content. */
+  persistResumeTarget(): void
+  /** Whether real content has been produced this boot (drives /quit resume). */
+  getMarkedContent(): boolean
 }
