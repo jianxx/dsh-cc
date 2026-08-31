@@ -4,7 +4,6 @@
  * @module @jianxx/dsh-cc-tui/components/root
  */
 
-import { spawn } from 'node:child_process'
 import {
 	Container,
 	Editor,
@@ -19,18 +18,18 @@ import {
 	getKeybindings,
 	isKeyRelease,
 	type Component,
-	type Terminal,
 	type TUI,
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
 import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routePermissionPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput } from '../input.ts'
-import { parseSlash } from '../slash.ts'
 import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
+import { attachBashMode } from './root-bash.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
-import { createEditorTheme, createTheme, type ThemeOverrides } from './theme.ts'
+import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, truncateActive } from './root-utils.ts'
+import { createEditorTheme, createTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
 import {
@@ -44,62 +43,9 @@ import {
   createUsagePanelBox,
 } from './overlays.ts'
 
-export interface BuildRootOptions {
-	terminal?: Terminal
-	onQuit?: () => void
-	/**
-	 * 'regular' (default) renders inline into the main screen scrollback;
-	 * 'fullscreen' enters the alternate screen on start: the transcript scrolls
-	 * inside a primary ScrollView while the dock (queue, todos, overlays,
-	 * editor, statusline) stays pinned at the bottom.
-	 */
-	uiMode?: TuiMode
-	/** Fullscreen-only: mouse capture for wheel scrolling and app-owned selection. Default true. */
-	mouse?: boolean
-	/**
-	 * Per-role palette overrides for the terminal theme. Every role accepts a
-	 * basic ANSI color name or a raw SGR code string; invalid values keep the
-	 * built-in default, so an absent (or partial) override renders exactly like
-	 * the historical fixed palette.
-	 */
-	theme?: ThemeOverrides
-}
+import type { BuildRootOptions, RootHandle } from './root-types.ts'
 
-/** Cap the active-task text shown in the todo strip (ellipsis past the cap). */
-const TODO_ACTIVE_CAP = 60
-
-/** How long after the first idle Ctrl+C a second press still quits (ms). */
-const DOUBLE_PRESS_WINDOW_MS = 2000
-
-function truncateActive(content: string): string {
-	return content.length > TODO_ACTIVE_CAP ? `${content.slice(0, TODO_ACTIVE_CAP - 1)}…` : content
-}
-
-export interface RootHandle {
-	readonly tui: TUI
-	readonly editor: Editor
-	readonly mode: TuiMode
-	destroy(): void
-	/**
-	 * Stop the surface. In fullscreen mode this leaves the alternate screen
-	 * with the final frame preserved, then replays the chrome through a one-shot
-	 * main-screen renderer so native scrollback ends up with the same inline
-	 * layout a regular session would have produced.
-	 */
-	stopForExit(): void
-}
-
-/**
- * Open an OSC 8 hyperlink with the OS handler. Fullscreen mouse capture takes
- * over the terminal's native link activation, so clicks are routed here.
- */
-function openSystemUrl(url: string): void {
-	const child = process.platform === 'win32'
-		? spawn('cmd.exe', ['/c', 'start', '', url], { stdio: 'ignore', detached: true })
-		: spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore', detached: true })
-	child.on('error', () => {})
-	child.unref()
-}
+export type { BuildRootOptions, RootHandle }
 
 /**
  * Build the pi-tui render tree.
@@ -168,102 +114,8 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// recalled on the first ↑ press).
 	for (const entry of driver.promptHistory) editor.addToHistory(entry)
 
-	// --- `!` bash mode ---------------------------------------------------------
-	// Shell mode is derived, not stored: the composer is in shell mode exactly
-	// while its text starts with `!`. The border switches to the warning role
-	// so the mode is visible, ↑/↓ browse the bash-only history stack, and Esc
-	// exits the mode ahead of the generic busy-interrupt branch (the ordering
-	// in the input listener below is deliberate). Paste normalization lives at
-	// the driver's submit — a `!`-prefixed line runs locally no matter how it
-	// got into the buffer.
-	let bashBrowsing = false
-	let bashBrowsingIndex = -1
-	let bashDraft = ''
-	let bashRecallApplied = false
-	let bashRunning = false
-
-	const inShellMode = (): boolean => editor.getText().startsWith('!')
-
-	const resetBashHistoryBrowsing = (): void => {
-		bashBrowsing = false
-		bashBrowsingIndex = -1
-		bashDraft = ''
-	}
-
-	/**
-	 * Browse the bash history stack (driver-owned, newest-first). ↑ walks
-	 * toward older entries; ↓ walks back and restores the pre-browsing draft
-	 * past the newest. Recalled entries are re-prefixed with `!` so the buffer
-	 * stays shell-shaped and Enter re-runs them through the same submit path.
-	 */
-	const browseBashHistory = (towardsOlder: boolean): void => {
-		const entries = driver.bashHistory
-		if (entries.length === 0) return
-		if (!bashBrowsing) {
-			bashBrowsing = true
-			bashBrowsingIndex = -1
-			bashDraft = editor.getText()
-		}
-		if (towardsOlder) {
-			if (bashBrowsingIndex + 1 >= entries.length) return // clamped at the oldest
-			bashBrowsingIndex += 1
-		} else {
-			bashBrowsingIndex -= 1
-			if (bashBrowsingIndex < 0) {
-				// Down past the newest entry: restore the pre-browsing draft.
-				const draft = bashDraft
-				resetBashHistoryBrowsing()
-				bashRecallApplied = true
-				editor.setText(draft)
-				bashRecallApplied = false
-				return
-			}
-		}
-		bashRecallApplied = true
-		editor.setText(`!${entries[bashBrowsingIndex]}`)
-		bashRecallApplied = false
-	}
-
-	// Mirror the shell-mode border on every buffer change: the warning role
-	// while the buffer holds a `!`-prefixed line, the accent role otherwise.
-	const syncShellModeBorder = (): void => {
-		const styler = inShellMode() ? theme.warning : theme.accent
-		if (editor.borderColor !== styler) {
-			editor.borderColor = styler
-			tui.requestRender()
-		}
-	}
-
-	editor.onChange = (text: string): void => {
-		driver.setDraft(text)
-		syncShellModeBorder()
-		// Any buffer change that was not a bash recall ends history browsing,
-		// so the next ↑ starts fresh (mirrors the editor's own navigation).
-		if (!bashRecallApplied) resetBashHistoryBrowsing()
-	}
-	editor.onSubmit = (text: string): void => {
-		if (text.startsWith('!')) {
-			// Shell command: never a composer prompt. While the driver runs it,
-			// the composer is disabled — the input listener swallows every key
-			// until submit settles (bounded by the command's own timeout).
-			resetBashHistoryBrowsing()
-			bashRunning = true
-			void driver.submit(text)
-				.catch(() => {})
-				.then(() => {
-					bashRunning = false
-					tui.requestRender()
-				})
-			return
-		}
-		const parsed = parseSlash(text)
-		// Only prompts join editor recall; slash commands are not prompts.
-		if (parsed.kind === 'none') editor.addToHistory(text)
-		void driver.submit(text)
-		if (parsed.kind === 'local' && (parsed.name === 'quit' || parsed.name === 'exit')) {
-			opts.onQuit?.()
-		}
-	}
+	const bashMode = attachBashMode({ editor, driver, tui, theme, onQuit: opts.onQuit })
+	const { bashRunning, inShellMode, browseBashHistory, resetBashHistoryBrowsing } = bashMode
 
 	// Slash-command + @-file autocomplete. The provider is rebuilt only when the
 	// driver's command catalog changes identity (driver.listCommands() returns a
@@ -418,7 +270,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			driver.steerQueued()
 			return { consume: true }
 		}
-		if (bashRunning) {
+		if (bashRunning()) {
 			// A local `!` command is in flight: the composer is disabled and
 			// every key is swallowed until it settles. Ctrl+C above still owns
 			// interrupt/quit; the stall is bounded by the command's timeout.

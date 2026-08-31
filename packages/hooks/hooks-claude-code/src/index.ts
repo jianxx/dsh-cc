@@ -6,6 +6,8 @@
  * StopFailure, TaskCreated, TeammateIdle, and a first-run Setup approximation).
  * It owns Claude payloads, environment, substitution, and decision
  * mapping; shared execution and parsing live in `dsh-hook-protocol`.
+ * Payload construction, hook dispatch/decoding, and the hook runner live in the
+ * payloads / dispatch / hook-output / run-point modules.
  * `updatedInput` is logged and warned but not honored. `prompt` and `agent`
  * executors fork a one-shot subagent when their enable flags are set. Bespoke
  * behavior should use typed native plugins on the same extension points; see the
@@ -20,32 +22,42 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-session-persistence'
 // Type-seam imports: also pull in the declaration-merged `events` interfaces so the
 // `approval/*` (user-approval) and `jobs` (dsh-jobs) events below typecheck.
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
-import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@jianxx/dsh-cc-tools'
-import { ccCanonicalToolName, ccToolAliases } from '@jianxx/dsh-cc-tools'
-import {
-  appendHookInvoked,
-  appendHookResult,
-  createDetachedRuns,
-  DEFAULT_HOOK_TIMEOUT_MS,
-  DEFAULT_STDERR_SUMMARY_MAX_CHARS,
-  matchesMatcher,
-  mergeHookOutputs,
-  runHook,
-  runHttpHook,
-  type HookCommand,
-  type HookOutput,
-  type MatcherGroup,
-  type MergedHookOutcome,
-} from '@jianxx/dsh-cc-hook-protocol'
 // Pulls in the declaration-merged subagent events and the identity pairing their
 // start/end edges.
 import type { SubagentRunId } from '@deepseek-ai/dsh-subagent'
+import type { PostToolDecision, PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
+import {
+  createDetachedRuns,
+  DEFAULT_HOOK_TIMEOUT_MS,
+  DEFAULT_STDERR_SUMMARY_MAX_CHARS,
+  type MergedHookOutcome,
+} from '@jianxx/dsh-cc-hook-protocol'
 import { parseClaudeCodeConfig, type ClaudeCodeHookConfig } from './config.ts'
+import {
+  notificationPayload,
+  permissionDeniedPayload,
+  permissionRequestPayload,
+  postCompactPayload,
+  postToolFailurePayload,
+  postToolPayload,
+  preToolPayload,
+  promptPayload,
+  sessionEndPayload,
+  sessionResumePayload,
+  sessionStartPayload,
+  setupPayload,
+  stopFailurePayload,
+  stopPayload,
+  subagentPayload,
+  SUBAGENT_TYPE,
+  taskCreatedPayload,
+  teammateIdlePayload,
+} from './payloads.ts'
+import { createRunPoint } from './run-point.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -121,12 +133,6 @@ export const Config: z<Config> = z.object({
   enableAgentHooks: z.boolean().default(false),
 })
 
-/** A stable per-handler id so an invoked/result pair correlates in the log. */
-let handlerCounter = 0
-function nextHandlerId(point: string): string {
-  return `claude-code:${point}:${++handlerCounter}`
-}
-
 /** The `{kind:'plugin'}` source stamped on every context this bridge injects. */
 const PLUGIN_SOURCE: MessageSource = { kind: 'plugin', plugin: 'hooks-claude-code' }
 
@@ -182,83 +188,11 @@ export function apply(ctx: Context, config: Config): void {
   const subagentIds = new Set<string>()
   ctx.effect(() => () => detached.drain(), 'hooks-claude-code: drain detached hook runs')
 
-  /**
-   * Run every hook configured for `point` whose matcher selects
-   * `matchQuery`, with the per-event `payload` on stdin, and fold the results.
-   * Writes a `hook/invoked`/`hook/result` pair per hook when `opts.turn` names
-   * an open turn. Detached lifecycle points omit the pair. Returns the merged outcome (a neutral,
-   * already-most-restrictive view) for the caller to map onto its extension point
-   * decision. `matchQuery` is the event's matcher subject (tool name, session
-   * source, …), tested against every CC alias of the subject; `''` for events
-   * that ignore matchers.
-   */
-  async function runPoint(
-    point: string,
-    matchQuery: string,
-    payload: unknown,
-    opts: { agent?: Agent; turn?: number; readonly signal: AbortSignal },
-  ): Promise<MergedHookOutcome> {
-    const groups: MatcherGroup[] = parsed[point] ?? []
-    const outputs: HookOutput[] = []
-    // Run the hook in the agent's session workspace (the `session/new` cwd on the session
-    // header), not the executor or entry-point process's launch dir.
-    const workdir = opts.agent?.session.header.cwd
-    // CLAUDE_PROJECT_DIR: an explicit config value wins; otherwise default it to the session
-    // workspace (the same dir the hook runs in).
-    const projectDir = config.projectDir ?? workdir
-    const hookEnv = projectDir !== undefined ? { CLAUDE_PROJECT_DIR: projectDir } : undefined
-    // A string matcher subject (tool name, session source, …) may be a harness
-    // tool name the CC config spells differently. Match against every CC alias
-    // (e.g. harness `read` also answers to `Read`, `read_image` to `Read`) so a
-    // CC-written matcher like `Read|Write` or `Bash` fires for the harness
-    // execution. A non-tool subject (a source tag, '' for matcher-less events)
-    // has no aliases and collapses to the input itself.
-    const matchQueries = ccToolAliases(matchQuery)
-    for (const group of groups) {
-      if (!matchQueries.some(query => matchesMatcher(group.matcher, query, 'claude-code'))) continue
-      for (const hook of group.hooks) {
-        const handlerId = nextHandlerId(point)
-        const session = opts.agent?.session
-        if (session && opts.turn !== undefined) {
-          appendHookInvoked(session, {
-            turn: opts.turn, point, dialect: 'claude-code', handlerId,
-            ...group.matcher !== undefined ? { matcher: group.matcher } : {},
-          })
-        }
-        const { output, durationMs } = await dispatchHook(ctx, hook, {
-          payload,
-          defaultTimeoutMs,
-          ...hookEnv !== undefined ? { env: hookEnv } : {},
-          ...workdir !== undefined ? { cwd: workdir } : {},
-          signal: opts.signal,
-          ...opts.agent !== undefined ? { agent: opts.agent } : {},
-          // Discard a `hookSpecificOutput` block whose `hookEventName` names a
-          // different event than the one firing (the schemas key it by event).
-          expectedEventName: point,
-          ...config.allowedHttpHookUrls !== undefined ? { allowedHttpHookUrls: config.allowedHttpHookUrls } : {},
-          httpAllowedEnvVars: httpAllowedEnvVars(),
-          enablePromptHooks: config.enablePromptHooks ?? false,
-          enableAgentHooks: config.enableAgentHooks ?? false,
-        })
-        outputs.push(output)
-        if (output.updatedInput !== undefined) {
-          ctx.logger.warn(`hooks-claude-code: ${point} hook requested updatedInput, which is not yet honored (ignored)`)
-        }
-        if (output.systemMessage !== undefined) {
-          ctx.logger.warn(`hooks-claude-code: ${point} hook emitted a systemMessage, which is not yet surfaced (ignored)`)
-        }
-        if (session && opts.turn !== undefined) {
-          appendHookResult(session, { turn: opts.turn, point, handlerId, output, stderrSummaryMaxChars, durationMs })
-        }
-      }
-    }
-    return mergeHookOutputs(outputs)
-  }
-
   // The http-hook header interpolation policy: the effective allowlist is the
   // configured names resolved once (a deployment's fixed allowlist, not a
   // per-run knob).
   const httpAllowedEnvVars = (): ReadonlySet<string> => new Set(config.httpAllowedEnvVars ?? [])
+  const runPoint = createRunPoint({ ctx, parsed, config, defaultTimeoutMs, stderrSummaryMaxChars, httpAllowedEnvVars })
 
   // TODO(hook-continue-false): `merged.stop` is logged but needs a run-level halt mechanism.
 
@@ -474,229 +408,6 @@ export function apply(ctx: Context, config: Config): void {
   })
 }
 
-/**
- * The `agent_type` value the bridge reports for SubagentStart/Stop. The harness
- * subagent seam carries no per-kind label, so the bridge uses Claude Code's own
- * Task-tool default — a hooks.json with a default/`*`/empty `agent_type` matcher
- * fires; a config matching a specific kind (e.g. `code-reviewer`) does not.
- */
-const SUBAGENT_TYPE = 'general-purpose'
-
-/** Everything {@link dispatchHook} needs beyond the hook itself. */
-interface DispatchOptions {
-  payload: unknown
-  defaultTimeoutMs: number
-  /** Extra env vars for a `command` hook (`CLAUDE_PROJECT_DIR`, …). */
-  env?: Record<string, string>
-  /** Working directory for a `command` hook. */
-  cwd?: string
-  /** Explicit owning-operation signal. */
-  signal: AbortSignal
-  /** Firing agent, required to fork a `prompt`/`agent` hook's subagent. */
-  agent?: Agent
-  /** Firing event used to guard per-event structured fields. */
-  expectedEventName: string
-  /** URL-pattern allowlist for `http` hooks (undefined = unrestricted). */
-  allowedHttpHookUrls?: string[]
-  /** Env-var names allowed to interpolate into `http` header values. */
-  httpAllowedEnvVars: ReadonlySet<string>
-  /** Whether `prompt` hooks may fork a small-model subagent. */
-  enablePromptHooks: boolean
-  /** Whether `agent` hooks may fork a verification subagent. */
-  enableAgentHooks: boolean
-}
-
-/** A non-blocking hook error the subagent raised (StopFailure-style vocabulary). */
-interface HookRunError {
-  type: string
-  message: string
-}
-
-/** Minimal structural subset of the `subagents` fork seam used by prompt/agent executors. */
-interface HookSubagentLike {
-  start(name: string, request: {
-    label?: string
-    prompt: readonly { type: 'text'; text: string }[]
-    parent: Agent
-    signal: AbortSignal
-    agentOptions?: unknown
-  }): Promise<{
-    result: Promise<{ stopReason: string; content: readonly { type: string; text?: string }[] }>
-  }>
-}
-
-/** Exact text values of `run.result.stopReason`. */
-const STOP_REASON_ERROR = 'error'
-
-/**
- * Interpolate the JSON hook input into a `prompt`/`agent` template. The CC spec
- * feeds hook input to prompt hooks as JSON; here the payload is embedded via
- * `$ARGUMENTS` when the template names it, otherwise appended after a blank line.
- */
-export function interpolatePrompt(template: string, payload: unknown): string {
-  const json = typeof payload === 'string' ? payload : JSON.stringify((payload ?? {}) as unknown)
-  return template.includes('$ARGUMENTS')
-    ? template.split('$ARGUMENTS').join(json)
-    : `${template}\n\n${json}`
-}
-
-/**
- * Decode a forked subagent's result into a neutral {@link HookOutput}. Unlike
- * {@link parseHookOutput} (which consumes process stdout/stderr/exitCode), a
- * subagent has no process channels — this concatenates its text blocks, then
- * tries to parse them as a recognized HookOutput JSON object. A parse failure
- * yields an empty (non-blocking) output and warns in debug; `stopReason: 'error'`
- * surfaces as a non-blocking hook error, matching command-hook error semantics.
- * @param result - the fork's terminal result.
- * @param debug - the bridge logger's debug sink for the parse-failure warn.
- * @returns the decoded output.
- */
-export function contentToHookOutput(
-  result: { stopReason: string; content: readonly { type: string; text?: string }[] },
-  debug: (message: string) => void,
-): { output: HookOutput; error?: HookRunError } {
-  const text = result.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
-  if (result.stopReason === STOP_REASON_ERROR) {
-    return { output: emptyHookOutput(), error: { type: 'error', message: text || 'subagent hook failed' } }
-  }
-  const output = emptyHookOutput()
-  let parsed: Record<string, unknown> | undefined
-  try {
-    const candidate = JSON.parse(text) as unknown
-    if (typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)) {
-      parsed = candidate as Record<string, unknown>
-    }
-  } catch {
-    if (text.length > 0) debug(`hooks-claude-code: prompt/agent hook produced non-JSON text (treated as empty output)`)
-  }
-  if (parsed !== undefined) applyContentOutput(output, parsed)
-  return { output }
-}
-
-/** A neutral output for a non-process executor (no exit code or stdin/stdout). */
-function emptyHookOutput(): HookOutput {
-  return { exitCode: undefined, stderr: '', stdout: '' }
-}
-
-/** Fold a parsed JSON object into `output`, mirroring the codec's structured-field vocabulary. */
-function applyContentOutput(output: HookOutput, parsed: Record<string, unknown>): void {
-  const str = (obj: Record<string, unknown>, key: string): string | undefined => typeof obj[key] === 'string' ? obj[key] as string : undefined
-  const bool = (obj: Record<string, unknown>, key: string): boolean | undefined => typeof obj[key] === 'boolean' ? obj[key] as boolean : undefined
-  const obj = (value: unknown): Record<string, unknown> | undefined =>
-    typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
-
-  // Top-level legacy fields (CC only allows approve/block at top level).
-  const cont = bool(parsed, 'continue')
-  if (cont !== undefined) output.continue = cont
-  const stopReason = str(parsed, 'stopReason')
-  if (stopReason !== undefined) output.stopReason = stopReason
-  const sysMsg = str(parsed, 'systemMessage')
-  if (sysMsg !== undefined) output.systemMessage = sysMsg
-  const topDecision = str(parsed, 'decision')
-  if (topDecision === 'approve' || topDecision === 'block') output.decision = topDecision
-  const topReason = str(parsed, 'reason')
-  if (topReason !== undefined) output.reason = topReason
-
-  // The per-event hookSpecificOutput channel (permissionDecision/additionalContext…).
-  const hso = obj(parsed.hookSpecificOutput)
-  if (hso !== undefined) {
-    const eventName = str(hso, 'hookEventName')
-    if (eventName !== undefined) output.hookEventName = eventName
-    const permissionDecision = str(hso, 'permissionDecision')
-    if (permissionDecision === 'allow' || permissionDecision === 'deny' || permissionDecision === 'ask') {
-      output.decision = permissionDecision
-    }
-    const permissionReason = str(hso, 'permissionDecisionReason')
-    if (permissionReason !== undefined) output.reason = permissionReason
-    const additionalContext = str(hso, 'additionalContext')
-    if (additionalContext !== undefined) output.additionalContext = additionalContext
-    const updated = obj(hso.updatedInput)
-    if (updated !== undefined) output.updatedInput = updated
-  }
-}
-
-/**
- * Run one configured hook of any executor kind and decode its neutral outcome.
- * `command` runs through {@link runHook} (the shell executor); `http` runs
- * through {@link runHttpHook} (a POST with allowlisted header interpolation).
- * `prompt` and `agent` fork a one-shot small-model/verification subagent when
- * the corresponding enable flag is set; a configured-but-disabled hook of those
- * kinds is skipped with a warn, and without a `subagents` service or parent agent
- * they degrade to the old warned no-op.
- * @param ctx - the plug context (gateway to the `subagents` service and logging).
- * @param hook - the configured hook of any kind.
- * @param opts - payload, timeouts, env/cwd, signal, event, and the http policy.
- * @returns the decoded output plus the run's wall-clock duration.
- */
-async function dispatchHook(ctx: Context, hook: HookCommand, opts: DispatchOptions): Promise<{ output: HookOutput; durationMs: number }> {
-  const now = (): number => performance.now()
-  const started = now()
-  if (hook.type === 'http') {
-    return runHttpHook(hook, {
-      payload: opts.payload,
-      allowedEnvVars: opts.httpAllowedEnvVars,
-      ...opts.allowedHttpHookUrls !== undefined ? { allowedHttpHookUrls: opts.allowedHttpHookUrls } : {},
-      defaultTimeoutMs: opts.defaultTimeoutMs,
-      signal: opts.signal,
-      expectedEventName: opts.expectedEventName,
-      now,
-    })
-  }
-  if (hook.type === 'prompt' || hook.type === 'agent') {
-    const enabled = hook.type === 'prompt' ? opts.enablePromptHooks : opts.enableAgentHooks
-    if (!enabled) {
-      warnOnce(ctx, `hooks-claude-code: ${opts.expectedEventName} ${hook.type} hook is disabled (set ${hook.type === 'prompt' ? 'enablePromptHooks' : 'enableAgentHooks'} to run it)`)
-      return { output: emptyHookOutput(), durationMs: now() - started }
-    }
-    const subagents = ctx.get?.('subagents') as HookSubagentLike | undefined
-    if (!subagents || !opts.agent) {
-      warnOnce(ctx, `hooks-claude-code: ${opts.expectedEventName} ${hook.type} hook cannot run (no subagents service or parent agent)`)
-      return { output: emptyHookOutput(), durationMs: now() - started }
-    }
-    const prompt = interpolatePrompt(hook.prompt, opts.payload)
-    let run
-    try {
-      run = await subagents.start('fork', {
-        label: hook.type === 'prompt' ? 'hook-prompt' : 'hook-agent',
-        signal: opts.signal,
-        prompt: [{ type: 'text', text: prompt }],
-        parent: opts.agent,
-        ...(hook.model !== undefined ? { agentOptions: { model: hook.model } } : {}),
-      })
-    } catch (error: unknown) {
-      ctx.logger.warn(`hooks-claude-code: ${opts.expectedEventName} ${hook.type} hook could not fork a subagent: ${String(error)}`)
-      return { output: emptyHookOutput(), durationMs: now() - started }
-    }
-    const result = await run.result
-    const decoded = contentToHookOutput(result, (m) => ctx.logger.debug(m))
-    if (decoded.error !== undefined) {
-      ctx.logger.warn(`hooks-claude-code: ${opts.expectedEventName} ${hook.type} hook errored: ${decoded.error.message}`)
-    }
-    return { output: decoded.output, durationMs: now() - started }
-  }
-  return runHook(ctx.shell, hook, {
-    payload: opts.payload,
-    defaultTimeoutMs: opts.defaultTimeoutMs,
-    ...opts.env !== undefined ? { env: opts.env } : {},
-    ...opts.cwd !== undefined ? { cwd: opts.cwd } : {},
-    signal: opts.signal,
-    trailingNewline: true,
-    expectedEventName: opts.expectedEventName,
-  }, now)
-}
-
-/** Warn once per skip reason so a repeated disabled hook does not spam the log. */
-const warnedSkips = new Set<string>()
-function warnOnce(ctx: Context, message: string): void {
-  if (warnedSkips.has(message)) return
-  warnedSkips.add(message)
-  ctx.logger.warn(message)
-}
-
-
-// --- Per-event stdin payloads (the CC DIALECT shape). Field names match CC's
-// hook input schema; this is the part a bridge owns. ---
-
 /** The last open turn number in the agent's log, or 0 without an agent. */
 function lastTurn(agent: Agent | undefined): number {
   if (!agent) return 0
@@ -705,156 +416,6 @@ function lastTurn(agent: Agent | undefined): number {
   return last?.type === 'turn/start' ? last.data.turn : 0
 }
 
-/** Flatten content blocks to the text a hook payload carries (the common case). */
-function blocksToText(content: ContentBlock[]): string {
-  return content.filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text').map(b => b.text).join('')
-}
-
-function base(ctx: Context, agent: Agent | undefined, event: string): Record<string, unknown> {
-  return {
-    session_id: agent?.session.header.id ?? '',
-    transcript_path: agent === undefined
-      ? ''
-      : ctx.get('sessionPersistence')?.locate(agent.session.header)?.path ?? '',
-    cwd: agent?.session.header.cwd ?? process.cwd(),
-    hook_event_name: event,
-  }
-}
-
-function sessionStartPayload(ctx: Context, agent: Agent, source: string): Record<string, unknown> {
-  return { ...base(ctx, agent, 'SessionStart'), source }
-}
-/** SessionResume: the base session fields plus the `resume` source (CC's source enum). */
-function sessionResumePayload(ctx: Context, agent: Agent, source: string): Record<string, unknown> {
-  return { ...base(ctx, agent, 'SessionResume'), source }
-}
-function promptPayload(ctx: Context, agent: Agent, content: ContentBlock[]): Record<string, unknown> {
-  return { ...base(ctx, agent, 'UserPromptSubmit'), prompt: blocksToText(content) }
-}
-
-/**
- * The CC canonical tool name for a hook payload. Claude Code hook scripts spell
- * tools with their CC names (`Read`, `Bash`, `Task`), so a canonical-name
- * payload is the CC-parity contract this bridge keeps: a harness `read`/`read_image`
- * surfaces as `Read`, `subagent_fork` as `Task`; a harness-only tool (e.g.
- * `ralph`) keeps its own name. See {@link ccCanonicalToolName}.
- */
-function hookToolName(name: string): string {
-  return ccCanonicalToolName(name)
-}
-
-function preToolPayload(ctx: Context, exec: ToolExecution): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PreToolUse'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId }
-}
-function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PostToolUse'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId, tool_response: blocksToText(result.content) }
-}
-
-/**
- * PostToolUseFailure: fired on an isError tool result. Mirror of PostToolUse
- * minus `tool_response`, carrying the error text flattened from the result
- * content (CC's `error` string). `is_interrupt` is omitted (not derivable from
- * the harness seam).
- */
-function postToolFailurePayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
-  return { ...base(ctx, exec.agent, 'PostToolUseFailure'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId, error: blocksToText(result.content) }
-}
-function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'Stop'), stop_hook_active: false }
-}
-/**
- * Build a SubagentStart/SubagentStop payload from the CC base (the child's
- * `session_id`/`cwd` when the child agent is available) plus the subagent-hook
- * fields. `agent_type` is the CC-default {@link SUBAGENT_TYPE}; `stop_hook_active`
- * is present on SubagentStop only (the loop-guard flag, always false).
- */
-function subagentPayload(ctx: Context, event: 'SubagentStart' | 'SubagentStop', info: { id: string }, child: Agent | undefined): Record<string, unknown> {
-  return {
-    ...base(ctx, child, event),
-    agent_id: info.id,
-    agent_type: SUBAGENT_TYPE,
-    ...event === 'SubagentStop' ? { stop_hook_active: false } : {},
-  }
-}
-
-/**
- * Base payload for a hook event that has a session but no live agent handle
- * (session-event observers and `session/disposed`). Mirrors {@link base}, whose
- * `agent`-shaped fields come from the session header here.
- */
-function sessionBase(ctx: Context, session: Session, event: string): Record<string, unknown> {
-  return {
-    session_id: session.header.id,
-    transcript_path: ctx.get('sessionPersistence')?.locate(session.header)?.path ?? '',
-    cwd: session.header.cwd ?? process.cwd(),
-    hook_event_name: event,
-  }
-}
-
-/** Setup (first-run approximation): a brand-new startup session fires with `source: 'init'`. */
-function setupPayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'Setup'), source: 'init' }
-}
-
-/** PermissionRequest: the tool the approval is about, from the tool-ext route. */
-function permissionRequestPayload(ctx: Context, req: ApprovalRequest): Record<string, unknown> {
-  return { ...base(ctx, req.agent, 'PermissionRequest'), tool_name: hookToolName(req.toolName) }
-}
-
-/** PermissionDenied: the observer only records the outcome, so the reason is approximated. */
-function permissionDeniedPayload(ctx: Context, session: Session): Record<string, unknown> {
-  return { ...sessionBase(ctx, session, 'PermissionDenied'), permission_denial_reason: 'Permission request rejected' }
-}
-
-/** Notification (permission_prompt subtype only): the question that was asked. */
-function notificationPayload(ctx: Context, session: Session, asked: SessionEvent<'approval/asked'>): Record<string, unknown> {
-  return {
-    ...sessionBase(ctx, session, 'Notification'),
-    notification_type: 'permission_prompt',
-    tool_name: hookToolName(asked.data.toolName),
-    ...asked.data.reason !== undefined ? { permission_denial_reason: asked.data.reason } : {},
-  }
-}
-
-/** PostCompact: emitted after a compaction/end session event (observe-only). */
-function postCompactPayload(ctx: Context, session: Session): Record<string, unknown> {
-  return { ...sessionBase(ctx, session, 'PostCompact') }
-}
-
-/** SessionEnd: CC's `reason` is not derivable from `session/disposed`, so it is `'other'`. */
-function sessionEndPayload(ctx: Context, session: Session): Record<string, unknown> {
-  return { ...sessionBase(ctx, session, 'SessionEnd'), reason: 'other' }
-}
-
-/** Map a harness error onto Claude Code's StopFailure error-code vocabulary (default `unknown`). */
-function stopFailureErrorCode(error: unknown): string {
-  const raw = error && typeof error === 'object' && 'message' in error
-    ? (error as { message: unknown }).message
-    : error
-  const message = String(raw).toLowerCase()
-  if (message.includes('rate limit')) return 'rate_limit'
-  if (message.includes('authentication') || message.includes('unauthorized') || message.includes('401') || message.includes('permission')) return 'authentication_failed'
-  if (message.includes('billing') || message.includes('quota') || message.includes('credit')) return 'billing_error'
-  if (message.includes('invalid request') || message.includes('bad request') || message.includes('400')) return 'invalid_request'
-  if (message.includes('server error') || message.includes('overloaded') || message.includes('500')) return 'server_error'
-  if (message.includes('max_output_tokens') || message.includes('output token')) return 'max_output_tokens'
-  return 'unknown'
-}
-
-/** StopFailure: the failing agent plus the mapped error code and text. */
-function stopFailurePayload(ctx: Context, agent: Agent, error: unknown): Record<string, unknown> {
-  const message = error && typeof error === 'object' && 'message' in error
-    ? String((error as { message: unknown }).message)
-    : String(error)
-  return { ...base(ctx, agent, 'StopFailure'), error: message, error_code: stopFailureErrorCode(error) }
-}
-
-/** TaskCreated: the registry-issued id and producer label of a newly-appeared job. */
-function taskCreatedPayload(ctx: Context, job: { id: JobId; label: string }): Record<string, unknown> {
-  return { ...base(ctx, undefined, 'TaskCreated'), task_id: job.id, task_text: job.label }
-}
-
-/** TeammateIdle: a subagent entered idle (the bridge only fires for subagent scopes). */
-function teammateIdlePayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'TeammateIdle') }
-}
+// Public surface preserved from the pre-split monolith: prompt interpolation and
+// subagent-result decoding stay importable from the package root.
+export { contentToHookOutput, interpolatePrompt } from './hook-output.ts'

@@ -5,123 +5,64 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
-import {
-  UserQuestionError,
-  type AskUserQuestionAnswer,
-  type AskUserQuestionRequest,
-} from '@deepseek-ai/dsh-user-questions'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { PERMISSION_SETTINGS_NAMESPACE, foldPermissionMode, ruleString } from '@jianxx/dsh-cc-permission-rules'
-import { BYPASS_MODE, PERMISSION_COMMAND_MODES, PERMISSION_MODE_OPTIONS, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
+import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
 import { composePreset } from './preset.ts'
-import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
+import { createSessionsSection } from './driver-sessions.ts'
+import { gitBranchOf } from './shell-output.ts'
+import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
+import { createApprovalsSection } from './driver-approvals.ts'
+import { createCatalogSection } from './driver-catalog.ts'
+import type { DriverBashCtx, DriverQueueCtx } from './driver-ctx.ts'
+import { createModeSection } from './driver-mode.ts'
+import { createHudSection } from './driver-hud.ts'
+import { createPickersSection } from './driver-pickers.ts'
+import { createQueueSection } from './driver-queue.ts'
+import { createRunLocalSection } from './driver-run-local.ts'
+import { createAgentSection, attachSessionEvents } from './driver-agent.ts'
+
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
-import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
-import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
-import { rowsToMarkdown } from '../export-markdown.ts'
-import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
-import { parseEffortChoice } from '../effort-catalog.ts'
-import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
-import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
-import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
-import { formatStatusLine, shortenSession } from '../statusline.ts'
-import {
-  applySessionEvent,
-  type SessionEventLike,
-  type ToolPresenters,
-} from '../transcript.ts'
-import type { ToolCallView, ToolResultView } from '../tool-card.ts'
+import type { DriverConfig } from '../state/driver-types.ts'
+
+import { clearResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
-  backspaceQuestionText,
-  clearQueue,
-  clearRows,
-  clearTurn,
   closeTodoPanel,
   closeUsagePanel,
   createInitialState,
-  enqueue,
   markExitAttempt,
-  moveEffortPickerFocus,
-  movePermissionPickerFocus,
-  moveModelPickerFocus,
-  moveQuestionFocus,
-  moveSessionSwitcherFocus,
   moveTodoPanelFocus,
   openTodoPanel,
-  openUsagePanel,
-  popQueued,
-  resetTurnStep,
-  setApproval,
   setBusy,
   setDraft,
-  setEffortPicker,
-  setPermissionPicker,
-  setHud,
-  setModelPicker,
   setNotice,
   setPermissionMode,
-  setQuestion,
-  setSessionSwitcher,
-  setTodos,
-  setTurnActive,
-  setUsage,
-  toggleQuestionOption,
   toggleGlobalCollapse,
   toggleThinking,
-  typeQuestionText,
   upsertRow,
-  upsertSubagent,
-  type ApprovalPreview,
-  type ApprovalView,
-  type CatalogEntryView,
-  type HudView,
-  type QuestionView,
-  type SessionEntryView,
-  type SubagentRunView,
-  type TodoItemView,
   type TuiState,
-  type UsageBreakdownView,
-  type UsageView,
 } from '../store.ts'
 
-export interface DriverConfig {
-  cwd?: string
-  agentPreset?: string
-  sessionId?: string
-  provider?: string
-  model?: string
-  /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */
-  historyDir?: string
-  /**
-   * Git-branch probe used by the statusline (best-effort, never throws).
-   * Injectable so tests avoid a real child process; defaults to
-   * {@link gitBranchOf}.
-   */
-  branchProbe?: (cwd: string) => Promise<string | undefined>
-  /**
-   * Output directory for `/export-md` when no path is given. Defaults to
-   * `$DSH_HOME/tui/exports` (same resolution as {@link resume-target}).
-   */
-  exportDir?: string
-  /**
-   * Sink for the zero-width OSC 52 clipboard sequence emitted by `/copy`.
-   * Injectable so tests capture the sequence; production wires it to the live
-   * terminal in plugin.ts (safe inline — the sequence paints nothing).
-   */
-  copyWrite?: (sequence: string) => void
+export type { DriverConfig, TokenUsageTotals } from '../state/driver-types.ts'
+export {
+  BASH_OUTPUT_LINE_CAP,
+  BASH_STDOUT_MAX_BYTES,
+  BASH_TIMEOUT_MS,
+  gitBranchOf,
+} from './shell-output.ts'
+export { formatCostReport } from './usage-view.ts'
+export { allowRuleOf, payloadOf } from './approval-preview.ts'
+
+/** Default lifetime of a transient `showNotice` hint. */
+const NOTICE_TTL_MS = 3000
+
+function liveMode(agent: Agent, fallback: string): string {
+  if (foldPlanMode(agent.session.events)) return 'plan'
+  return foldPermissionMode(agent.session.events) ?? fallback
 }
 
 type PermissionRulesLike = {
@@ -132,608 +73,6 @@ type PermissionRulesLike = {
     readonly bypassImmune: readonly unknown[]
   }
   setMode(agent: Agent, mode: string): void
-}
-
-type CommandsLike = {
-  list(agent: Agent): readonly {
-    name: string
-    description?: string
-    input?: { hint?: string }
-  }[]
-  execute(
-    agent: Agent,
-    line: string,
-    images: readonly unknown[],
-    signal: AbortSignal,
-  ): Promise<{ result?: { kind: string; text?: string } } | undefined>
-}
-
-type LlmLike = {
-  listProviders(): { id: string }[]
-  listModels(provider: string): Promise<{ provider: string; id: string; name: string }[]>
-  /**
-   * Optional model-metadata lookup used to validate reasoning-effort writes.
-   * Optional so existing llm stubs without it keep working: every effort
-   * consumer treats absence as "unresolvable" and fails closed (or writes the
-   * bare pair for /model, which never needs validation).
-   */
-  resolveModelInfo?(
-    provider: string,
-    model: string,
-    signal?: AbortSignal,
-  ): Promise<{
-    reasoning?: {
-      efforts: readonly { id: string; name: string; description?: string }[]
-      defaultEffort?: string
-    }
-  }>
-}
-
-type PersistenceLike = {
-  list(signal?: AbortSignal): Promise<{
-    id: string
-    cwd?: string
-    createdAt: number
-    updatedAtMs?: number
-    parentSession?: string
-  }[]>
-}
-
-/**
- * Structural stand-in for the deployment's `sessionQuery` service: batch
- * title reads for the /resume picker. One result per requested id —
- * operational failures are isolated per id (`status: 'rejected'`), and the
- * fulfilled value carries the session header plus its latest title snapshot.
- */
-type SessionTitleResultLike =
-  | {
-    status: 'fulfilled'
-    /** Requested session id — the join key. Do not use `value.session.id`. */
-    sessionId: string
-    value: { session: { id: string }; title?: { title: string } }
-  }
-  | { status: 'rejected'; sessionId?: string }
-
-type SessionQueryLike = {
-  readTitleSnapshots(ids: readonly string[], signal?: AbortSignal): Promise<readonly SessionTitleResultLike[]>
-}
-
-type ToolsLike = {
-  get(name: string, scope?: unknown): {
-    presentCall?(args: unknown): ToolCallView | undefined
-    presentResult?(args: unknown, result: { content: unknown; isError: boolean; meta?: unknown }): ToolResultView | undefined
-  } | undefined
-}
-
-/**
- * Structural stand-in for the deployment's `agentDefaultModel` service
- * (settings.yaml's `agent-default-model`), which the headless bundle seeds
- * agents from. `currentSelection()` returns the resolved default or undefined
- * when no default is configured. A carried `reasoningEffort` is seeded into
- * the selection too — but only after the llm service confirms the model
- * advertises it ({@link resolveEfforts}); an invalid or unresolvable effort is
- * silently dropped to the bare pair, which is always legal.
- */
-type AgentDefaultModelLike = {
-  currentSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined
-}
-
-/**
- * `subagent/start` snapshot. The real `SubagentRunInfo` is declared in
- * @deepseek-ai/subagent (via cordis module augmentation), which the tui
- * package doesn't import — so a structural local type stands in. Fields are
- * `unknown` because the driver stringifies them into the view layer.
- */
-type SubagentRunInfoLike = {
-  runId: unknown
-  provider: unknown
-  id: unknown
-  local: boolean
-}
-
-/**
- * `subagent/end` snapshot. `stopReason` and `lastAssistantMessage` are
- * optional on the payload; only `stopReason` is surfaced to the view.
- */
-type SubagentRunEndInfoLike = {
-  runId: unknown
-  provider: unknown
-  id: unknown
-  local: boolean
-  stopReason?: unknown
-  lastAssistantMessage?: unknown
-}
-
-/**
- * Structural stand-in for the deployment's `shell` service (ShellExecutor's
- * resolve→run seam), which the tui package doesn't import. `resolve` fills
- * the request's defaults/caps; `run` executes the resolved spec and reports
- * the first-cause outcome. Absent service → the driver degrades to a direct
- * child process (see {@link runShellCommand}).
- */
-type ShellExecSpecLike = {
-  command: string
-  workdir: string
-  timeoutMs: number
-  stdoutMaxBytes: number
-}
-
-type ShellRunResultLike = {
-  /** Exit code; null when the process died from a signal. */
-  exitCode: number | null
-  /** True when the executor's timeout was the first cause to cut the command. */
-  timedOut: boolean
-  stdout: { text: string }
-  stderr: { text: string }
-}
-
-type ShellExecutorLike = {
-  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
-  run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
-}
-
-/** Wall-clock lifetime of a `!` shell command. */
-export const BASH_TIMEOUT_MS = 120_000
-
-/** Foreground stdout byte budget handed to the shell executor for a `!` run. */
-export const BASH_STDOUT_MAX_BYTES = 64_000
-
-/** Lines of command output shown under the `$ cmd` echo row (rest is elided). */
-export const BASH_OUTPUT_LINE_CAP = 20
-
-/** Notice parked above the composer while a `!` command runs. */
-const BASH_RUNNING_NOTICE = '⠋ running…'
-
-/**
- * Structural stand-in for the sessionProjections registry
- * (@deepseek-ai/dsh-session-projection via token-meter's augmentation),
- * which the tui package doesn't import — same pattern as the other `*Like`
- * seams. `onChanged` fires once per client-visible unit whose state changed;
- * `stateOf` is the live read (undefined when the key is not registered).
- */
-type SessionProjectionsLike = {
-  onChanged(listener: (session: { id: unknown }, key: string, value: unknown, seq: number) => void): () => void
-  stateOf(session: unknown, key: string): unknown
-}
-
-/**
- * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
- * field name; `inputTokens` is accepted defensively so a shape drift
- * degrades to "no tokens" instead of NaN. Cache fields are optional —
- * compositions without prompt caching simply omit those lines.
- */
-type TokenUsageStateLike = {
-  totals?: {
-    uncachedInputTokens?: number
-    inputTokens?: number
-    outputTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  }
-}
-
-/** Normalized token totals shared by the HUD and `/cost`. */
-export interface TokenUsageTotals {
-  input: number
-  output: number
-  cacheRead?: number
-  cacheWrite?: number
-}
-
-/** `contextPressure` projection state (subset the HUD reads). */
-type ContextPressureStateLike = {
-  contextWindow?: number
-  pressureTokens?: number
-  surfaceTokens?: number
-  sampledSurfaceTokens?: number
-}
-
-const execFileAsync = promisify(execFile)
-
-/** Default lifetime of a transient `showNotice` hint. */
-const NOTICE_TTL_MS = 3000
-
-/**
- * OSC 52 clipboard-write prefix: `ESC ] 52 ; c ;` + base64 payload, closed
- * with BEL. The sequence is zero-width — writing it inline never disturbs the
- * rendered frame.
- */
-const OSC52_PREFIX = '\x1b]52;c;'
-
-/**
- * Default `/export-md` output directory: `$DSH_HOME/tui/exports` (or
- * `~/.dsh/tui/exports`), mirroring the {@link resume-target} data-dir
- * resolution one level deeper.
- */
-function defaultExportDir(): string {
-  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(dshHome, 'tui', 'exports')
-}
-
-/** Filesystem-safe timestamp for default export filenames (ISO, `:`/`.` dashed). */
-function exportStamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-')
-}
-
-/**
- * Best-effort git branch probe: `git -C <cwd> rev-parse --abbrev-ref HEAD`
- * with a short timeout. Never throws — errors (no git, no repo, detached
- * head) resolve to undefined and the statusline simply omits the segment.
- */
-export async function gitBranchOf(cwd: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      timeout: 2000,
-    })
-    const branch = stdout.trim()
-    return branch.length > 0 ? branch : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Cap combined command output at {@link BASH_OUTPUT_LINE_CAP} lines. Leading
- * and trailing blank edges (from an empty stream or a trailing newline) are
- * trimmed; interior blank lines are preserved.
- */
-function capShellOutput(text: string): string {
-  const lines = text.replace(/^\n+/, '').replace(/\n+$/, '').split('\n')
-  if (lines.length === 1 && lines[0] === '') return ''
-  if (lines.length <= BASH_OUTPUT_LINE_CAP) return lines.join('\n')
-  const hidden = lines.length - BASH_OUTPUT_LINE_CAP
-  return `${lines.slice(0, BASH_OUTPUT_LINE_CAP).join('\n')}\n… +${hidden} more line${hidden === 1 ? '' : 's'}`
-}
-
-/**
- * Assemble the bash-command output row: combined stdout/stderr (line-capped)
- * plus a failure trailer. The row is error-marked for a non-zero exit, a
- * signal death, or an executor timeout.
- */
-function shellOutputRow(
-  stdout: string,
-  stderr: string,
-  outcome: { exitCode: number | null; timedOut: boolean },
-): { kind: 'status'; text: string; error?: boolean } {
-  const parts: string[] = []
-  const capped = capShellOutput(`${stdout}\n${stderr}`)
-  if (capped.length > 0) parts.push(capped)
-  if (outcome.timedOut) {
-    parts.push(`timed out after ${BASH_TIMEOUT_MS / 1000}s`)
-  } else if (outcome.exitCode === null) {
-    parts.push('killed by a signal')
-  } else if (outcome.exitCode !== 0) {
-    parts.push(`exit code ${outcome.exitCode}`)
-  }
-  const failed = outcome.timedOut || outcome.exitCode === null || outcome.exitCode !== 0
-  return {
-    kind: 'status',
-    text: parts.join('\n'),
-    ...(failed ? { error: true } : {}),
-  }
-}
-
-/** Pull cumulative token totals out of a `tokenUsage` state value. */
-function totalsOf(usage: TokenUsageStateLike | undefined): TokenUsageTotals | undefined {
-  const totals = usage?.totals
-  const input = totals?.uncachedInputTokens ?? totals?.inputTokens
-  if (typeof input !== 'number' || typeof totals?.outputTokens !== 'number') return undefined
-  return {
-    input,
-    output: totals.outputTokens,
-    ...typeof totals.cacheReadTokens === 'number' ? { cacheRead: totals.cacheReadTokens } : {},
-    ...typeof totals.cacheWriteTokens === 'number' ? { cacheWrite: totals.cacheWriteTokens } : {},
-  }
-}
-
-/** HUD-shaped subset of {@link totalsOf} (input/output only). */
-function tokensOf(usage: TokenUsageStateLike | undefined): { input: number; output: number } | undefined {
-  const totals = totalsOf(usage)
-  return totals === undefined ? undefined : { input: totals.input, output: totals.output }
-}
-
-/**
- * `/cost` report: token counts with thousands separators, cache lines only
- * when non-zero, a `cache hit` percent (`cacheRead / (input + cacheRead)`,
- * clamped at 100, shown only when `cacheRead` exists and the denominator is
- * positive), and an explicit note that no price table is configured —
- * the harness reports usage only, so no monetary amounts are claimed.
- */
-export function formatCostReport(totals: TokenUsageTotals | undefined): string {
-  if (totals === undefined) return 'No token usage recorded yet.'
-  const row = (label: string, value: number): string =>
-    `  ${label.padEnd(9)}${value.toLocaleString('en-US').padStart(6)}`
-  const lines = [
-    'Token usage this session:',
-    row('input', totals.input),
-    row('output', totals.output),
-  ]
-  if ((totals.cacheRead ?? 0) > 0) lines.push(row('cache r', totals.cacheRead!))
-  if ((totals.cacheWrite ?? 0) > 0) lines.push(row('cache w', totals.cacheWrite!))
-  if (totals.cacheRead !== undefined) {
-    const denominator = totals.input + totals.cacheRead
-    if (denominator > 0) {
-      const percent = Math.max(0, Math.min(100, Math.round((totals.cacheRead / denominator) * 100)))
-      lines.push(`  ${'cache hit'.padEnd(9)}${`${percent}%`.padStart(6)}`)
-    }
-  }
-  lines.push('  Pricing is not configured — costs are not computed.')
-  return lines.join('\n')
-}
-
-/**
- * Map a `todos` projection value (`TodoItem[] | null`) onto view items.
- * Non-arrays (including the pre-first-write `null`) map to undefined (no
- * strip); malformed entries inside an array are dropped defensively so one
- * bad item degrades to a shorter list instead of a crash.
- */
-function todosOf(value: unknown): readonly TodoItemView[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const views: TodoItemView[] = []
-  for (const item of value) {
-    if (item === null || typeof item !== 'object') continue
-    const content = (item as { content?: unknown }).content
-    const status = (item as { status?: unknown }).status
-    if (typeof content !== 'string') continue
-    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') continue
-    views.push({ content, status })
-  }
-  return views
-}
-
-/** Structural equality for two optional todo lists. */
-function sameTodos(
-  a: readonly TodoItemView[] | undefined,
-  b: readonly TodoItemView[] | undefined,
-): boolean {
-  if (a === b) return true
-  if (a === undefined || b === undefined || a.length !== b.length) return false
-  return a.every((item, i) => item.content === b[i]!.content && item.status === b[i]!.status)
-}
-
-/**
- * Raw context-window occupancy behind {@link percentOf}: the latest sample
- * plus the surface's movement since that sample was taken (the projection's
- * anchor adjustment), falling back to the bare sample when no anchor exists.
- * `window` is undefined — the result still being usable for exact-token
- * display — when the projection does not expose a positive window. Callers
- * must render from these raw counts, never back-derive them from the rounded
- * percent.
- */
-function occupancyOf(pressure: ContextPressureStateLike | undefined): { used: number; window?: number } | undefined {
-  const sample = pressure?.pressureTokens
-  if (typeof sample !== 'number') return undefined
-  const { surfaceTokens, sampledSurfaceTokens } = pressure ?? {}
-  const used = typeof surfaceTokens === 'number' && typeof sampledSurfaceTokens === 'number'
-    ? Math.max(0, sample + surfaceTokens - sampledSurfaceTokens)
-    : sample
-  const contextWindow = pressure?.contextWindow
-  const window = typeof contextWindow === 'number' && contextWindow > 0 ? contextWindow : undefined
-  // exactOptionalPropertyTypes: `window` must be absent, not explicitly undefined.
-  return window === undefined ? { used } : { used, window }
-}
-
-/**
- * Context-occupancy percent (0-100 int) from a `contextPressure` state
- * value. Undefined until both numerator and denominator are known.
- */
-function percentOf(pressure: ContextPressureStateLike | undefined): number | undefined {
-  const occupancy = occupancyOf(pressure)
-  if (occupancy === undefined || occupancy.window === undefined) return undefined
-  return Math.max(0, Math.min(100, Math.round((occupancy.used / occupancy.window) * 100)))
-}
-
-/**
- * `contextBreakdown` projection state (subset the usage panel reads): the
- * projected context token count per content role.
- */
-type ContextBreakdownStateLike = {
-  system?: number
-  tools?: number
-  messages?: number
-}
-
-/**
- * Map a `contextBreakdown` projection value onto the usage panel's three role
- * counts. Absent or malformed fields (shape drift, a partial value) degrade
- * to no breakdown — the panel renders the whole section `n/a` instead of a
- * misleading subset of numbers.
- */
-function breakdownOf(value: unknown): UsageBreakdownView | undefined {
-  const raw = value as ContextBreakdownStateLike | null | undefined
-  if (raw === null || typeof raw !== 'object') return undefined
-  const { system, tools, messages } = raw
-  if (typeof system !== 'number' || typeof tools !== 'number' || typeof messages !== 'number') {
-    return undefined
-  }
-  return { system, tools, messages }
-}
-
-/**
- * Assemble the usage panel's view from the three projection reads. Absent
- * sections stay absent (the panel renders each `n/a` independently); an
- * all-absent read yields undefined so no empty snapshot is parked in state.
- */
-function usageViewOf(
-  totals: TokenUsageTotals | undefined,
-  occupancy: { used: number; window?: number } | undefined,
-  breakdown: UsageBreakdownView | undefined,
-): UsageView | undefined {
-  const view: UsageView = {}
-  if (totals !== undefined) view.totals = totals
-  if (occupancy !== undefined) {
-    view.contextUsed = occupancy.used
-    if (occupancy.window !== undefined) view.contextWindow = occupancy.window
-  }
-  if (breakdown !== undefined) view.breakdown = breakdown
-  const empty = view.totals === undefined && view.contextUsed === undefined && view.breakdown === undefined
-  return empty ? undefined : view
-}
-
-/** Structural equality for two usage token-total sets. */
-function sameTotals(a: UsageView['totals'], b: UsageView['totals']): boolean {
-  if (a === undefined || b === undefined) return a === b
-  return a.input === b.input && a.output === b.output
-    && a.cacheRead === b.cacheRead && a.cacheWrite === b.cacheWrite
-}
-
-/** Structural equality for two usage breakdowns. */
-function sameBreakdown(a: UsageBreakdownView | undefined, b: UsageBreakdownView | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b
-  return a.system === b.system && a.tools === b.tools && a.messages === b.messages
-}
-
-/** Structural equality for two usage snapshots (all sections field-wise). */
-function sameUsage(a: UsageView | undefined, b: UsageView): boolean {
-  return a !== undefined
-    && sameTotals(a.totals, b.totals)
-    && a.contextUsed === b.contextUsed
-    && a.contextWindow === b.contextWindow
-    && sameBreakdown(a.breakdown, b.breakdown)
-}
-
-function liveMode(agent: Agent, fallback: string): string {
-  if (foldPlanMode(agent.session.events)) return 'plan'
-  return foldPermissionMode(agent.session.events) ?? fallback
-}
-
-/**
- * Character cap for the pretty-printed raw-arguments preview of an approval
- * prompt (non-shell, non-file-edit tools).
- */
-const ARGS_PREVIEW_MAX_CHARS = 500
-
-/**
- * The restored arguments of an approved call: a parsed JSON object, or the
- * raw stored text when the arguments are not a JSON object (malformed JSON,
- * a bare scalar) so the preview degrades to the literal payload instead of
- * nothing.
- */
-type RestoredArgs = { args: Record<string, unknown> } | { raw: string }
-
-/**
- * Restore the approved call's arguments by scanning the session log backwards
- * for the `tool/call` event carrying the request's callId (`appendToolCall`
- * lands before the pre-execute approval, so the event is always present).
- * Returns undefined when the callId is missing, unpaired, or its arguments
- * are not stored as a string.
- */
-function argsOf(req: ApprovalRequest): RestoredArgs | undefined {
-  if (req.callId === undefined) return undefined
-  const events = req.agent.session.events
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i]!
-    if (event.type !== 'tool/call') continue
-    if (String((event.data as { callId?: unknown }).callId) !== String(req.callId)) continue
-    const raw = (event.data as { arguments?: unknown }).arguments
-    if (typeof raw !== 'string') return undefined
-    try {
-      const parsed: unknown = JSON.parse(raw)
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return { args: parsed as Record<string, unknown> }
-      }
-    } catch {
-      // Not JSON — fall through to the raw-text preview.
-    }
-    return { raw }
-  }
-  return undefined
-}
-
-/**
- * Build the approval prompt's structured payload preview from the restored
- * call arguments: shell-style `command` arguments map to the command kind;
- * Edit/MultiEdit/Write arguments map to per-file diffs (rendered with the
- * transcript's multi-hunk diff renderer); anything else pretty-prints the raw
- * arguments, and a failed recovery degrades to tool name + reason only.
- */
-export function payloadOf(req: ApprovalRequest): ApprovalPreview {
-  const restored = argsOf(req)
-  if (restored === undefined) return { kind: 'none' }
-  if ('raw' in restored) {
-    return { kind: 'args', json: restored.raw.slice(0, ARGS_PREVIEW_MAX_CHARS) }
-  }
-  const args = restored.args
-  if (typeof args.command === 'string') {
-    return { kind: 'command', command: args.command }
-  }
-  const diffs = diffsOf(req.toolName.toLowerCase(), args)
-  if (diffs !== undefined) return { kind: 'diff', diffs }
-  return { kind: 'args', json: JSON.stringify(args, null, 2).slice(0, ARGS_PREVIEW_MAX_CHARS) }
-}
-
-/**
- * Extract per-file diffs from file-edit tool arguments, or undefined when the
- * arguments do not carry the expected shape (the preview then degrades to the
- * raw-arguments kind).
- */
-function diffsOf(name: string, args: Record<string, unknown>): readonly { path: string; oldText: string | null; newText: string }[] | undefined {
-  const path = typeof args.file_path === 'string' ? args.file_path : undefined
-  if (name === 'write') {
-    if (path === undefined || typeof args.content !== 'string') return undefined
-    return [{ path, oldText: null, newText: args.content }]
-  }
-  if (name === 'edit') {
-    if (path === undefined || typeof args.old_string !== 'string' || typeof args.new_string !== 'string') return undefined
-    return [{ path, oldText: args.old_string, newText: args.new_string }]
-  }
-  if (name === 'multiedit' || name === 'multi_edit') {
-    if (path === undefined || !Array.isArray(args.edits)) return undefined
-    const diffs: { path: string; oldText: string | null; newText: string }[] = []
-    for (const edit of args.edits) {
-      if (edit === null || typeof edit !== 'object') continue
-      const { old_string: oldText, new_string: newText } = edit as Record<string, unknown>
-      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
-      diffs.push({ path, oldText, newText })
-    }
-    return diffs.length > 0 ? diffs : undefined
-  }
-  return undefined
-}
-
-/**
- * Derive the permission rule an "always" answer persists for the approved
- * call. Shell commands get a trailing-space first-word prefix rule
- * (`Bash(npm )` matches `npm install …` but not `npmx …` — the deliberate
- * trailing space replaces the colon-carrying `:*` legacy form, which would
- * otherwise embed the colon in the prefix and never match). Every other tool
- * gets a whole-tool rule. Undefined (stay once-only) when nothing usable
- * remains, e.g. a blank command.
- */
-export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
-  const name = toolName.trim()
-  if (name === '') return undefined
-  if (preview?.kind === 'command') {
-    const firstWord = preview.command.trim().split(/\s+/)[0] ?? ''
-    if (firstWord === '') return undefined
-    // ruleString escapes parens/backslashes so a subshell-opening first word
-    // round-trips through parseRuleString.
-    return ruleString(name, `${firstWord} `)
-  }
-  return name
-}
-
-/**
- * Structural seam for the deployment settings provider: the pieces the
- * always-allow write path needs (namespace descriptors and whole-section
- * replace). Declared locally — the tui package does not import the settings
- * package, mirroring the other `*Like` seams.
- */
-type SettingsProviderLike = {
-  readonly writable?: boolean
-  describe(options?: { redactSecrets?: boolean }): readonly {
-    ns: unknown
-    revision: number
-    user?: unknown
-  }[]
-  replace(ns: unknown, section: object, expectedRevision?: number): Promise<void>
-}
-
-/** Whether an error is the settings provider's revision-conflict rejection. */
-function isSettingsConflict(error: unknown): boolean {
-  const candidate = error as { name?: unknown; code?: unknown } | null
-  if (candidate === null || typeof candidate !== 'object') return false
-  return candidate.code === 'SETTINGS_CONFLICT' || candidate.name === 'SettingsConflictError'
 }
 
 /**
@@ -817,112 +156,25 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
     selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
   }
-  // Deployment default-model service (settings.yaml's agent-default-model).
-  // The headless bundle seeds agents from this; the TUI driver reads it here
-  // so a fresh profile with no explicit provider/model still resolves a
-  // selection. A carried reasoningEffort is seeded too, after resolveModelInfo
-  // validation; an invalid or unresolvable effort is silently dropped to the
-  // bare pair.
-  const agentDefaultModel = ctx.get('agentDefaultModel') as AgentDefaultModelLike | undefined
-
-  /**
-   * Advertised reasoning-effort levels of `provider`/`model`, or undefined
-   * when they cannot be resolved: the llm service is absent, does not expose
-   * `resolveModelInfo` (legacy stubs), the lookup rejects, or the model
-   * carries no reasoning metadata. Every effort write fails closed on
-   * undefined — the selection must never hold a model/effort pair the llm
-   * layer would reject (it throws UNSUPPORTED_REASONING_EFFORT, it does not
-   * degrade).
-   */
-  const resolveEfforts = async (
-    provider: string,
-    model: string,
-  ): Promise<readonly { id: string; name: string }[] | undefined> => {
-    const llm = ctx.get('llm') as LlmLike | undefined
-    if (llm?.resolveModelInfo === undefined) return undefined
-    try {
-      const info = await llm.resolveModelInfo(provider, model)
-      return info.reasoning === undefined ? undefined : info.reasoning.efforts
-    } catch {
-      return undefined
-    }
-  }
-
-  /**
-   * Stale-pair guard for detached (submit-then-continue) writes: the captured
-   * `{provider, model}` must still be the live selection when the continuation
-   * resumes. A mismatch — a concurrent `/model` or a switchSession re-seed
-   * happened while validation was parked — emits the notice and reports true;
-   * the caller must not write.
-   */
-  const stalePair = (captured: { provider: string; model: string }): boolean => {
-    const live = selection.current
-    if (live !== undefined && live.provider === captured.provider && live.model === captured.model) {
-      return false
-    }
-    emit(upsertRow(state, { kind: 'status', text: 'Model changed; effort not applied.' }))
-    return true
-  }
-
-  /**
-   * Seed `selection.current` from the deployment default when no explicit
-   * provider/model is configured. Explicit config (DriverConfig) and resolved
-   * agent options always win — the service only fills the gap the headless
-   * bundle would otherwise fill. Called at boot and after switchSession rebinds
-   * the agent; both call sites await it so the banner/notice reads that follow
-   * never observe a half-seeded selection. `reset` clears a stale selection
-   * first (switchSession) so a previous session's model never leaks across a
-   * switch. A carried `reasoningEffort` is seeded only when the model's
-   * advertised efforts confirm it; llm missing or effort invalid → silently
-   * dropped (the bare pair is always legal).
-   */
-  const seedDefaultModel = async (reset = false): Promise<void> => {
-    if (reset) selection.current = undefined
-    if (selection.current !== undefined) return
-    if (current.agent.options.provider !== undefined && current.agent.options.model !== undefined) {
-      selection.current = { provider: current.agent.options.provider, model: current.agent.options.model }
-      return
-    }
-    if (agentOptions === undefined) {
-      const dep = agentDefaultModel?.currentSelection()
-      if (dep !== undefined) {
-        let effort: string | undefined
-        if (dep.reasoningEffort !== undefined) {
-          const efforts = await resolveEfforts(dep.provider, dep.model)
-          if (efforts?.some(level => level.id === dep.reasoningEffort) === true) {
-            effort = dep.reasoningEffort
-          }
-        }
-        selection.current = effort === undefined
-          ? { provider: dep.provider, model: dep.model }
-          : { provider: dep.provider, model: dep.model, reasoningEffort: ReasoningEffortId(effort) }
-      }
-    }
-  }
-  await seedDefaultModel()
+  // Deployment default-model service, effort resolution, history binding,
+  // and the resume marker now live in the agent section (harness/driver-agent.ts).
+  const agent = createAgentSection({
+    emit,
+    state: () => state,
+    ctx,
+    current,
+    selection,
+    agentOptions,
+    liveMode,
+    historyDir: config.historyDir,
+  })
+  await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
-  // user prompt — never on an empty fresh boot, which would steal the
-  // previous session from the launcher's auto-resume channel. persistResumeTarget
-  // is idempotent (equal id → skip).
-  let markedContent = resumed
-  const persistResumeTarget = (): void => {
-    const id = String(current.agent.session.id)
-    if (readResumeTarget() === id) return
-    writeResumeTarget(id)
-  }
-  if (resumed) persistResumeTarget()
-  // Composer history: load once at boot (oldest→newest); seeded into the
-  // editor by root.ts. New prompts are appended on submit (see submit()).
-  const historyDir = config.historyDir
-  let history = loadHistory(historyDir)
-  // Bash-mode history: a separate stack (own file, same dir resolution) so
-  // shell commands never dilute composer prompt recall. Kept newest-first in
-  // memory for direct ↑ indexing; the file stays oldest→newest.
-  let bashHistory: string[] = loadBashHistory(historyDir).reverse()
-  const appendBashHistory = (command: string): void => {
-    if (bashHistory[0] === command) return
-    bashHistory = [command, ...bashHistory].slice(0, HISTORY_CAP)
-    saveBashHistory([...bashHistory].reverse(), historyDir)
+  // user prompt — never on an empty fresh boot. The agent section owns the
+  // binding; seed true + persist only when this boot resumed.
+  if (resumed) {
+    agent.setMarkedContent(true)
+    agent.persistResumeTarget()
   }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
@@ -944,1579 +196,220 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }))
   }
 
-  const tools = ctx.get('tools') as ToolsLike | undefined
-  // Shell executor seam for `!` commands; absent → runShellCommand degrades
-  // to a direct child process.
-  const shell = ctx.get('shell') as ShellExecutorLike | undefined
-  const presenters: ToolPresenters | undefined = tools === undefined
-    ? undefined
-    : {
-      presentCall(name, args) {
-        return tools.get(name, current.agent)?.presentCall?.(args)
-      },
-      presentResult(name, args, result) {
-        return tools.get(name, current.agent)?.presentResult?.(args, result)
-      },
-    }
-
   // Replay the durable event log so a resumed session shows its prior
-  // conversation. Presenters are already built, so tool cards re-run
-  // presentCall/presentResult on stored args (pure by contract). One emit for
+  // conversation via the agent section's presenter-bound fold. One emit for
   // the whole fold — folding is a reduce, not a per-event broadcast.
-  // Extracted as a closure so switchSession re-runs it for the new session.
-  const foldHistory = (): TuiState => {
-    let folded = state
-    for (const event of current.agent.session.events) {
-      folded = applySessionEvent(folded, event as SessionEventLike, presenters)
-    }
-    return folded
-  }
-  emit(foldHistory())
+  emit(agent.foldHistory())
   // A historical log may end mid-turn if the process crashed; sync busy from
   // the ground-truth agent status before live events continue.
   emit(setBusy(state, current.agent.status === 'running'))
 
   // --- Statusline HUD: git branch + sessionProjections feed -----------------
-  // Branch: one best-effort probe at boot and after each switchSession (the
-  // cwd may differ per session). Async is fine — a late landing re-emits so
-  // the footer picks it up; a probe superseded by a switch is dropped by the
-  // sequence check. The probe never throws; failures just omit the segment.
-  // No timer, one probe per (re)bind — zero polling.
-  const branchProbe = config.branchProbe ?? gitBranchOf
-  let branch: string | undefined
-  let branchSeq = 0
-  const refreshBranch = (): void => {
-    const seq = ++branchSeq
-    const dir = current.agent.session.header.cwd ?? cwd
-    void Promise.resolve(branchProbe(dir))
-      .catch(() => undefined)
-      .then(next => {
-        if (seq !== branchSeq || next === branch) return
-        branch = next
-        // Same-reference emit: re-notifies subscribers so root re-reads the
-        // statusline getter with the fresh branch.
-        emit(state)
-      })
-  }
-  refreshBranch()
+  const hud = createHudSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    current,
+    selection,
+    branchProbe: config.branchProbe ?? gitBranchOf,
+  })
+  const { refreshBranch, seedHud, seedTodos, applyUsage, projections, statusLineOf } = hud
 
-  // Projections: seed once from stateOf (a resumed session may already be
-  // populated), then keep the hud fresh from the change feed — event-driven,
-  // filtered to the live session so late events from a disposed session are
-  // dropped by the id mismatch.
-  const projections = ctx.get('sessionProjections') as SessionProjectionsLike | undefined
-  const applyHud = (patch: Partial<HudView>): void => {
-    const hud = state.hud
-    const percentSame = patch.contextPercent === undefined || hud?.contextPercent === patch.contextPercent
-    const tokens = patch.tokens
-    const tokensSame = tokens === undefined
-      || (hud?.tokens !== undefined && hud.tokens.input === tokens.input && hud.tokens.output === tokens.output)
-    const detail = patch.contextTokens
-    const detailSame = detail === undefined
-      || (hud?.contextTokens !== undefined
-        && hud.contextTokens.used === detail.used
-        && hud.contextTokens.window === detail.window)
-    if (percentSame && tokensSame && detailSame) return // emit only on an actual change
-    emit(setHud(state, patch))
-  }
-  // Usage panel: each of the three token-meter projections folds its own
-  // section (totals / context occupancy / role breakdown) into one live
-  // snapshot through the same merge — a section its projection never reports
-  // stays absent, and the panel renders that section `n/a`. A read that
-  // yields no section at all (patch undefined) is a no-op.
-  const applyUsage = (patch: UsageView | undefined): void => {
-    if (patch === undefined) return
-    const merged: UsageView = { ...state.usage, ...patch }
-    if (sameUsage(state.usage, merged)) return
-    emit(setUsage(state, merged))
-  }
-  const seedHud = (): void => {
-    const patch: Partial<HudView> = {}
-    if (projections !== undefined) {
-      const tokens = tokensOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
-      if (tokens !== undefined) patch.tokens = tokens
-      const pressure = projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined
-      const percent = percentOf(pressure)
-      if (percent !== undefined) patch.contextPercent = percent
-      const occupancy = occupancyOf(pressure)
-      if (occupancy !== undefined) patch.contextTokens = occupancy
-    }
-    // Replace wholesale: clear first so stale fields from a previous session
-    // never leak, then apply whatever the new session actually has.
-    let next = setHud(state, undefined)
-    if (patch.contextPercent !== undefined || patch.tokens !== undefined || patch.contextTokens !== undefined) {
-      next = setHud(next, patch)
-    }
-    if (next !== state) emit(next)
-  }
-  // Todos: same seeding contract as the HUD — stateOf at (re)bind, then the
-  // change feed. Absent (`null` before the first write) clears the strip so
-  // no cross-session leak survives a switch.
-  const seedTodos = (): void => {
-    const value = projections === undefined
-      ? undefined
-      : projections.stateOf(current.agent.session, 'todos')
-    const todos = todosOf(value)
-    if (sameTodos(state.todos, todos)) return
-    emit(setTodos(state, todos))
-  }
-  seedHud()
-  seedTodos()
-  // Boot may resume a log that ended mid-turn (crashed process): the setBusy
-  // sync above flipped busy from the ground-truth agent status, so anchor the
-  // working line here — deliberately after seedHud, so outputBase reads the
-  // seeded token totals instead of pinning an unseeded baseline.
-  if (state.busy) {
-    emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
-  if (projections !== undefined) {
-    projections.onChanged((session, key, value) => {
-      if (session.id !== current.agent.session.id) return
-      if (key === 'tokenUsage') {
-        const usage = value as TokenUsageStateLike | undefined
-        const tokens = tokensOf(usage)
-        if (tokens !== undefined) applyHud({ tokens })
-        applyUsage(usageViewOf(totalsOf(usage), undefined, undefined))
-        // Working-line rebase guard: an anchor created before the HUD was
-        // seeded carries outputBase === undefined; the first tokenUsage
-        // change pins it. Strictly turn-MODIFYING (turn must already exist) —
-        // a tokenUsage emit while idle must never conjure a phantom anchor.
-        // setTurnActive re-derives verbIndex deterministically from the
-        // unchanged startedAt, so this is a pure baseline pin; the live
-        // stepStartedAt passes through so pinning never resets a mid-step
-        // clock.
-        const turn = state.turn
-        if (turn !== undefined && turn.outputBase === undefined && tokens !== undefined) {
-          emit(setTurnActive(state, { startedAt: turn.startedAt, outputBase: tokens.output, stepStartedAt: turn.stepStartedAt }))
-        }
-      } else if (key === 'contextPressure') {
-        const pressure = value as ContextPressureStateLike | undefined
-        const percent = percentOf(pressure)
-        const occupancy = occupancyOf(pressure)
-        if (percent === undefined && occupancy === undefined) return
-        applyHud({
-          ...percent === undefined ? {} : { contextPercent: percent },
-          ...occupancy === undefined ? {} : { contextTokens: occupancy },
-        })
-        applyUsage(usageViewOf(undefined, occupancy, undefined))
-      } else if (key === 'todos') {
-        const todos = todosOf(value)
-        if (sameTodos(state.todos, todos)) return
-        emit(setTodos(state, todos))
-      } else if (key === 'contextBreakdown') {
-        applyUsage(usageViewOf(undefined, undefined, breakdownOf(value)))
-      }
-    })
+  // Late-bound cross-section handles: runHarness (mode/pickers) and flushQueue
+  // (session/event listener) are wired after their sections are constructed.
+  const actions: {
+    runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+    flushQueue(): void
+  } = {
+    runHarness: async () => { throw new Error('runHarness used before init') },
+    flushQueue: (): void => {},
   }
 
-  ctx.on('session/event', (session, event: SessionEvent) => {
-    if (session.id !== current.agent.session.id) return
-    emit(applySessionEvent(state, event as SessionEventLike, presenters))
-    const eventType = event.type as string
-    if (eventType === 'permission/mode' || eventType === 'plan/mode') {
-      emit(setPermissionMode(state, liveMode(current.agent, state.permissionMode)))
-    }
-    // Working-line anchor backstop: a live `turn/start` (or `agent/status`
-    // running) can be the first evidence of a turn this UI never saw
-    // submitted. Anchor only when none exists — re-anchoring a live turn
-    // would reset elapsed time and the token delta to zero. steerQueued
-    // deliberately does not anchor: it fires mid-turn.
-    if (eventType === 'turn/start' && state.turn === undefined) {
-      emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-    } else if (eventType === 'agent/status' && state.turn === undefined) {
-      const status = (event as SessionEventLike).data as { status?: unknown } | undefined
-      if (status?.status === 'running') {
-        emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-      }
-    }
-    // Working-line step clock: each tool call (and each tool result — the model
-    // is thinking again once a tool finishes) resets the elapsed timer, so the
-    // line shows the current step's duration instead of the whole turn's.
-    // Strictly turn-modifying (resetTurnStep no-ops without a live turn) — an
-    // idle replay must never conjure a phantom anchor. Known semantics, not
-    // bugs: subagent tool events carry the subagent's session id and are
-    // filtered above (a Task step's clock spans the whole subagent run), and
-    // tool/call fires before the pre-execute approval, so approval
-    // deliberation counts as step time. outputBase is preserved — the token
-    // delta stays turn-cumulative.
-    if ((eventType === 'tool/call' || eventType === 'tool/result') && state.turn !== undefined) {
-      emit(resetTurnStep(state, Date.now()))
-    }
-    // Outbox flush anchor: the durable `turn/end` fires exactly once per turn
-    // (aborts and errors included). agent/status is unusable here — live
-    // events never reach the session log — and busy flips jitter per step, so
-    // turn/end is the only per-turn heartbeat. An empty queue makes the flush
-    // a no-op (e.g. after interrupt() already cleared it).
-    if (eventType === 'turn/end') {
-      // Fixed order: the fold above already emitted the turn's last rows, the
-      // working-line anchor clears next, and only then does the queue flush —
-      // its dispatch re-anchors for the followup turn.
-      emit(clearTurn(state))
-      flushQueue()
-    }
+  // session/event listener (fold + working-line anchor/step + outbox flush).
+  // Presenters come from the agent section; flush is late-bound through the
+  // actions holder because the queue section is constructed later.
+  attachSessionEvents({
+    emit,
+    state: () => state,
+    ctx,
+    current,
+    liveMode,
+    presenters: agent.presenters,
+    flushQueue: () => actions.flushQueue(),
   })
 
   // --- Modal pipeline: approvals + questions share one FIFO ------------------
-  // Concurrent approval requests used to overwrite a single slot (leaving the
-  // first request's promise hanging) and a question arriving mid-approval
-  // rendered both boxes while input routing favored the approval. Instead,
-  // every modal enters one FIFO; only the head renders (exactly one of the
-  // approval and question slots is set), answering or aborting the head
-  // promotes the next entry, and `ask()` during an active modal queues behind
-  // it instead of stacking a second box.
-  type ApprovalEntry = {
-    kind: 'approval'
-    view: ApprovalView
-    resolve: (outcome: ApprovalOutcome) => void
-    signal?: AbortSignal
-  }
-  type QuestionEntry = {
-    kind: 'question'
-    id: string
-    view: QuestionView
-    resolve: (answer: AskUserQuestionAnswer) => void
-    reject: (error: unknown) => void
-    signal?: AbortSignal
-  }
-  type ModalEntry = ApprovalEntry | QuestionEntry
-  const modalQueue: ModalEntry[] = []
-
-  /** Publish the queue head into exactly one of the two modal slots. */
-  const publishHead = (): void => {
-    const head = modalQueue[0]
-    const behind = modalQueue.length - 1
-    if (head === undefined || head.kind !== 'approval') emit(setApproval(state, undefined))
-    if (head === undefined || head.kind !== 'question') emit(setQuestion(state, undefined))
-    if (head === undefined) return
-    if (head.kind === 'approval') {
-      emit(setApproval(state, { ...head.view, ...behind === 0 ? {} : { pendingCount: behind } }))
-    } else {
-      emit(setQuestion(state, head.view))
-    }
-  }
-
-  /** Remove an entry from the queue (no-op if already gone) and republish. */
-  const dequeueModal = (entry: ModalEntry): void => {
-    const index = modalQueue.indexOf(entry)
-    if (index < 0) return
-    modalQueue.splice(index, 1)
-    publishHead()
-  }
-
-  // --- Approvals ------------------------------------------------------------
-  // The head approval is parked in state.approval together with the
-  // recoverable payload preview. The "always" answer resolves the current call
-  // like a one-shot grant AND persists a derived permission rule through the
-  // settings provider (see writeAllowRule). Already-queued requests are decided
-  // one by one even after a rule lands — grants never apply retroactively.
-  // Requests from the current agent and from tracked subagents (their session
-  // id was seen on `subagent/start`, which fires before a subagent's first
-  // approval) queue here; anything else passes through to the next provider.
-  ctx.on('approval/request', async (req: ApprovalRequest, next) => {
-    const ownSessions = new Set(state.subagents.map(run => run.sessionId))
-    ownSessions.add(String(current.agent.session.id))
-    if (!ownSessions.has(String(req.agent.session.id))) return next()
-    const preview = payloadOf(req)
-    const view: ApprovalView = {
-      toolName: req.toolName,
-      ...req.reason === undefined ? {} : { reason: req.reason },
-      ...preview.kind === 'none' ? {} : { preview },
-    }
-    return await new Promise<ApprovalOutcome>(resolve => {
-      const entry: ApprovalEntry = {
-        kind: 'approval',
-        view,
-        resolve,
-        ...req.signal === undefined ? {} : { signal: req.signal },
-      }
-      modalQueue.push(entry)
-      req.signal?.addEventListener('abort', () => {
-        dequeueModal(entry)
-        resolve('cancelled')
-      }, { once: true })
-      publishHead()
-    })
+  const approvals = createApprovalsSection({ emit, state: () => state, ctx, current, showNotice })
+  const modeSection = createModeSection({
+    emit,
+    state: () => state,
+    current,
+    projections,
+    showNotice,
+    runHarness: (line) => actions.runHarness(line),
+    getRules: () => ctx.get('permissionRules') as PermissionRulesLike | undefined,
+    liveMode,
   })
+  // Slash-command catalog + subagent lifecycle listeners.
+  const catalog = createCatalogSection({ emit, state: () => state, current, ctx })
 
-  /**
-   * Persist the allow rule an "always" answer grants: read the `permissions`
-   * namespace descriptor, merge the rule into the raw user section's allow
-   * list (re-attaching every passthrough field — `replace` overwrites the
-   * whole section), and write it back at the observed revision. One retry on
-   * a revision conflict (re-describe, re-merge, replace). Degradations
-   * (provider missing, namespace unregistered, write failure) leave the call
-   * allowed once and say so in a notice — never a crash after the fact.
-   */
-  const writeAllowRule = async (toolName: string, preview: ApprovalPreview | undefined): Promise<void> => {
-    const rule = allowRuleOf(toolName, preview)
-    if (rule === undefined) return
-    const settings = ctx.get('settings') as SettingsProviderLike | undefined
-    if (settings === undefined || settings.writable === false || typeof settings.describe !== 'function') {
-      showNotice('Allowed once only — no writable settings provider is mounted.')
-      return
-    }
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const descriptor = settings.describe().find(
-        entry => String(entry.ns) === String(PERMISSION_SETTINGS_NAMESPACE),
-      )
-      if (descriptor === undefined) {
-        showNotice('Allowed once only — the "permissions" settings namespace is not mounted.')
-        return
-      }
-      const user = descriptor.user !== null && typeof descriptor.user === 'object'
-        ? descriptor.user as Record<string, unknown>
-        : {}
-      const current = Array.isArray(user.allow) ? [...user.allow as unknown[]] : []
-      const allow = current.includes(rule) ? current : [...current, rule]
-      try {
-        await settings.replace(PERMISSION_SETTINGS_NAMESPACE, { ...user, allow }, descriptor.revision)
-        showNotice(`Always allow: ${rule}`)
-        return
-      } catch (error) {
-        if (attempt === 0 && isSettingsConflict(error)) continue
-        const message = error instanceof Error ? error.message : String(error)
-        showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
-        return
-      }
-    }
-  }
-
-  const userQuestions = ctx.get('userQuestions') as
-    | { registerProvider(provider: { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
-    | undefined
-  let questionsDispose: (() => void) | undefined
-  if (userQuestions !== undefined) {
-    try {
-      questionsDispose = userQuestions.registerProvider({
-        ask: async (request: AskUserQuestionRequest) => {
-          const first = request.questions[0]
-          const view: QuestionView = {
-            header: first?.header ?? 'Question',
-            question: first?.question ?? '',
-            ...first?.detail === undefined ? {} : { detail: first.detail },
-            options: (first?.options ?? []).map(option => ({
-              label: option.label,
-              ...option.description === undefined ? {} : { description: option.description },
-            })),
-            multiSelect: first?.multiSelect === true,
-            ...first?.intent === undefined ? {} : { intent: first.intent },
-            focused: 0,
-            selected: [],
-            custom: '',
-          }
-          // Queue behind any active modal; when the pipeline is empty this
-          // entry becomes the head and renders immediately.
-          return await new Promise<AskUserQuestionAnswer>((resolve, reject) => {
-            const entry: QuestionEntry = {
-              kind: 'question',
-              id: first?.id ?? '',
-              view,
-              resolve: (answer) => resolve({
-                answers: answer.answers.map((item, index) => ({
-                  id: request.questions[index]?.id ?? item.id,
-                  selected: item.selected,
-                  ...item.custom === undefined ? {} : { custom: item.custom },
-                })),
-              }),
-              reject,
-              ...request.signal === undefined ? {} : { signal: request.signal },
-            }
-            modalQueue.push(entry)
-            request.signal?.addEventListener('abort', () => {
-              dequeueModal(entry)
-              reject(new UserQuestionError('question cancelled', 'CANCELLED'))
-            }, { once: true })
-            publishHead()
-          })
-        },
-      })
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'DUPLICATE_PROVIDER') throw error
-    }
-  }
-
-  /**
-   * Resolve the head question and advance the modal queue. Labels are echoed
-   * verbatim — the plan-review `intent.approve` contract requires the exact
-   * label string, never an inferred or re-indexed one.
-   */
-  const resolveQuestion = (selected: readonly string[], custom?: string): void => {
-    const head = modalQueue[0]
-    if (head === undefined || head.kind !== 'question') return
-    modalQueue.shift()
-    publishHead()
-    head.resolve({
-      answers: [{
-        id: head.id,
-        selected: [...selected],
-        ...custom === undefined ? {} : { custom },
-      }],
-    })
-  }
-
-  // Mode writes serialize per driver: Shift+Tab fires synchronously and rapid
-  // presses must not interleave a '/plan off' with the engine setMode. The
-  // chain is failure-contained — rejections surface as notices, never as
-  // unhandled rejections. The picker and typed '/permissions …' bypass this
-  // chain deliberately: the host command re-derives the plan phase per
-  // dispatch and plan-mode's set() is convergent
-  // (docs/plan-mode-command-channel.md §6.2).
-  let modeWrites: Promise<void> = Promise.resolve()
-  const applyMode = (mode: PermissionCommandMode): void => {
-    modeWrites = modeWrites.then(() => applyModeInner(mode)).catch((error: unknown) => {
-      showNotice(error instanceof Error ? error.message : String(error))
-    })
-  }
-
-  const applyModeInner = async (mode: PermissionCommandMode): Promise<void> => {
-    // plan is owned by plan-mode inside the preset's isolate realm; the ONLY
-    // cross-plane write seam is the /plan command channel — dispatched bare,
-    // never '/plan on' (the upstream handler steers any non-'off' argument
-    // into the conversation as a user message).
-    if (mode === 'plan') {
-      const result = await runHarness('/plan')
-      if (result === undefined) showNotice('plan mode is not mounted in this composition')
-      // No optimistic emit: the display re-folds from the committed plan/mode
-      // event (see the session/event listener), so a queued mid-turn entry
-      // stays truthful until it applies.
-      return
-    }
-    const phase = planPhaseOf(
-      current.agent.session.events,
-      projections?.stateOf(current.agent.session, 'plan') as PlanUnitStateLike | undefined,
-    )
-    if (phase !== 'off') {
-      const exit = await runHarness('/plan off')
-      if (exit === null) return // no command registry — runHarness already noticed
-      if (exit === undefined) {
-        showNotice('plan mode is not mounted in this composition')
-        return
-      }
-      // A failed exit must not strand the switch half-done.
-      if (exit.kind === 'error') return
-    }
-    const rules = ctx.get('permissionRules') as PermissionRulesLike | undefined
-    if (rules === undefined) {
-      showNotice('The permission-rules engine is not mounted in this composition.')
-      return
-    }
-    rules.setMode(current.agent, mode)
-    emit(setPermissionMode(state, mode))
-  }
-
-  // --- Slash-command catalog: merge local commands with the harness registry.
-  // The catalog is rebuilt at boot and whenever the harness fires
-  // `commands/change` (register/unregister). The cached array identity stays
-  // stable between refreshes so root.ts can detect a change by reference
-  // equality and rebuild the autocomplete provider only when needed.
-  const commandsService = ctx.get('commands') as CommandsLike | undefined
-  let commandCatalog: readonly { name: string; description?: string; argumentHint?: string }[] = []
-  const refreshCommandCatalog = (): void => {
-    const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
-    const merged: { name: string; description?: string; argumentHint?: string }[] =
-      LOCAL_COMMANDS.map(c => ({
-        name: c.name,
-        description: c.description,
-        ...c.argumentHint === undefined ? {} : { argumentHint: c.argumentHint },
-      }))
-    if (commandsService !== undefined) {
-      try {
-        const harnessList = commandsService.list(current.agent)
-        for (const cmd of harnessList) {
-          if (localNames.has(cmd.name)) continue // local wins, dedupe
-          merged.push({
-            name: cmd.name,
-            ...cmd.description === undefined ? {} : { description: cmd.description },
-            ...cmd.input?.hint === undefined ? {} : { argumentHint: cmd.input.hint },
-          })
-        }
-      } catch {
-        // A failing list() degrades to local-only; don't poison the catalog.
-      }
-    }
-    commandCatalog = merged
-  }
-  refreshCommandCatalog()
-  if (commandsService !== undefined) {
-    // `commands/change` is declared via module augmentation in
-    // @deepseek-ai/dsh-commands, but the tui package doesn't import that
-    // package directly, so the augmentation isn't in tsc's view here. The
-    // event exists at runtime (the commands service dispatches it on
-    // register/unregister); cast through the Events map to subscribe without
-    // pulling a new dep into the type graph.
-    const changeEvent = 'commands/change' as Parameters<typeof ctx.on>[0]
-    ctx.on(changeEvent, () => {
-      refreshCommandCatalog()
-    })
-  }
-
-  // Subagent lifecycle: `subagent/start`|`subagent/end` are global,
-  // process-scoped observe-only snapshots paired by `runId` (declared via
-  // module augmentation in @deepseek-ai/subagent, which tui doesn't import).
-  // Same cast pattern as `commands/change` above. Tracking is event-only —
-  // no `SubagentRuntime.listChildren` call — so the driver stays
-  // composition-agnostic (tool-cordis may be absent). Events are NOT
-  // session-filtered: per-session parentage isn't on the payload, so the
-  // list tracks all runs observed this process; `/agents` labels it
-  // accordingly and does not overclaim parentage.
-  const subagentStart = 'subagent/start' as Parameters<typeof ctx.on>[0]
-  const subagentEnd = 'subagent/end' as Parameters<typeof ctx.on>[0]
-  ctx.on(subagentStart, (info: SubagentRunInfoLike) => {
-    emit(upsertSubagent(state, {
-      runId: String(info.runId),
-      provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'running',
-    }))
+  // Model/effort/permission pickers; resolveEfforts/stalePair/loadCatalog come
+  // from the agent section (they read `llm` off the host ctx).
+  const pickers = createPickersSection({
+    emit,
+    state: () => state,
+    selection,
+    current,
+    liveMode,
+    resolveEfforts: agent.resolveEfforts,
+    stalePair: agent.stalePair,
+    loadCatalog: agent.loadCatalog,
+    runHarness: (line) => actions.runHarness(line),
   })
-  ctx.on(subagentEnd, (info: SubagentRunEndInfoLike) => {
-    const view: SubagentRunView = {
-      runId: String(info.runId),
-      provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'done',
-      ...(info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
-    }
-    emit(upsertSubagent(state, view))
-  })
-
-  const loadCatalog = async (): Promise<CatalogEntry[]> => {
-    const llm = ctx.get('llm') as LlmLike | undefined
-    if (llm === undefined) return []
-    const entries: CatalogEntry[] = []
-    for (const provider of llm.listProviders()) {
-      const models = await llm.listModels(provider.id)
-      for (const model of models) {
-        entries.push({ provider: model.provider, id: model.id, name: model.name })
-      }
-    }
-    return entries
-  }
-
-  // `/model` (no args) opens a modal picker instead of dumping a text catalog.
-  // The arg path (`/model <n|provider/id>`) stays text-based for scripts.
-  const openModelPicker = async (): Promise<void> => {
-    const catalog = await loadCatalog()
-    const currentRoute = selection.current === undefined
-      ? undefined
-      : { provider: selection.current.provider, model: selection.current.model }
-    if (catalog.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: formatModelCatalog(catalog, currentRoute) }))
-      return
-    }
-    const entries: CatalogEntryView[] = catalog.map(entry => ({
-      provider: entry.provider,
-      id: entry.id,
-      name: entry.name,
-    }))
-    let focused = 0
-    if (currentRoute !== undefined) {
-      const index = entries.findIndex(
-        entry => entry.provider === currentRoute.provider && entry.id === currentRoute.model,
-      )
-      if (index >= 0) focused = index
-    }
-    emit(setModelPicker(state, {
-      entries,
-      focused,
-      ...currentRoute === undefined ? {} : { current: currentRoute },
-    }))
-  }
-
-  /**
-   * Apply a `/model` switch to `provider`/`model`, carrying the live effort
-   * when the new model still supports it. The bare pair needs no validation,
-   * so the no-carried-effort path writes synchronously in the caller's tick;
-   * the carried path validates via {@link resolveEfforts} and degrades to a
-   * bare pair + reset notice when the effort is unsupported OR unresolvable —
-   * the switch itself never fails on validation. The stale-pair guard covers
-   * the detached continuation: a selection that moved while validation was in
-   * flight is never clobbered.
-   */
-  const applyModelSwitch = async (provider: string, model: string): Promise<void> => {
-    const captured = selection.current
-    const carried = captured?.reasoningEffort
-    if (captured === undefined || carried === undefined) {
-      selection.current = { provider, model }
-      emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
-      return
-    }
-    const efforts = await resolveEfforts(provider, model)
-    if (stalePair(captured)) return
-    const supported = efforts?.some(level => level.id === carried) === true
-    selection.current = supported
-      ? { provider, model, reasoningEffort: ReasoningEffortId(carried) }
-      : { provider, model }
-    emit(upsertRow(state, { kind: 'status', text: `Model is now ${provider}/${model}.` }))
-    if (!supported) {
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: `Effort "${carried}" not supported by ${model}; reset to default.`,
-      }))
-    }
-  }
-
-  /**
-   * Open the `/effort` picker: resolve the live model's advertised efforts
-   * and park `effortPicker` state — entries are the effort ids plus the
-   * trailing reserved `default` entry, focus on the live effort (the
-   * `default` entry when none is set or it is no longer in the list). Fail
-   * closed: an unresolved model emits the no-model notice and unresolvable
-   * levels emit a notice — never a fabricated list.
-   */
-  const openEffortPicker = async (): Promise<void> => {
-    const route = selection.current
-    if (route === undefined) {
-      emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-      return
-    }
-    const efforts = await resolveEfforts(route.provider, route.model)
-    if (efforts === undefined || efforts.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
-      return
-    }
-    const entries = [...efforts.map(level => level.id), 'default']
-    const index = route.reasoningEffort === undefined ? -1 : entries.indexOf(route.reasoningEffort)
-    emit(setEffortPicker(state, {
-      entries,
-      focused: index >= 0 ? index : entries.length - 1,
-      current: route.reasoningEffort,
-    }))
-  }
-
-  /**
-   * Open the `/permissions` picker: park the five CC rule-engine modes,
-   * focused on the live mode (row 0 when the live mode is not in the list).
-   * The overlay always opens — an unmounted engine surfaces as a host-command
-   * error on submit, matching the argued `/permissions <mode>` path.
-   */
-  const openPermissionPicker = (): void => {
-    const currentMode = liveMode(current.agent, state.permissionMode)
-    const index = PERMISSION_MODE_OPTIONS.findIndex(option => option.id === currentMode)
-    emit(setPermissionPicker(state, {
-      entries: PERMISSION_MODE_OPTIONS,
-      focused: index >= 0 ? index : 0,
-      current: currentMode,
-    }))
-  }
+  const { openModelPicker, applyModelSwitch, openEffortPicker, openPermissionPicker } = pickers
 
   // --- Session switching: /resume overlay + driver.switchSession ----------
-  // The overlay mirrors the model picker: state field + open/move/submit/cancel.
-  // switchSession is the in-process engine: dispose old, resume new, replay
-  // history through foldHistory (same as boot). Ordering is resume-first-
-  // dispose-after so a failed resume leaves the old session alive.
-
-  const listSessions = async (): Promise<readonly SessionListEntry[]> => {
-    const persistence = ctx.get('sessionPersistence') as PersistenceLike | undefined
-    if (persistence === undefined) return []
-    return persistence.list()
-  }
-
-  // /resume picker working set: the full unfiltered list lives here while the
-  // overlay is open (state.sessionSwitcher.sessions is the visible slice
-  // only), and a generation token invalidates an in-flight title decoration
-  // when the picker closes or reopens.
-  let allSessions: SessionListEntry[] = []
-  let switcherGeneration = 0
-
-  const toSessionEntryView = (s: SessionListEntry): SessionEntryView => ({
-    id: s.id,
-    ...s.cwd === undefined ? {} : { cwd: s.cwd },
-    createdAt: s.createdAt,
-    ...s.updatedAtMs === undefined ? {} : { updatedAtMs: s.updatedAtMs },
-    ...s.title === undefined ? {} : { title: s.title },
-    ...s.parentSession === undefined ? {} : { parentSession: s.parentSession },
+  const sessions = createSessionsSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    current,
+    selection,
+    liveMode,
+    seedDefaultModel: agent.seedDefaultModel,
+    foldHistory: agent.foldHistory,
+    seedHud,
+    seedTodos,
+    refreshBranch,
+    writeResumeTarget,
+    setMarkedContent: agent.setMarkedContent,
+    spliceAll: () => approvals.spliceAll(),
+    withSelection,
+    agentOptions,
   })
+  const switchSession = sessions.switchSession
+  const openSessionSwitcher = sessions.openSessionSwitcher
 
-  /**
-   * Async title decoration for the open picker. The generation token read
-   * before the await guards the continuation: a result landing after the
-   * picker closed (or was reopened, which re-bumped the token) is dropped
-   * instead of mutating a stale view. Per-id rejections are skipped; a
-   * whole-call failure or abort just skips decoration — the overlay never
-   * fails because titles are missing.
-   */
-  const decorateSessionTitles = async (ids: readonly string[]): Promise<void> => {
-    const generation = switcherGeneration
-    const sessionQuery = ctx.get('sessionQuery') as SessionQueryLike | undefined
-    if (sessionQuery === undefined || ids.length === 0) return
-    let results: readonly SessionTitleResultLike[]
-    try {
-      results = await sessionQuery.readTitleSnapshots(ids)
-    } catch {
-      return
-    }
-    if (generation !== switcherGeneration || state.sessionSwitcher === undefined) return
-    const titles = new Map<string, string>()
-    for (const result of results) {
-      if (result.status !== 'fulfilled') continue
-      const title = result.value.title?.title
-      if (title === undefined || title.length === 0) continue
-      // Join on the requested id (`sessionId`), not `value.session.id`.
-      // The latter is a cloned header and is not the batch's identity key —
-      // using it stamps one title onto every row when headers collide.
-      titles.set(result.sessionId, title)
-    }
-    if (titles.size === 0) return
-    const withTitle = (entry: SessionListEntry): SessionListEntry => {
-      const title = titles.get(entry.id)
-      return title === undefined ? entry : { ...entry, title }
-    }
-    allSessions = allSessions.map(withTitle)
-    const sw = state.sessionSwitcher
-    if (sw !== undefined) {
-      emit(setSessionSwitcher(state, { ...sw, sessions: sw.sessions.map(withTitle) }))
-    }
-  }
-
-  // Re-derive the visible list from the working set after a query/scope edit.
-  // Focus follows the current session when it survives the filter, else row 0.
-  const refilterSessionSwitcher = (): void => {
-    const sw = state.sessionSwitcher
-    if (sw === undefined) return
-    const visible = filterSessions(allSessions, {
-      cwd: current.agent.session.header.cwd ?? cwd,
-      scope: sw.scope,
-      query: sw.query,
-      currentId: sw.currentId,
-    })
-    const index = visible.findIndex(s => s.id === sw.currentId)
-    emit(setSessionSwitcher(state, {
-      ...sw,
-      sessions: visible.map(toSessionEntryView),
-      focused: index >= 0 ? index : 0,
-      totalCount: allSessions.length,
-    }))
-    // Second-chance decoration for newly visible, still-untitled rows
-    // (same generation rules, same 50-id cap as the initial open).
-    const untitled = visible.filter(s => s.title === undefined).slice(0, 50).map(s => s.id)
-    if (untitled.length > 0) void decorateSessionTitles(untitled)
-  }
-
-  const openSessionSwitcher = async (): Promise<void> => {
-    const sessions = await listSessions()
-    if (sessions.length === 0) {
-      emit(upsertRow(state, { kind: 'status', text: 'No sessions are available to resume.' }))
-      return
-    }
-    switcherGeneration += 1
-    allSessions = sortByActivity(sessions)
-    // Live header cwd wins over the process cwd: a marker-resumed session can
-    // have been created elsewhere, and the current session must always be
-    // visible in the default (cwd) scope.
-    const scopeCwd = current.agent.session.header.cwd ?? cwd
-    const currentId = String(current.agent.session.id)
-    const visible = filterSessions(allSessions, {
-      cwd: scopeCwd,
-      scope: 'cwd',
-      query: '',
-      currentId,
-    })
-    const index = visible.findIndex(s => s.id === currentId)
-    emit(setSessionSwitcher(state, {
-      sessions: visible.map(toSessionEntryView),
-      focused: index >= 0 ? index : 0,
-      switching: false,
-      currentId,
-      query: '',
-      scope: 'cwd',
-      totalCount: allSessions.length,
-    }))
-    // Decorate the first screenful asynchronously — the overlay must appear
-    // immediately, not wait for the title reads.
-    void decorateSessionTitles(visible.slice(0, 50).map(s => s.id))
-  }
-
-  const closeSessionSwitcher = (): void => {
-    // Bump the generation so an in-flight decoration lands nowhere, and drop
-    // the working set with the overlay.
-    switcherGeneration += 1
-    allSessions = []
-    emit(setSessionSwitcher(state, undefined))
-  }
-
-  const switchSession = async (id: string): Promise<void> => {
-    // No-op guard: same id → stay.
-    if (id === String(current.agent.session.id)) return
-
-    // Clear pending overlays and the modal queue (mirror the abort paths):
-    // every parked approval resolves cancelled and every parked question
-    // rejects cancelled. The session switcher overlay itself is managed by the
-    // caller (sessionSwitcherSubmit).
-    for (const entry of modalQueue.splice(0)) {
-      if (entry.kind === 'approval') entry.resolve('cancelled')
-      else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
-    }
-    emit(setApproval(state, undefined))
-    emit(setQuestion(state, undefined))
-    emit(setModelPicker(state, undefined))
-    emit(closeTodoPanel(state))
-    emit(clearQueue(setBusy(state, false)))
-
-    // Resume first: keeps the old session alive if resume throws. The harness
-    // supports multiple concurrent agents (each independently scoped), so a
-    // brief overlap is safe. On the SESSION's stored options — omit
-    // agentOptions unless config.provider/model were explicitly set (same
-    // logic as boot).
-    let newHandle: AgentHandle
-    try {
-      newHandle = await ctx.agents.resume({
-        resumeSessionId: SessionId(id),
-        setup: withSelection,
-        ...agentOptions === undefined ? {} : { agentOptions },
-      })
-    } catch (error) {
-      const message = (error as Error)?.message ?? String(error)
-      emit(upsertRow(state, { kind: 'status', text: `Resume failed: ${message}` }))
-      return
-    }
-
-    // Success — dispose old, bind new. dispose() stops the loop, unregisters
-    // the agent, and removes its session from the in-memory store; it does NOT
-    // delete the durable session log.
-    await current.handle.dispose()
-    current.handle = newHandle
-    current.agent = newHandle.agent
-
-    // Refresh the model selection from the new agent's resolved options,
-    // falling back to the deployment default. Reset first so a stale selection
-    // from the previous session never leaks across a switch.
-    await seedDefaultModel(true)
-    writeResumeTarget(id)
-    markedContent = false
-
-    // Reset the transcript: clear + boot banner + fold new history + mode/busy.
-    emit(clearRows(state))
-    const modelLabel = selection.current?.model ?? 'default model'
-    emit(upsertRow(state, {
-      kind: 'status',
-      text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
-    }))
-    emit(foldHistory())
-    emit(setPermissionMode(state, liveMode(current.agent, 'default')))
-    // Success path: drop the previous session's anchor together with the busy
-    // sync (a failed resume returned above and keeps it), then re-anchor
-    // below once the new session's HUD is seeded.
-    emit(clearTurn(setBusy(state, current.agent.status === 'running')))
-    // Refresh the HUD, todos, and branch for the new session: stateOf may
-    // already be populated (or absent — stale fields must not leak), and the
-    // cwd may point at a different repo.
-    seedHud()
-    seedTodos()
-    // Resumed log may end mid-turn: re-anchor the working line after seedHud
-    // so outputBase reads the new session's seeded token totals.
-    if (state.busy) {
-      emit(setTurnActive(state, { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-    }
-    refreshBranch()
-  }
-
-  const sessionSwitcherSubmit = async (): Promise<void> => {
-    const sw = state.sessionSwitcher
-    if (sw === undefined || sw.switching) return
-    const session = sw.sessions[sw.focused]
-    if (session === undefined) return
-    // Show the dim 'Switching…' state and block input while the switch is
-    // in flight.
-    emit(setSessionSwitcher(state, { ...sw, switching: true }))
-    try {
-      await switchSession(session.id)
-    } finally {
-      // Close the overlay whether the switch succeeded or failed.
-      closeSessionSwitcher()
-    }
-  }
-
-  // --- /export-md + /copy: local transcript utilities ------------------------
-  // /export-md serializes the live rows via rowsToMarkdown — an explicit path
-  // is resolved against the session cwd; no argument lands under the export
-  // dir as <sessionId>-<timestamp>.md. Failures degrade to a notice, never a
-  // throw into the composer path.
-  const exportTranscript = (rawInput: string): void => {
-    const target = rawInput.length > 0
-      ? resolve(cwd, rawInput)
-      : join(config.exportDir ?? defaultExportDir(), `${String(current.agent.session.id)}-${exportStamp()}.md`)
-    try {
-      mkdirSync(dirname(target), { recursive: true })
-      writeFileSync(target, rowsToMarkdown(state.rows))
-      showNotice(`Exported to ${target}`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      showNotice(`Export failed: ${message}`)
-    }
-  }
-
-  // /copy re-emits the latest assistant reply through an OSC 52 sequence so
-  // the terminal itself owns the clipboard (no child process, no permissions).
-  // The write sink is injected; without a sink the command still reports — it
-  // just has nowhere to hand the payload.
-  const copyLatestReply = (): void => {
-    const last = [...state.rows].reverse().find(row => row.kind === 'assistant')
-    if (last === undefined || last.kind !== 'assistant' || last.text.trim().length === 0) {
-      showNotice('Nothing to copy yet — no assistant reply in the transcript.')
-      return
-    }
-    const payload = Buffer.from(last.text, 'utf8').toString('base64')
-    config.copyWrite?.(`${OSC52_PREFIX}${payload}\x07`)
-    showNotice('Copied latest reply')
-  }
-
-  const runLocal = async (name: string, rawInput: string): Promise<void> => {
-    if (name === 'quit' || name === 'exit') {
-      if (markedContent) persistResumeTarget()
-      await current.handle.dispose()
-      return
-    }
-    if (name === 'clear') {
-      emit(clearRows(state))
-      return
-    }
-    if (name === 'tui-help') {
-      emit(upsertRow(state, {
-        kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
-      }))
-      return
-    }
-    if (name === 'resume') {
-      if (rawInput.length > 0) {
-        await switchSession(rawInput)
-        return
-      }
-      await openSessionSwitcher()
-      return
-    }
-    if (name === 'model') {
-      if (rawInput.length === 0) {
-        await openModelPicker()
-        return
-      }
-      const catalog = await loadCatalog()
-      const chosen = parseModelChoice(rawInput, catalog)
-      if (chosen === undefined) {
-        showNotice(`Unknown model "${rawInput}". Try /model for the catalog.`)
-        return
-      }
-      // Validates + preserves a carried effort when possible (never blocks the
-      // switch itself — see applyModelSwitch).
-      await applyModelSwitch(chosen.provider, chosen.model)
-    }
-    if (name === 'effort') {
-      if (rawInput.length === 0) {
-        await openEffortPicker()
-        return
-      }
-      const route = selection.current
-      if (route === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-        return
-      }
-      // `default` is a reserved keyword (it wins even over a model effort
-      // literally named "default"): reset to the bare pair with ZERO
-      // validation and zero adapter calls — the provider default is always
-      // legal, even when the llm service is unreachable.
-      if (parseEffortChoice(rawInput, [])?.kind === 'default') {
-        selection.current = { provider: route.provider, model: route.model }
-        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
-        return
-      }
-      // Fail closed: resolve before validating — selection must never hold an
-      // effort the llm layer would reject.
-      const efforts = await resolveEfforts(route.provider, route.model)
-      if (efforts === undefined || efforts.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${route.model}.` }))
-        return
-      }
-      const choice = parseEffortChoice(rawInput, efforts.map(level => level.id))
-      // `choice.kind === 'default'` cannot occur here: the reserved keyword
-      // already returned above, so anything non-level is unknown.
-      if (choice?.kind !== 'level') {
-        emit(upsertRow(state, {
-          kind: 'status',
-          text: `Unknown effort "${rawInput.trim()}" for ${route.model}. Try /effort.`,
-        }))
-        return
-      }
-      const level = efforts.find(candidate => candidate.id === choice.level)!
-      // Single branding seam: view layers stay plain strings.
-      selection.current = {
-        provider: route.provider,
-        model: route.model,
-        reasoningEffort: ReasoningEffortId(level.id),
-      }
-      // User-facing text carries the effort NAME, not the raw id.
-      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
-    }
-    if (name === 'cost') {
-      const totals = projections === undefined
-        ? undefined
-        : totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined)
-      emit(upsertRow(state, { kind: 'status', text: formatCostReport(totals) }))
-      return
-    }
-    if (name === 'usage') {
-      // Seed from the live projections before opening: a resumed session (or
-      // one with no projection change since boot) already holds data the
-      // change feed has never delivered. From here on the onChanged feed
-      // keeps the snapshot fresh, so an open panel refreshes live.
-      if (projections !== undefined) {
-        applyUsage(usageViewOf(
-          totalsOf(projections.stateOf(current.agent.session, 'tokenUsage') as TokenUsageStateLike | undefined),
-          occupancyOf(projections.stateOf(current.agent.session, 'contextPressure') as ContextPressureStateLike | undefined),
-          breakdownOf(projections.stateOf(current.agent.session, 'contextBreakdown')),
-        ))
-      }
-      emit(openUsagePanel(state))
-      return
-    }
-    if (name === 'agents') {
-      const runs = state.subagents
-      if (runs.length === 0) {
-        emit(upsertRow(state, { kind: 'status', text: 'No subagent activity this session.' }))
-        return
-      }
-      const lines = ['Subagent activity:']
-      for (const run of runs) {
-        const marker = run.status === 'running' ? '●' : '✓'
-        const short = shortenSession(run.sessionId)
-        const reason = run.stopReason === undefined ? '' : ` [${run.stopReason}]`
-        lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
-      }
-      emit(upsertRow(state, { kind: 'status', text: lines.join('\n') }))
-      return
-    }
-    if (name === 'export-md') {
-      exportTranscript(rawInput)
-      return
-    }
-    if (name === 'copy') {
-      copyLatestReply()
-      return
-    }
-  }
-
-  /**
-   * Execute a slash command line through the host registry and echo its
-   * result text as a status row. Tri-state return:
-   * - `null` — no command registry is mounted (already noticed here).
-   * - `undefined` — the registry matched nothing (the caller decides the notice).
-   * - otherwise the command result.
-   */
-  const runHarness = async (line: string): Promise<{ kind: string; text?: string } | undefined | null> => {
-    const commands = ctx.get('commands') as CommandsLike | undefined
-    if (commands === undefined) {
-      showNotice('No command registry is mounted.')
-      return null
-    }
-    const execution = await commands.execute(current.agent, line, [], new AbortController().signal)
-    const result = execution?.result
-    if (result !== undefined && result.text !== undefined && result.text.length > 0) {
-      emit(upsertRow(state, { kind: 'status', text: result.text }))
-    }
-    return result
-  }
-
-  /**
-   * Outbox flush, anchored to the durable `turn/end` event: snapshot the
-   * queue, dispatch every entry FIFO through `followup`, and clear the queue
-   * in the same synchronous stroke as the dispatch — so the queue never holds
-   * an entry that was already sent and ↑ recall cannot race a flush. Busy is
-   * re-asserted optimistically (the flushed followups start a new turn
-   * immediately; the fold's `turn/end` handling just set it false).
-   */
-  const flushQueue = (): void => {
-    const pending = [...state.queued]
-    if (pending.length === 0) return
-    for (const text of pending) {
-      current.agent.followup(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'user' },
-      }))
-    }
-    // Unconditional anchor: the only call site is the turn/end handler, which
-    // has just cleared the previous turn's anchor, so this re-anchors for the
-    // flushed followup turn and can never reset a live one.
-    emit(setTurnActive(setBusy(clearQueue(state), true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
-
-  /**
-   * Ctrl+S queue-jump: inject every queued entry into the RUNNING turn
-   * immediately — same synchronous snapshot-then-clear discipline as
-   * {@link flushQueue}, but via `agent.steer` and without a busy flip (the
-   * turn is already running).
-   */
-  const steerQueued = (): void => {
-    const pending = [...state.queued]
-    if (pending.length === 0) return
-    for (const text of pending) {
-      current.agent.steer(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'user' },
-      }))
-    }
-    emit(clearQueue(state))
-  }
-
-  /**
-   * Recall for editing: pop the most recent queued entry back out of the
-   * outbox and hand it to the caller (root.ts puts it into the composer).
-   * Race-free by construction — flush and steer always clear synchronously,
-   * so the queue only ever holds entries that were never sent.
-   */
-  const recallQueued = (): string | undefined => {
-    const popped = popQueued(state)
-    if (popped.text === undefined) return undefined
-    emit(popped.state)
-    return popped.text
-  }
+  // Local slash commands (/export-md, /copy, runLocal) + host-command dispatch.
+  const runLocalSection = createRunLocalSection({
+    emit,
+    state: () => state,
+    ctx,
+    cwd,
+    config,
+    current,
+    selection,
+    projections,
+    applyUsage,
+    showNotice,
+    switchSession,
+    openSessionSwitcher,
+    openModelPicker,
+    applyModelSwitch,
+    openEffortPicker,
+    loadCatalog: agent.loadCatalog,
+    resolveEfforts: agent.resolveEfforts,
+    persistResumeTarget: agent.persistResumeTarget,
+    getMarkedContent: agent.getMarkedContent,
+  })
+  const { runLocal, runHarness } = runLocalSection
+  actions.runHarness = runHarness
 
   // --- `!` bash mode: local shell commands -----------------------------------
-  // A composer line with a leading `!` is executed locally: through the
-  // mounted shell executor (resolve→run, bounded spec) or, when none is
-  // mounted, through a direct /bin/sh child with the same timeout and output
-  // budget. The command never reaches the agent and never touches the session
-  // log (status rows are UI-only), and its output is line-capped.
-  const runShellCommand = async (raw: string): Promise<void> => {
-    const command = raw.trim()
-    if (command.length === 0) return
-    appendBashHistory(command)
-    emit(upsertRow(state, { kind: 'status', text: `$ ${command}` }))
-    emit(setNotice(state, BASH_RUNNING_NOTICE))
-    try {
-      if (shell === undefined) {
-        // Degraded path: no shell executor mounted. Non-zero exits, timeout
-        // kills, and spawn failures all arrive as rejections.
-        const result = await execFileAsync('/bin/sh', ['-c', command], {
-          cwd,
-          timeout: BASH_TIMEOUT_MS,
-          maxBuffer: BASH_STDOUT_MAX_BYTES,
-        })
-        const row = shellOutputRow(result.stdout, result.stderr, { exitCode: 0, timedOut: false })
-        if (row.text.length > 0) emit(upsertRow(state, row))
-      } else {
-        const result = await shell.run(shell.resolve({
-          command,
-          timeoutMs: BASH_TIMEOUT_MS,
-          stdoutMaxBytes: BASH_STDOUT_MAX_BYTES,
-        }))
-        const row = shellOutputRow(result.stdout.text, result.stderr.text, result)
-        if (row.text.length > 0) emit(upsertRow(state, row))
-      }
-    } catch (error) {
-      const failure = error as {
-        code?: unknown
-        killed?: boolean
-        message?: string
-        stdout?: string
-        stderr?: string
-      }
-      let row: { kind: 'status'; text: string; error?: boolean }
-      if (typeof failure.code === 'number') {
-        // Non-zero exit from the fallback child: output rides on the error.
-        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: failure.code, timedOut: false })
-      } else if (failure.killed === true) {
-        // The fallback child hit the timeout and was killed.
-        row = shellOutputRow(failure.stdout ?? '', failure.stderr ?? '', { exitCode: null, timedOut: true })
-      } else {
-        // Infrastructure fault (executor rejection, unwritable workdir, no
-        // /bin/sh): the message is all there is to show.
-        row = { kind: 'status', text: failure.message ?? String(error), error: true }
-      }
-      if (row.text.length > 0) emit(upsertRow(state, row))
-    } finally {
-      // Drop the running indicator only if nothing replaced it meanwhile.
-      if (state.notice === BASH_RUNNING_NOTICE) emit(setNotice(state, undefined))
-    }
+  const bashCtx: DriverBashCtx = {
+    state: () => state,
+    emit,
+    cwd,
+    shell: agent.shell,
+    appendBashHistory: agent.appendBashHistory,
   }
+  const runShellCommand = (raw: string): Promise<void> => runShellCommandModule(bashCtx, raw)
 
-  const submit = async (text?: string): Promise<void> => {
-    const draft = text ?? state.draft
-    if (draft.trim().length === 0) return
-    emit(setDraft(state, ''))
-    // A leading `!` marks a LOCAL shell command no matter how the text was
-    // entered — typed in shell mode or pasted wholesale. It runs even while
-    // the agent is busy (a local command never touches the turn) and is
-    // neither a prompt nor a slash command.
-    if (draft.startsWith('!')) {
-      await runShellCommand(draft.slice(1))
-      return
-    }
-    const parsed = parseSlash(draft)
-    if (parsed.kind === 'local') {
-      await runLocal(parsed.name, parsed.rawInput)
-      return
-    }
-    if (parsed.kind === 'harness') {
-      // Bare `/permissions` is the TUI analogue of the browser popupSelect
-      // decoration: open the overlay instead of dumping the rule listing.
-      // `/permissions <mode>` stays scriptable through the host command.
-      if (/^\/permissions$/i.test(parsed.line)) {
-        openPermissionPicker()
-        return
-      }
-      await runHarness(parsed.line)
-      return
-    }
-    // Persist the prompt (not slash commands — they are commands, not
-    // prompts, and would dilute the recall signal). Consecutive duplicates
-    // and the cap are handled inside saveHistory. This is also the first
-    // real-content signal: mark the session so the launcher can resume it.
-    history = saveHistory([...history, draft], historyDir)
-    markedContent = true
-    persistResumeTarget()
-    if (state.busy) {
-      // Outbox: park the text as a pending chip only. It reaches the agent on
-      // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
-      // (steerQueued). No injection into the running turn here — that is what
-      // makes recall-then-edit meaningful.
-      emit(enqueue(state, draft))
-      return
-    }
-    // Idle sends bypass the outbox entirely — the row surfaces from the
-    // durable `user/message` event, and a sent text must not stay recallable.
-    current.agent.followup(createUserMessage({
-      content: [{ type: 'text', text: draft }],
-      source: { kind: 'user' },
-    }))
-    // Anchor the working line at dispatch: elapsed counts from here, the
-    // token delta from the current HUD total (undefined when unseeded — the
-    // tokenUsage rebase pins it on the first change).
-    emit(setTurnActive(setBusy(state, true), { startedAt: Date.now(), outputBase: state.hud?.tokens?.output }))
-  }
-
-  const statusLineOf = (width?: number): string => {
-    const effort = selection.current?.reasoningEffort
-    return formatStatusLine({
-      cwd: current.agent.session.header.cwd ?? cwd,
-      sessionId: String(current.agent.session.id),
-      permissionMode: state.permissionMode,
-      ...selection.current === undefined ? {} : { model: selection.current.model },
-      ...effort === undefined ? {} : { effort },
-      ...branch === undefined ? {} : { branch },
-      ...state.hud?.contextPercent === undefined ? {} : { contextPercent: state.hud.contextPercent },
-      ...state.hud?.contextTokens === undefined ? {} : { contextTokens: state.hud.contextTokens },
-      ...state.hud?.tokens === undefined ? {} : { tokens: state.hud.tokens },
-      busy: state.busy,
-    }, width === undefined ? {} : { width })
-  }
+  // Outbox queue + submit/interrupt pipeline; history rebinds through the agent
+  // section's get/set seams.
+  const queue = createQueueSection({
+    emit,
+    state: () => state,
+    current,
+    runLocal,
+    runHarness,
+    openPermissionPicker,
+    runShellCommand,
+    getHistory: agent.getHistory,
+    setHistory: agent.setHistory,
+    historyDir: agent.historyDir,
+    persistResumeTarget: agent.persistResumeTarget,
+    setMarkedContent: agent.setMarkedContent,
+  } satisfies DriverQueueCtx)
+  actions.flushQueue = () => queue.flushQueue()
 
   return {
-    get state() {
-      return state
-    },
-    get statusLine() {
-      return statusLineOf()
-    },
-    statusLineIn(width?: number) {
-      return statusLineOf(width)
-    },
-    get cwd() {
-      return cwd
-    },
-    get promptHistory() {
-      return history
-    },
-    get bashHistory() {
-      return bashHistory
-    },
+    get state() { return state },
+    get statusLine() { return statusLineOf() },
+    statusLineIn: (width?: number) => statusLineOf(width),
+    get cwd() { return cwd },
+    get promptHistory() { return agent.getHistory() },
+    get bashHistory() { return agent.getBashHistory() },
     subscribe(listener) {
       listeners.add(listener)
       listener(state)
-      return () => {
-        listeners.delete(listener)
-      }
+      return () => { listeners.delete(listener) }
     },
-    setDraft(draft) {
-      emit(setDraft(state, draft))
-    },
-    submit,
-    interrupt() {
-      current.agent.cancel({ kind: 'user' })
-      // cancel discards queued/steering inbox items; mirror that in UI state.
-      // Clearing BEFORE the abort's turn/end lands also guarantees the flush
-      // anchor finds an empty queue — an interrupt never resurrects entries.
-      // The working-line anchor clears with the turn.
-      emit(upsertRow(clearTurn(clearQueue(setBusy(state, false))), {
-        kind: 'status',
-        text: 'Interrupted by user.',
-      }))
-    },
-    steerQueued,
-    recallQueued,
-    cyclePermissionMode() {
-      const live = liveMode(current.agent, state.permissionMode)
-      const next = nextPermissionMode(live)
-      if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return modeWrites
-      applyMode(next)
-      return modeWrites
-    },
-    toggleGlobalCollapse() {
-      emit(toggleGlobalCollapse(state))
-    },
-    toggleThinking() {
-      emit(toggleThinking(state))
-    },
-    answerApproval(kind: ApprovalAnswerKind) {
-      const head = modalQueue[0]
-      if (head === undefined || head.kind !== 'approval') return
-      // Advance the queue BEFORE resolving: a resolution can immediately fire
-      // the next approval/request, which must enqueue behind the survivors.
-      modalQueue.shift()
-      publishHead()
-      head.resolve(kind === 'reject' ? 'rejected' : 'allowed-once')
-      if (kind === 'always') {
-        // Fire-and-forget: the call proceeds while the rule persists; a write
-        // failure surfaces as a notice, never as an answer error.
-        void writeAllowRule(head.view.toolName, head.view.preview).catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
-        })
-      }
-    },
-    questionMove(delta) {
-      emit(moveQuestionFocus(state, delta))
-    },
-    questionToggle() {
-      const question = state.question
-      if (question === undefined) return
-      if (question.focused >= question.options.length) {
-        emit(typeQuestionText(state, ' '))
-        return
-      }
-      if (question.multiSelect) {
-        emit(toggleQuestionOption(state, question.focused))
-        return
-      }
-      resolveQuestion([question.options[question.focused]!.label])
-    },
-    questionPick(index) {
-      const question = state.question
-      if (question === undefined) return
-      const option = question.options[index]
-      if (option === undefined) return
-      if (question.multiSelect) {
-        emit(toggleQuestionOption(state, index))
-        return
-      }
-      resolveQuestion([option.label])
-    },
-    questionType(text) {
-      emit(typeQuestionText(state, text))
-    },
-    questionBackspace() {
-      emit(backspaceQuestionText(state))
-    },
-    questionSubmit() {
-      const question = state.question
-      if (question === undefined) return
-      const custom = question.custom.trim()
-      let selected: string[]
-      if (question.selected.length > 0) {
-        selected = [...question.selected]
-      } else if (custom.length > 0) {
-        selected = []
-      } else {
-        // Nothing chosen and no free text: enter resolves the focused option
-        // (the first option when the "Other" row holds focus) so the question
-        // always gets an answer.
-        const fallback = question.focused < question.options.length
-          ? question.options[question.focused]!.label
-          : question.options[0]?.label
-        selected = fallback === undefined ? [] : [fallback]
-      }
-      resolveQuestion(selected, custom.length > 0 ? custom : undefined)
-    },
-    questionCancel() {
-      const question = state.question
-      resolveQuestion(question !== undefined && question.options.length > 0 ? [question.options[0]!.label] : [])
-    },
-    async openModelPicker() {
-      await openModelPicker()
-    },
-    modelPickerMove(delta) {
-      emit(moveModelPickerFocus(state, delta))
-    },
-    modelPickerSubmit(): Promise<void> {
-      const picker = state.modelPicker
-      if (picker === undefined) return Promise.resolve()
-      const entry = picker.entries[picker.focused]
-      // Read-then-close: capture the focused entry BEFORE the synchronous
-      // close-emit so the overlay never lingers while validation runs.
-      emit(setModelPicker(state, undefined))
-      if (entry === undefined) return Promise.resolve()
-      // Effort-preserving switch with the stale-pair guard inside; the bare
-      // fast path writes synchronously, a carried effort continues detached.
-      return applyModelSwitch(entry.provider, entry.id)
-    },
-    modelPickerCancel() {
-      emit(setModelPicker(state, undefined))
-    },
-    async openEffortPicker() {
-      await openEffortPicker()
-    },
-    effortPickerMove(delta) {
-      emit(moveEffortPickerFocus(state, delta))
-    },
-    async effortPickerSubmit() {
-      const picker = state.effortPicker
-      if (picker === undefined) return
-      const entry = picker.entries[picker.focused]
-      // Read-then-close (mirror modelPickerSubmit): capture the focused entry
-      // BEFORE the synchronous close-emit, then validate+write detached.
-      emit(setEffortPicker(state, undefined))
-      if (entry === undefined) return
-      const captured = selection.current
-      if (captured === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: 'No model configured. Use /model first.' }))
-        return
-      }
-      // The reserved `default` entry resets to the bare pair with zero
-      // validation (the provider default is always legal); the stale-pair
-      // guard still applies.
-      if (entry === 'default') {
-        if (stalePair(captured)) return
-        selection.current = { provider: captured.provider, model: captured.model }
-        emit(upsertRow(state, { kind: 'status', text: 'Reasoning effort reset to the provider default.' }))
-        return
-      }
-      const efforts = await resolveEfforts(captured.provider, captured.model)
-      // Stale-pair guard: the captured model must still be the live selection
-      // when the validation continuation resumes — a concurrent /model or
-      // switchSession re-seed in between refuses the write.
-      if (stalePair(captured)) return
-      const level = efforts?.find(candidate => candidate.id === entry)
-      if (level === undefined) {
-        emit(upsertRow(state, { kind: 'status', text: `Cannot resolve effort levels for ${captured.model}.` }))
-        return
-      }
-      selection.current = {
-        provider: captured.provider,
-        model: captured.model,
-        reasoningEffort: ReasoningEffortId(level.id),
-      }
-      emit(upsertRow(state, { kind: 'status', text: `Reasoning effort is now ${level.name}.` }))
-    },
-    effortPickerCancel() {
-      emit(setEffortPicker(state, undefined))
-    },
-    async openPermissionPicker() {
-      openPermissionPicker()
-    },
-    permissionPickerMove(delta) {
-      emit(movePermissionPickerFocus(state, delta))
-    },
-    async permissionPickerSubmit() {
-      const picker = state.permissionPicker
-      if (picker === undefined) return
-      const entry = picker.entries[picker.focused]
-      if (entry === undefined) {
-        emit(setPermissionPicker(state, undefined))
-        return
-      }
-      // bypassPermissions parks an in-overlay confirmation first; a second
-      // enter (or any other mode) closes then writes through the host command.
-      if (entry.id === BYPASS_MODE && picker.confirmingBypass !== true) {
-        emit(setPermissionPicker(state, { ...picker, confirmingBypass: true }))
-        return
-      }
-      emit(setPermissionPicker(state, undefined))
-      await runHarness(`/permissions ${entry.id}`)
-    },
-    permissionPickerCancel() {
-      const picker = state.permissionPicker
-      if (picker === undefined) return
-      if (picker.confirmingBypass === true) {
-        const { confirmingBypass: _dropped, ...rest } = picker
-        emit(setPermissionPicker(state, rest))
-        return
-      }
-      emit(setPermissionPicker(state, undefined))
-    },
-    async openSessionSwitcher() {
-      await openSessionSwitcher()
-    },
-    sessionSwitcherMove(delta) {
-      emit(moveSessionSwitcherFocus(state, delta))
-    },
-    sessionSwitcherType(text) {
-      const sw = state.sessionSwitcher
-      if (sw === undefined || text.length === 0) return
-      emit(setSessionSwitcher(state, { ...sw, query: sw.query + text }))
-      refilterSessionSwitcher()
-    },
-    sessionSwitcherBackspace() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined || sw.query.length === 0) return
-      emit(setSessionSwitcher(state, { ...sw, query: sw.query.slice(0, -1) }))
-      refilterSessionSwitcher()
-    },
-    sessionSwitcherToggleScope() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined) return
-      emit(setSessionSwitcher(state, { ...sw, scope: sw.scope === 'cwd' ? 'all' : 'cwd' }))
-      refilterSessionSwitcher()
-    },
-    async sessionSwitcherSubmit() {
-      await sessionSwitcherSubmit()
-    },
-    sessionSwitcherCancel() {
-      const sw = state.sessionSwitcher
-      if (sw === undefined) return
-      // Two-stage escape: a non-empty query clears the filter first (the
-      // overlay stays open); an empty query closes it.
-      if (sw.query.length > 0) {
-        emit(setSessionSwitcher(state, { ...sw, query: '' }))
-        refilterSessionSwitcher()
-        return
-      }
-      closeSessionSwitcher()
-    },
+    setDraft: (draft) => { emit(setDraft(state, draft)) },
+    submit: queue.submit,
+    interrupt: queue.interrupt,
+    steerQueued: queue.steerQueued,
+    recallQueued: queue.recallQueued,
+    cyclePermissionMode: () => modeSection.cyclePermissionMode(),
+    toggleGlobalCollapse() { emit(toggleGlobalCollapse(state)) },
+    toggleThinking() { emit(toggleThinking(state)) },
+    answerApproval: (kind: ApprovalAnswerKind) => approvals.answerApproval(kind),
+    questionMove: (delta) => approvals.questionMove(delta),
+    questionToggle: () => approvals.questionToggle(),
+    questionPick: (index) => approvals.questionPick(index),
+    questionType: (text) => approvals.questionType(text),
+    questionBackspace: () => approvals.questionBackspace(),
+    questionSubmit: () => approvals.questionSubmit(),
+    questionCancel: () => approvals.questionCancel(),
+    openModelPicker: () => pickers.openModelPicker(),
+    modelPickerMove: (delta) => pickers.modelPickerMove(delta),
+    modelPickerSubmit: () => pickers.modelPickerSubmit(),
+    modelPickerCancel: () => pickers.modelPickerCancel(),
+    openEffortPicker: () => pickers.openEffortPicker(),
+    effortPickerMove: (delta) => pickers.effortPickerMove(delta),
+    effortPickerSubmit: () => pickers.effortPickerSubmit(),
+    effortPickerCancel: () => pickers.effortPickerCancel(),
+    openPermissionPicker: async () => { pickers.openPermissionPicker() },
+    permissionPickerMove: (delta) => pickers.permissionPickerMove(delta),
+    permissionPickerSubmit: () => pickers.permissionPickerSubmit(),
+    permissionPickerCancel: () => pickers.permissionPickerCancel(),
+    openSessionSwitcher: () => sessions.openSessionSwitcher(),
+    sessionSwitcherMove: (delta) => sessions.sessionSwitcherMove(delta),
+    sessionSwitcherType: (text) => sessions.sessionSwitcherType(text),
+    sessionSwitcherBackspace: () => sessions.sessionSwitcherBackspace(),
+    sessionSwitcherToggleScope: () => sessions.sessionSwitcherToggleScope(),
+    sessionSwitcherSubmit: () => sessions.sessionSwitcherSubmit(),
+    sessionSwitcherCancel: () => sessions.sessionSwitcherCancel(),
     toggleTodoPanel() {
-      if (state.todoPanel !== undefined) {
-        emit(closeTodoPanel(state))
-        return
-      }
+      if (state.todoPanel !== undefined) { emit(closeTodoPanel(state)); return }
       emit(openTodoPanel(state))
     },
-    todoPanelMove(delta) {
-      emit(moveTodoPanelFocus(state, delta))
-    },
-    todoPanelClose() {
-      emit(closeTodoPanel(state))
-    },
-    usagePanelClose() {
-      emit(closeUsagePanel(state))
-    },
+    todoPanelMove: (delta) => emit(moveTodoPanelFocus(state, delta)),
+    todoPanelClose: () => emit(closeTodoPanel(state)),
+    usagePanelClose: () => emit(closeUsagePanel(state)),
     showNotice,
-    markExitAttempt(now) {
-      emit(markExitAttempt(state, now ?? Date.now()))
-    },
-    async switchSession(id) {
-      await switchSession(id)
-    },
-    async listSessions() {
-      return listSessions()
-    },
-    async loadModelCatalog() {
-      return loadCatalog()
-    },
-    async loadModelEfforts() {
-      const route = selection.current
-      if (route === undefined) return []
-      const efforts = await resolveEfforts(route.provider, route.model)
-      if (efforts === undefined) return []
-      return [...efforts.map(level => level.id), 'default']
-    },
-    listCommands() {
-      return commandCatalog
-    },
+    markExitAttempt: (now) => emit(markExitAttempt(state, now ?? Date.now())),
+    switchSession: (id) => sessions.switchSession(id),
+    listSessions: () => sessions.listSessions(),
+    loadModelCatalog: () => pickers.loadModelCatalog(),
+    loadModelEfforts: () => pickers.loadModelEfforts(),
+    listCommands: () => catalog.listCommands(),
     async dispose() {
-      if (noticeTimer !== undefined) {
-        clearTimeout(noticeTimer)
-        noticeTimer = undefined
-      }
-      questionsDispose?.()
-      if (markedContent) persistResumeTarget()
+      if (noticeTimer !== undefined) { clearTimeout(noticeTimer); noticeTimer = undefined }
+      approvals.dispose()
+      if (agent.getMarkedContent()) agent.persistResumeTarget()
       await current.handle.dispose()
     },
   }
