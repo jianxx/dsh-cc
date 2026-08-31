@@ -13,7 +13,6 @@ import { assertNever, deepFreeze, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, UserMessage } from '@deepseek-ai/dsh-session'
-import { createRequire } from 'node:module'
 import type { ToolProviderResult } from '@deepseek-ai/dsh-system-prompt'
 import type { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
 // Type-only: makes `ctx.get('approval')` resolve to the ApprovalService
@@ -27,6 +26,7 @@ import type { CodeSdkLanguage } from './code-mode.ts'
 import { renderToolsSdk } from './ts-types.ts'
 import type { ToolSdkSchema } from './ts-types.ts'
 import { renderToolsSdkPy } from './py-types.ts'
+import { TOOL_RUNTIME_SCHEDULER } from './scheduler.ts'
 
 /**
  * Language → SDK-section renderer. The registry looks up the loaded
@@ -468,8 +468,6 @@ export interface ToolRuntimeScheduler {
   finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult
 }
 
-declare const upstreamSchedulerSymbol: unique symbol
-
 /**
  * Scheduler entry point omitted from the generated named service API.
  * The value MUST be the upstream symbol instance: the in-box agent loop reads
@@ -480,12 +478,11 @@ declare const upstreamSchedulerSymbol: unique symbol
  * `createRequire` rather than a static import so upstream's declaration graph
  * (its own `Context` augmentation, whose vendored copy this package also
  * ships) never enters downstream type programs; the dependency stays
- * runtime-only (peer-declared).
+ * runtime-only (peer-declared). Declared in the {@link ./scheduler.ts} leaf
+ * module; re-exported here to keep the public barrel surface unchanged.
  * @internal
  */
-export const TOOL_RUNTIME_SCHEDULER: typeof upstreamSchedulerSymbol = (
-  createRequire(import.meta.url)('@deepseek-ai/dsh-tools') as { TOOL_RUNTIME_SCHEDULER: typeof upstreamSchedulerSymbol }
-).TOOL_RUNTIME_SCHEDULER
+export { TOOL_RUNTIME_SCHEDULER }
 
 /** Canonical error code for cancellation after a tool body was invoked. */
 export const TOOL_ABORTED = 'ABORTED'

@@ -1,4 +1,5 @@
-# 与 .github/workflows/presubmit.yml 门禁一一对应:
+# 本地门禁 = 下方列出的命令;.github/workflows/presubmit.yml 在此之外还运行
+#   check:publish、check:exports、check:tui-boundary——两侧并非一一对应。
 #   typecheck ≡ build 的 tsc -b 部分(同 tsconfig.packages.json);build 另在其后
 #   跑 bundle:client 产 lib/client.js(tsdown,当仓 gitignore lib/,不改 typecheck,
 #   仅 commit 前补跑,使本地 profile sync 能带上浏览器 bundle)
@@ -31,6 +32,7 @@ if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
 pnpm check:spec-deps
 pnpm check:deep-imports
+pnpm check:size
 pnpm typecheck
 pnpm run bundle:client
 pnpm test

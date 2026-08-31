@@ -12,7 +12,7 @@ import type { CodeBindingFunction, CodeRunResult, CodeRuntime } from '@deepseek-
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { defineTool, parameterSchemaSpecToJsonSchema } from './schema.ts'
-import { TOOL_RUNTIME_SCHEDULER } from './index.ts'
+import { TOOL_RUNTIME_SCHEDULER } from './scheduler.ts'
 import type { CodeDispatchLog, ToolDefinition, ToolExecutionResult, ToolRuntime, ToolRunContext } from './index.ts'
 import type {} from './types.ts'
 
