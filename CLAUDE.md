@@ -35,6 +35,12 @@ same problem fails 2 fixes, reality contradicts a plan assumption, or
 scope exceeds the plan. Never patch on top of a broken plan; non-obvious
 failures route root-cause to deep-reasoner before re-planning.
 
+Batch independent delegations (hard rule): when N subagent tasks are
+mutually independent, emit ALL `subagent_fork` calls in ONE assistant
+message — the loop's parallel pool (10) runs them concurrently. Never
+drip-feed independent forks across turns; a fork whose prompt needs
+another fork's result is the ONLY legal reason to serialize.
+
 ### Verification is planned too
 Before verifying, specify: what behavior, how driven (script/browser/
 CLI), what observable result counts as pass. fast-worker executes;
