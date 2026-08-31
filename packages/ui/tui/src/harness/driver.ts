@@ -32,7 +32,7 @@ import { parseSlash, LOCAL_COMMANDS } from '../slash.ts'
 import { rowsToMarkdown } from '../export-markdown.ts'
 import { formatModelCatalog, parseModelChoice, type CatalogEntry } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
-import { writeResumeTarget } from '../resume-target.ts'
+import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { HISTORY_CAP, loadHistory, saveHistory } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import { formatStatusLine, shortenSession } from '../statusline.ts'
@@ -751,18 +751,37 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const agentOptions = config.provider !== undefined && config.model !== undefined
     ? { provider: config.provider, model: config.model }
     : undefined
-  const handle: AgentHandle = resume
-    ? await ctx.agents.resume({
-      resumeSessionId: sessionId,
-      setup: withSelection,
-      ...agentOptions === undefined ? {} : { agentOptions },
-    })
-    : await ctx.agents.create({
-      sessionId,
-      meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
-      setup: withSelection,
-      ...agentOptions === undefined ? {} : { agentOptions },
-    })
+  const createArgs = {
+    sessionId,
+    meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
+    setup: withSelection,
+    ...agentOptions === undefined ? {} : { agentOptions },
+  }
+  let resumed = false
+  let handle: AgentHandle
+  if (resume) {
+    try {
+      handle = await ctx.agents.resume({
+        resumeSessionId: sessionId,
+        setup: withSelection,
+        ...agentOptions === undefined ? {} : { agentOptions },
+      })
+      resumed = true
+    } catch {
+      // Stale marker: the recorded session is gone. Clear it so the next
+      // `dsh-cc` boot does not loop on the same failure, then degrade to a
+      // fresh session. The empty session must not steal the (now-cleared)
+      // marker — persistResumeTarget only fires after real content.
+      clearResumeTarget()
+      showNotice('上次会话已失效，已开启新会话，可 /resume 手动选择')
+      handle = await ctx.agents.create({
+        ...createArgs,
+        sessionId: SessionId(`tui-${randomUUID()}`),
+      })
+    }
+  } else {
+    handle = await ctx.agents.create(createArgs)
+  }
 
   // Rebindable holder: switchSession replaces handle/agent in-place so every
   // event handler and closure reads the LIVE agent at fire time. The session
@@ -855,7 +874,17 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
   }
   await seedDefaultModel()
-  writeResumeTarget(String(current.agent.session.id))
+  // Marker semantics: write on resume (self-heal) and after the first real
+  // user prompt — never on an empty fresh boot, which would steal the
+  // previous session from the launcher's auto-resume channel. persistResumeTarget
+  // is idempotent (equal id → skip).
+  let markedContent = resumed
+  const persistResumeTarget = (): void => {
+    const id = String(current.agent.session.id)
+    if (readResumeTarget() === id) return
+    writeResumeTarget(id)
+  }
+  if (resumed) persistResumeTarget()
   // Composer history: load once at boot (oldest→newest); seeded into the
   // editor by root.ts. New prompts are appended on submit (see submit()).
   const historyDir = config.historyDir
@@ -1628,6 +1657,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // from the previous session never leaks across a switch.
     await seedDefaultModel(true)
     writeResumeTarget(id)
+    markedContent = false
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.
     emit(clearRows(state))
@@ -1707,6 +1737,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
 
   const runLocal = async (name: string, rawInput: string): Promise<void> => {
     if (name === 'quit' || name === 'exit') {
+      if (markedContent) persistResumeTarget()
       await current.handle.dispose()
       return
     }
@@ -2002,8 +2033,11 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     }
     // Persist the prompt (not slash commands — they are commands, not
     // prompts, and would dilute the recall signal). Consecutive duplicates
-    // and the cap are handled inside saveHistory.
+    // and the cap are handled inside saveHistory. This is also the first
+    // real-content signal: mark the session so the launcher can resume it.
     history = saveHistory([...history, draft], historyDir)
+    markedContent = true
+    persistResumeTarget()
     if (state.busy) {
       // Outbox: park the text as a pending chip only. It reaches the agent on
       // the next durable `turn/end` (flushQueue) or immediately via Ctrl+S
@@ -2329,6 +2363,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
         noticeTimer = undefined
       }
       questionsDispose?.()
+      if (markedContent) persistResumeTarget()
       await current.handle.dispose()
     },
   }
