@@ -12,9 +12,12 @@ import { formatSkills } from './skills.ts'
 export const name = 'command-skills'
 export const inject = ['commands', 'skills']
 
-/** Execute `/skills`. */
+/** Execute `/skills`. Pass the invoking agent as `scope` so preset-layer providers are visible. */
 async function executeSkills(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
-  const skills = await ctx.skills.list({ cwd: invocation.agent.session.header.cwd })
+  const skills = await ctx.skills.list({
+    cwd: invocation.agent.session.header.cwd,
+    scope: invocation.agent,
+  })
   return { kind: 'success', text: formatSkills(skills) }
 }
 
