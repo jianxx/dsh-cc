@@ -93,6 +93,7 @@ async function visibleNames(host: Context, scope?: Agent | Scope) {
 /** Execute the ToolSearch tool on the host as the model would. */
 interface ToolSearchValue {
   query: string
+  message: string
   results: Array<{ name: string; description: string; status: string; reason?: string }>
 }
 
@@ -310,6 +311,88 @@ describe('scoped deferred visibility', () => {
     expect(b.registry.activate('scoped_tool', b.agent).status).toBe('unknown')
     // Nor can the global registry.
     expect(ctx.toolSearch.activate('scoped_tool').status).toBe('unknown')
+  })
+})
+
+describe('lazy ToolSearch registration', () => {
+  it('keeps ToolSearch invisible while the pool is empty, but reserved and restrictable', async () => {
+    const ctx = await host()
+
+    // No searchable deferred entries → no ToolSearch in the model-visible set.
+    expect(await visibleNames(ctx)).toEqual([])
+    expect(ctx.tools.get(TOOL_SEARCH_NAME)).toBeUndefined()
+    // The name is reserved: admitted everywhere, and a legal restrict target.
+    expect(ctx.tools.isAdmitted(TOOL_SEARCH_NAME)).toBe(true)
+    const { scope } = await mintAgent(ctx, 'gated')
+    expect(() => scope.ctx.tools.restrict({ deny: [TOOL_SEARCH_NAME] })).not.toThrow()
+  })
+
+  it('registers ToolSearch on the first non-alwaysLoad entry (0→1) and keeps it after unload (hysteresis)', async () => {
+    const ctx = await host()
+    expect(await visibleNames(ctx)).toEqual([])
+
+    const dispose = deferred(ctx, 'big_tool', 'Heavy capability.', 'data')
+    expect(await visibleNames(ctx)).toEqual([TOOL_SEARCH_NAME])
+
+    // Hysteresis: emptying the pool does NOT unregister ToolSearch mid-session
+    // (a mid-list removal would shift every later tool and break the cached
+    // prefix; the empty-pool copy branch below covers the messaging instead).
+    dispose()
+    expect(await visibleNames(ctx)).toEqual([TOOL_SEARCH_NAME])
+
+    // A later registration reuses the standing registration without duplicating.
+    deferred(ctx, 'other_tool', 'Another capability.', 'other')
+    expect(await visibleNames(ctx)).toEqual([TOOL_SEARCH_NAME])
+  })
+
+  it('never registers ToolSearch for an alwaysLoad-only pool', async () => {
+    const ctx = await host()
+    deferred(ctx, 'essential', 'Always-present capability.', 'core', { alwaysLoad: true })
+
+    expect(await visibleNames(ctx)).toEqual(['essential'])
+  })
+
+  it('makes the registration disposer idempotent', async () => {
+    const ctx = await host()
+    const dispose = deferred(ctx, 'big_tool', 'Heavy capability.', 'data')
+
+    dispose()
+    expect(() => dispose()).not.toThrow()
+    expect(ctx.toolSearch.search('data')).toEqual([])
+  })
+})
+
+describe('empty-search messaging', () => {
+  it('says the pool is empty (and to call tools directly) when no deferred entries remain', async () => {
+    const ctx = await host()
+    const dispose = deferred(ctx, 'big_tool', 'Heavy capability.', 'data')
+    dispose() // hysteresis keeps ToolSearch callable with an empty pool
+
+    const result = await runToolSearch(ctx, 'anything')
+    expect(result.value.results).toEqual([])
+    expect(result.value.message).toContain('No deferred tools are available to you')
+    expect(result.value.message).toContain('call it directly')
+  })
+
+  it('says everything is already loaded when the pool is fully activated', async () => {
+    const ctx = await host()
+    deferred(ctx, 'big_tool', 'Heavy capability.', 'data')
+    await runToolSearch(ctx, 'data')
+
+    const result = await runToolSearch(ctx, 'zzz-no-match')
+    expect(result.value.results).toEqual([])
+    expect(result.value.message).toContain('already loaded')
+    expect(result.value.message).toContain('call them directly')
+  })
+
+  it('points at direct invocation when a non-empty pool simply has no match', async () => {
+    const ctx = await host()
+    deferred(ctx, 'big_tool', 'Heavy capability.', 'data')
+
+    const result = await runToolSearch(ctx, 'zzz-no-match')
+    expect(result.value.results).toEqual([])
+    expect(result.value.message).toContain('No deferred tools matched "zzz-no-match"')
+    expect(result.value.message).toContain('call it directly')
   })
 })
 

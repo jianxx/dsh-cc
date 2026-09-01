@@ -16,6 +16,14 @@
  * model: {@link DeferredToolRegistry.registerDeferred} is itself an effect, and
  * {@link registry.activate} gate the load behind the calling scope's tool
  * restriction, so a deferred tool a scope denies is never loaded for it.
+ *
+ * The ToolSearch tool itself is registered LAZILY: while no searchable
+ * (non-alwaysLoad) deferred entry exists, only its name is reserved — an empty
+ * pool makes the tool useless, and its "tools are hidden, search to load them"
+ * description actively misleads models into believing they lack capabilities
+ * they actually hold. The first deferred registration brings ToolSearch into
+ * the model-visible set; it then stays (hysteresis) so the assembled tool
+ * order never shifts mid-session.
  * @module @jianxx/dsh-cc-tool-search
  */
 
@@ -147,11 +155,20 @@ export class DeferredToolRegistry extends Service {
     () => {},
   )
 
+  /** Non-alwaysLoad deferred entries registered on this registry instance. */
+  private searchableCount = 0
+
+  /** Disposer for the lazily-registered ToolSearch tool, once visible. */
+  private toolDisposer: (() => void) | undefined
+
   constructor(ctx: Context) {
     super(ctx, 'toolSearch')
     // The ToolSearch tool itself is never deferred: it is the load path, so it
-    // must be visible on the first assembly.
-    ctx.tools.register(this.toolDefinition())
+    // must be visible once a searchable pool exists. But it is also pointless
+    // — and its description actively misleading — while the pool is empty, so
+    // only the name is reserved here (keeping it restrictable); the real
+    // registration happens on the first non-alwaysLoad deferred entry.
+    ctx.tools.reserve(TOOL_SEARCH_NAME)
   }
 
   /**
@@ -185,9 +202,25 @@ export class DeferredToolRegistry extends Service {
     // Reserve the name in the tools registry so a scoped restriction can gate
     // it before its definition loads (restrict only names known capabilities).
     const reserve = this.ctx.tools.reserve(reg.name)
+    // Lazy registration of the ToolSearch tool itself: the first non-alwaysLoad
+    // deferred entry brings the search tool into the model-visible set (0→1).
+    // It stays registered once added (hysteresis — never torn down on 1→0, so
+    // the assembled tool order never shifts mid-session), and unloads with the
+    // service context like any other registration.
+    let disposed = false
+    if (!stored.alwaysLoad) {
+      this.searchableCount += 1
+      // Guard on the disposer, not the count: with hysteresis the count can
+      // return to 0 while the registration stands, and re-registering would
+      // throw on the duplicate name.
+      if (this.toolDisposer === undefined) this.toolDisposer = this.ctx.tools.register(this.toolDefinition())
+    }
     return () => {
+      if (disposed) return
+      disposed = true
       unwind()
       reserve()
+      if (!stored.alwaysLoad) this.searchableCount -= 1
     }
   }
 
@@ -256,6 +289,18 @@ export class DeferredToolRegistry extends Service {
     return [...this.layers.merge(key, layer => layer.tools).values()]
   }
 
+  /** Non-alwaysLoad deferred entries visible to a scope: total and not-yet-activated. */
+  private poolStats(scope?: ScopeKey): { total: number; searchable: number } {
+    let total = 0
+    let searchable = 0
+    for (const stored of this.allDeferred(scope)) {
+      if (stored.alwaysLoad) continue
+      total += 1
+      if (!stored.activated) searchable += 1
+    }
+    return { total, searchable }
+  }
+
   /** Run the entry's activation callback once and retain its disposer. */
   private activateStore(stored: StoredDeferred): void {
     if (stored.activated) return
@@ -281,7 +326,8 @@ export class DeferredToolRegistry extends Service {
       description: 'Search for deferred tools that are NOT currently loaded, then load the ones you need by their name. '
         + 'Deferred tools are capabilities (e.g. filesystem, shell, or web tools) omitted from your function list to save prompt '
         + 'space. Search with the capability you need; loading a tool makes it available to call exactly like any tool defined at '
-        + 'the top of the prompt. Loading is idempotent: loading an already-available tool is a harmless no-op.',
+        + 'the top of the prompt. Loading is idempotent: loading an already-available tool is a harmless no-op. If a search returns '
+        + 'nothing, the capability may already be available — call it directly.',
       parameters: {
         query: {
           type: 'string',
@@ -299,6 +345,7 @@ export class DeferredToolRegistry extends Service {
           additionalProperties: false,
           properties: {
             query: { type: 'string', required: true },
+            message: { type: 'string', required: true },
             results: {
               type: 'array',
               required: true,
@@ -321,7 +368,7 @@ export class DeferredToolRegistry extends Service {
         },
         render: (_args, value) => [{
           type: 'text',
-          text: renderToolSearchText(value.query, value.results),
+          text: value.message,
         }],
       },
       // Arrow bodies keep `this` bound to the registry service; the schema
@@ -340,7 +387,12 @@ export class DeferredToolRegistry extends Service {
             ...outcome.status === 'denied' ? { reason: outcome.reason } : {},
           }
         })
-        return Promise.resolve({ query: args.query, results })
+        const { total, searchable } = this.poolStats(scope)
+        return Promise.resolve({
+          query: args.query,
+          message: composeSearchMessage(args.query, results, total, searchable),
+          results,
+        })
       },
       presentCall: (args): ToolCallView =>
         ({ card: 'generic', title: 'Search deferred tools', kind: 'search', rawInput: args.query }),
@@ -348,6 +400,28 @@ export class DeferredToolRegistry extends Service {
         ({ card: 'generic', title: 'Tool search', content: result.content }),
     })
   }
+}
+
+/**
+ * Compose the full model-facing ToolSearch outcome, branching on pool state so
+ * an empty search never reads as "you lack the capability" — the trap this
+ * copy exists to defuse is a model concluding it has no filesystem/shell tools
+ * when in fact the deferred pool is simply empty (or already fully loaded).
+ */
+function composeSearchMessage(
+  query: string,
+  results: Array<{ name: string; description: string; status: string; reason?: string }>,
+  total: number,
+  searchable: number,
+): string {
+  if (results.length > 0) return renderToolSearchText(query, results)
+  if (total === 0) {
+    return 'No deferred tools are available to you in this session — every tool you can use is already in your function list; call it directly.'
+  }
+  if (searchable === 0) {
+    return 'All deferred tools available to you are already loaded; call them directly.'
+  }
+  return `No deferred tools matched "${query}". If the capability you need is not deferred, it may already be available — call it directly.`
 }
 
 /** Compose the model-facing summary of a ToolSearch outcome. */
