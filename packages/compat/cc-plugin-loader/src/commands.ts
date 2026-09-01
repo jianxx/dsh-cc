@@ -9,8 +9,8 @@
  * @module
  */
 
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
 import type { CcPluginManifest, CcCommand } from './types.ts'
 import { ComponentTally } from './seams.ts'
 
@@ -62,7 +62,9 @@ export function mountCommands(options: MountCommandsOptions): { disposers: (() =
     tally.addSkipped('commands seam "commands" is not mounted')
     return { disposers, tally }
   }
-  const entries = options.manifest.commands
+  const entries = options.manifest.commandsDeclared
+    ? [...options.manifest.commands]
+    : defaultCommandEntries(options.pluginRoot, tally)
   if (entries.length === 0) {
     tally.addSkipped('plugin ships no commands')
     return { disposers, tally }
@@ -83,6 +85,31 @@ export function mountCommands(options: MountCommandsOptions): { disposers: (() =
     tally.addLoaded()
   }
   return { disposers, tally }
+}
+
+/**
+ * Scan `commands/*.md` when the manifest omitted `commands`. Nested
+ * subdirectories are skipped with a reason (no silent drop, no colon names).
+ */
+function defaultCommandEntries(pluginRoot: string, tally: ComponentTally): CcCommand[] {
+  const dir = join(pluginRoot, STANDARD_COMMANDS_DIR)
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const found: CcCommand[] = []
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      tally.addSkipped(`skipped nested commands directory "${entry.name}"`)
+      continue
+    }
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue
+    if (!entry.name.endsWith('.md')) continue
+    found.push({ name: basename(entry.name, '.md'), source: join(STANDARD_COMMANDS_DIR, entry.name) })
+  }
+  return found
 }
 
 /** Resolve a command entry to consumable content, or a failure reason. */

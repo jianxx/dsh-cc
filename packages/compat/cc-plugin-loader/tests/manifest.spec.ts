@@ -6,6 +6,8 @@ describe('parsePluginManifest', () => {
     const manifest = parsePluginManifest({ name: 'my-plugin' }, 'my-plugin')
     expect(manifest.name).toBe('my-plugin')
     expect(manifest.commands).toEqual([])
+    expect(manifest.commandsDeclared).toBe(false)
+    expect(manifest.skillsReplaceDefault).toBe(false)
     expect(manifest.agents).toEqual([])
     expect(manifest.skills).toEqual([])
     expect(manifest.mcpServers).toEqual({})
@@ -20,6 +22,7 @@ describe('parsePluginManifest', () => {
         hello: { content: 'inline hello', allowedTools: ['read'] },
       },
     }, 'p')
+    expect(manifest.commandsDeclared).toBe(true)
     expect(manifest.commands).toHaveLength(2)
     const about = manifest.commands.find(c => c.name === 'about')
     expect(about?.source).toBe('./about.md')
@@ -33,6 +36,12 @@ describe('parsePluginManifest', () => {
     const manifest = parsePluginManifest({ name: 'p', agents: './a.md', skills: ['./one', './two'] }, 'p')
     expect(manifest.agents).toEqual(['./a.md'])
     expect(manifest.skills).toEqual(['./one', './two'])
+  })
+
+  it('marks marketplace overlays as skillsReplaceDefault', () => {
+    const manifest = parsePluginManifest({ name: 'p', skills: ['./skills/xlsx'] }, 'p', { skillsReplaceDefault: true })
+    expect(manifest.skillsReplaceDefault).toBe(true)
+    expect(manifest.skills).toEqual(['./skills/xlsx'])
   })
 
   it('keeps only top-level fields it understands and ignores unknowns', () => {

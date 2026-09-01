@@ -12,16 +12,35 @@
  * @module
  */
 
-import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
 import { Service, type Context } from '@deepseek-ai/cordis'
-import { mountCcPlugin, type PluginLoadReport, type ResolveModel } from '@jianxx/dsh-cc-plugin-loader'
+import {
+  discoverCcPluginRoots,
+  mountCcPlugin,
+  type DiscoveredCcPlugin,
+  type PluginLoadReport,
+  type ResolveModel,
+} from '@jianxx/dsh-cc-plugin-loader'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The mounted Claude Code plugin registry, when cc-shell-glue is composed. */
     ccPlugins: CcPluginsService
   }
+}
+
+/** Constructor options for the plugin-mount registry. */
+export interface CcPluginsServiceOptions {
+  /**
+   * Explicit discovery roots. `undefined` uses installed ∩ enabled; `[]` or
+   * `null` disables discovery; a non-empty list flattens those dirs.
+   */
+  readonly pluginDirs?: readonly string[] | null
+  /** Spawn-time model resolver threaded into every mounted agent. */
+  readonly resolveModel?: ResolveModel
+  /** Claude config home; defaults to `$CLAUDE_CONFIG_DIR` / `~/.claude`. */
+  readonly claudeHome?: string
+  /** Workspace used for project/local `enabledPlugins`; defaults to `process.cwd()`. */
+  readonly cwd?: string
 }
 
 /** A tracked plugin mount's public summary. */
@@ -63,43 +82,31 @@ export class CcPluginsService extends Service {
 
   constructor(
     ctx: Context,
-    private readonly pluginDirs: readonly string[],
-    private readonly resolveModel?: ResolveModel,
+    private readonly options: CcPluginsServiceOptions = {},
   ) {
     super(ctx, 'ccPlugins')
   }
 
-  /** The discovered plugin roots for every configured discovery root. */
-  private discover(): string[] {
-    const roots: string[] = []
-    for (const root of this.pluginDirs) {
-      if (!existsSync(root)) continue
-      if (existsSync(join(root, 'plugin.json'))) {
-        roots.push(root)
-        continue
-      }
-      try {
-        for (const entry of readdirSync(root, { withFileTypes: true })) {
-          if (entry.isDirectory() && existsSync(join(root, entry.name, 'plugin.json'))) {
-            roots.push(join(root, entry.name))
-          }
-        }
-      } catch {
-        // Best-effort discovery: an unreadable discovery root mounts nothing.
-      }
-    }
-    return roots
+  /** Recompute discovery from the stored options (so rescan re-reads the cascade). */
+  private discover(): DiscoveredCcPlugin[] {
+    return discoverCcPluginRoots({
+      ...this.options.pluginDirs !== undefined ? { pluginDirs: this.options.pluginDirs } : {},
+      ...this.options.claudeHome !== undefined ? { claudeHome: this.options.claudeHome } : {},
+      ...this.options.cwd !== undefined ? { cwd: this.options.cwd } : {},
+      log: this.ctx.logger,
+    })
   }
 
   /** Mount one plugin root and track it; never throws (failures are logged). */
-  private async mountOne(dir: string): Promise<MountResult> {
+  private async mountOne(plugin: DiscoveredCcPlugin): Promise<MountResult> {
     try {
       const mounted = await mountCcPlugin(this.ctx, {
-        root: dir,
-        ...this.resolveModel !== undefined ? { resolveModel: this.resolveModel } : {},
+        root: plugin.root,
+        nameHint: plugin.nameHint,
+        ...this.options.resolveModel !== undefined ? { resolveModel: this.options.resolveModel } : {},
       })
-      this.mounts.set(dir, {
-        root: dir,
+      this.mounts.set(plugin.root, {
+        root: plugin.root,
         name: mounted.report.name,
         dispose: mounted.dispose,
         report: mounted.report,
@@ -107,7 +114,7 @@ export class CcPluginsService extends Service {
       return { ok: true }
     } catch (error) {
       const message = String(error)
-      this.ctx.logger.warn(`cc-shell-glue: failed to mount CC plugin at ${dir}: ${message}`)
+      this.ctx.logger.warn(`cc-shell-glue: failed to mount CC plugin at ${plugin.root}: ${message}`)
       return { ok: false, error: message }
     }
   }
@@ -118,9 +125,9 @@ export class CcPluginsService extends Service {
    */
   async mountAll(): Promise<CcPluginRescanError[]> {
     const errors: CcPluginRescanError[] = []
-    for (const dir of this.discover()) {
-      const result = await this.mountOne(dir)
-      if (!result.ok) errors.push({ root: dir, error: result.error })
+    for (const plugin of this.discover()) {
+      const result = await this.mountOne(plugin)
+      if (!result.ok) errors.push({ root: plugin.root, error: result.error })
     }
     return errors
   }
@@ -150,9 +157,9 @@ export class CcPluginsService extends Service {
         errors.push({ root: mount.root, name: mount.name, error: String(error) })
       }
     }
-    for (const dir of this.discover()) {
-      const result = await this.mountOne(dir)
-      if (!result.ok) errors.push({ root: dir, error: result.error })
+    for (const plugin of this.discover()) {
+      const result = await this.mountOne(plugin)
+      if (!result.ok) errors.push({ root: plugin.root, error: result.error })
     }
     return errors
   }

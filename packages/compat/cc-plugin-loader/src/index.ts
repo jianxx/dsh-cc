@@ -13,7 +13,6 @@
  * @module @jianxx/dsh-cc-plugin-loader
  */
 
-import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { parsePluginManifest } from './manifest.ts'
@@ -29,9 +28,12 @@ import { mountCommands } from './commands.ts'
 import { mountHooks } from './hooks.ts'
 import { mountMcpServers } from './mcp.ts'
 import { mountSettings } from './settings.ts'
+import { resolvePluginManifest } from './resolve-manifest.ts'
 
 export type { CcPluginManifest, CcCommand, CcSkillRef, CcAgentRef, CcMcpServer, ComponentKind, ComponentResult, PluginLoadReport } from './types.ts'
 export { parsePluginManifest } from './manifest.ts'
+export { discoverCcPluginRoots, resolveClaudeHome, NESTED_MANIFEST, TOP_LEVEL_MANIFEST } from './discovery.ts'
+export type { DiscoveredCcPlugin, DiscoverCcPluginRootsOptions } from './discovery.ts'
 export { AgentProvider, STANDARD_AGENTS_DIR } from './agents.ts'
 export type { ResolveModel } from './agents.ts'
 export type { McpSeam, HooksSeam } from './seams.ts'
@@ -48,7 +50,7 @@ export {
   type SkillActivation,
 } from './skill-semantics.ts'
 
-/** The plugin.json file name at a plugin root. */
+/** The plugin.json file name at a plugin root (legacy / fixture path). */
 export const MANIFEST_FILE = 'plugin.json'
 
 /** The component host seams the loader probes. */
@@ -71,6 +73,8 @@ export interface MountedSeams {
 export interface MountCcPluginOptions {
   /** The plugin root directory holding `plugin.json` and its components. */
   readonly root: string
+  /** Installed plugin name (no `@marketplace`); matches a marketplace overlay. */
+  readonly nameHint?: string
   /** Optional seam overrides; when omitted the loader probes `ctx.get(...)`. */
   readonly seams?: MountedSeams
   /** Optional spawn-time model resolver threaded into every mounted agent. */
@@ -97,8 +101,10 @@ export interface CcPluginMount {
  */
 export async function mountCcPlugin(ctx: Context, options: MountCcPluginOptions): Promise<CcPluginMount> {
   const root = resolve(options.root)
-  const raw = await readManifest(root)
-  const manifest = parsePluginManifest(raw, root)
+  const resolved = resolvePluginManifest(root, options.nameHint)
+  const manifest = parsePluginManifest(resolved.raw, root, {
+    skillsReplaceDefault: resolved.skillsReplaceDefault,
+  })
   const probed = await probeSeams(ctx, options.seams)
   const disposers: (() => void)[] = []
   const components: ComponentResult[] = []
@@ -130,13 +136,6 @@ export async function mountCcPlugin(ctx: Context, options: MountCcPluginOptions)
     report: { name: manifest.name, components },
     dispose: () => effectDisposer(),
   }
-}
-
-/** Read and JSON-parse the plugin manifest file. */
-async function readManifest(root: string): Promise<unknown> {
-  const path = resolve(root, MANIFEST_FILE)
-  const raw = await readFile(path, 'utf8')
-  return JSON.parse(raw) as unknown
 }
 
 /** Probe each component host seam, preferring explicit overrides. */

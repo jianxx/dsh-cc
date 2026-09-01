@@ -11,7 +11,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, type Config } from '@jianxx/dsh-cc-bundle-shell/src/index.ts'
+import { apply, Config as GlueConfig, type Config } from '@jianxx/dsh-cc-bundle-shell/src/index.ts'
+import { CcPluginsService } from '@jianxx/dsh-cc-bundle-shell/src/ccPlugins.ts'
 
 /** A commands seam that tracks live (undisposed) command names. */
 function createCommandsSeam(): { register: (d: { name: string }) => () => void; live: () => string[] } {
@@ -102,5 +103,67 @@ describe('@jianxx/dsh-cc-bundle-shell ccPlugins registry', () => {
     expect(errors).toEqual([])
     expect(ctx.ccPlugins.list()).toHaveLength(1)
     expect(commands.live().filter(name => name === 'alpha-command')).toHaveLength(1)
+  })
+
+  it('default discovery (absent pluginDirs) mounts installed ∩ enabled plugins', async () => {
+    const home = join(tmpRoot, 'claude-home')
+    const cwd = join(tmpRoot, 'workspace')
+    const install = join(home, 'plugins', 'cache', 'official', 'alpha', '1.0.0')
+    writePlugin(install, 'alpha', 'alpha-command')
+    mkdirSync(join(home), { recursive: true })
+    mkdirSync(join(cwd, '.claude'), { recursive: true })
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'alpha@official': true },
+    }))
+    writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({
+      version: 2,
+      plugins: { 'alpha@official': [{ scope: 'user', installPath: install }] },
+    }))
+
+    const service = new CcPluginsService(ctx, { claudeHome: home, cwd })
+    const errors = await service.mountAll()
+    expect(errors).toEqual([])
+    expect(service.list()).toHaveLength(1)
+    expect(service.list()[0]).toMatchObject({ name: 'alpha', root: install })
+    expect(commands.live()).toContain('alpha-command')
+  })
+
+  it('rescan re-reads the enabled/installed cascade', async () => {
+    const home = join(tmpRoot, 'claude-home')
+    const cwd = join(tmpRoot, 'workspace')
+    const alpha = join(home, 'plugins', 'cache', 'official', 'alpha', '1.0.0')
+    const beta = join(home, 'plugins', 'cache', 'official', 'beta', '1.0.0')
+    writePlugin(alpha, 'alpha', 'alpha-command')
+    mkdirSync(join(home, 'plugins'), { recursive: true })
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'alpha@official': true },
+    }))
+    writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({
+      version: 2,
+      plugins: { 'alpha@official': [{ scope: 'user', installPath: alpha }] },
+    }))
+
+    const service = new CcPluginsService(ctx, { claudeHome: home, cwd })
+    await service.mountAll()
+    expect(service.list().map(entry => entry.name)).toEqual(['alpha'])
+
+    writePlugin(beta, 'beta', 'beta-command')
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'alpha@official': true, 'beta@official': true },
+    }))
+    writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({
+      version: 2,
+      plugins: {
+        'alpha@official': [{ scope: 'user', installPath: alpha }],
+        'beta@official': [{ scope: 'user', installPath: beta }],
+      },
+    }))
+    const errors = await service.rescan()
+    expect(errors).toEqual([])
+    expect(service.list().map(entry => entry.name).sort()).toEqual(['alpha', 'beta'])
+  })
+
+  it('keeps pluginDirs undefined when Config is empty so default discovery fires', () => {
+    expect(GlueConfig({}).pluginDirs).toBeUndefined()
   })
 })

@@ -6,9 +6,30 @@
 
 这个兼容性加载器读取 CC 插件清单子集，用 [`@jianxx/dsh-cc-skill-loader`](../../skill/skill-claude-code/README.md) 与 [`@jianxx/dsh-cc-claude-code-agents`](../../preset/claude-code-agents/README.md) 的纯函数翻译每个组件，并通过 `ctx.get(...)` 读取该组件的宿主 seam。它不是运行时：它产出类型化挂载与结构化报告，把执行交给它注册到的 seam。
 
+## 发现
+
+`discoverCcPluginRoots({ pluginDirs?, claudeHome?, cwd? })` 是 glue 的磁盘查找器：
+
+| `pluginDirs` | 行为 |
+|---|---|
+| `undefined`（默认） | `enabledPlugins`（user → project → local 级联）与 `{claudeHome}/plugins/installed_plugins.json` 的交集。key 必须是精确的 `name@marketplace`。Claude home 为 `$CLAUDE_CONFIG_DIR`（否则 `~/.claude`）。 |
+| `[]` 或 `null` | 空——关闭发现。 |
+| 非空 | flatten 这些目录：目录自身或其一层子目录持有 `.claude-plugin/plugin.json` 或顶层 `plugin.json`。仅有 marketplace.json 的目录不是 flatten root。 |
+
+JSON 读失败与缺失的 `installPath` 会跳过而不是抛错。项目/local `enabledPlugins` 偏向 boot cwd（host-plane 单例）；`/reload-plugins` 会重读级联。
+
 ## 加载器
 
-`mountCcPlugin(ctx, { root, seams? })` 读取 `${root}/plugin.json`、校验清单子集，并把每个存在的组件作为 Cordis effect 挂载。它返回 `{ report, dispose }`——`report` 是每个组件的加载结果，`dispose` 回收所有已挂载组件（context 卸载时自动调用）。
+`mountCcPlugin(ctx, { root, nameHint?, seams? })` 解析清单、校验子集，并把每个存在的组件作为 Cordis effect 挂载。它返回 `{ report, dispose }`——`report` 是每个组件的加载结果，`dispose` 回收所有已挂载组件（context 卸载时自动调用）。
+
+清单解析顺序：
+
+1. `${root}/.claude-plugin/plugin.json`（Claude Code 首选路径）
+2. `${root}/plugin.json`（旧路径 / 显式 `pluginDirs` fixture）
+3. `${root}/.claude-plugin/marketplace.json` 命中 `nameHint`——合成 overlay 并**替换**默认 `skills/` 扫描。marketplace 文件未命中 `nameHint` 是硬失败（绝不落到 synthesize）。
+4. 否则合成 `{ name: nameHint ?? basename(root) }`，让可选清单仍能挂默认目录。
+
+当清单省略 `commands` 时，加载器扫描 `commands/*.md`。嵌套命令目录会带原因跳过。已声明的 `commands` 仍替换默认目录。
 
 ### 清单子集
 
@@ -20,7 +41,7 @@
 
 | 组件 | 来源 | Seam（探测） | 翻译 |
 |---|---|---|---|
-| `commands` | 清单内联或 source | `commands` | 通过 `register` 注册每个斜杠命令；handler 返回命令内容 |
+| `commands` | 清单内联/source，或默认 `commands/*.md` | `commands` | 通过 `register` 注册每个斜杠命令；handler 返回命令内容 |
 | `agents` | `agents/` 目录或清单路径 | `subagents` | 通过 `loadAgentsDir` 加载 `AgentDefinition`，再通过 `registerProvider` 注册为命名 provider |
 | `skills` | `skills/` 目录或清单路径 | `skills` | 通过 `discoverCcSkills` 发现 `SKILL.md`、解析 frontmatter，再通过 `register` 注册为运行时技能 |
 | `hooks` | `hooks/hooks.json` 或内联 | `hooks`（guest）| 通过 `mergePluginHooks` 注入按事件组织的 hook 映射 |
@@ -43,3 +64,5 @@
 - **harness 中缺少 guest seam** —— 除非部署提供 guest seam，否则 `hooks`、`mcp`、`settings` 会报告为 `skipped`。当前没有 harness 自有的 `ctx.mcp` 或 `ctx.hooks` 服务。
 - **agent provider 转发执行** —— agents provider 以名字命名其后端（默认 `fork`）并委托 `start`；执行 CC agent 需要 subagent seam 在运行时存在 `fork` 后端。
 - **技能激活由宿主驱动** —— 加载器注册接线与激活描述符；在模型可见的时刻应用它们由宿主负责。
+- **Agents 把默认 `agents/` 目录加到清单路径上** —— Claude Code 在声明 `agents` 时替换默认目录。此处未改。
+- **skills-directory 插件、managed settings、`defaultEnabled`，以及遍历 `cache/`/`marketplaces/` 均不在范围内。**

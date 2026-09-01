@@ -109,4 +109,107 @@ describe('mountCcPlugin', () => {
       await dispose()
     }
   })
+
+  it('prefers .claude-plugin/plugin.json over a top-level plugin.json', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, 'plugin.json', JSON.stringify({ name: 'top-level' }))
+      await writeFileAt(root, '.claude-plugin/plugin.json', JSON.stringify({ name: 'nested' }))
+      const ctx = makeContext()
+      const mount = await mountCcPlugin(ctx, { root, seams: {} })
+      expect(mount.report.name).toBe('nested')
+      mount.dispose()
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('synthesizes a name and mounts skills/ when no manifest is present', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, 'skills/do-thing/SKILL.md', '---\nname: do-thing\ndescription: Does a thing\n---\n')
+      const ctx = makeContext()
+      const names: string[] = []
+      const mount = await mountCcPlugin(ctx, {
+        root,
+        nameHint: 'synth',
+        seams: { skills: { register: (d) => { names.push((d as { name: string }).name); return () => {} } } },
+      })
+      expect(mount.report.name).toBe('synth')
+      expect(names).toEqual(['do-thing'])
+      mount.dispose()
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('loads a tavily-shaped skills string path from the nested manifest', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, '.claude-plugin/plugin.json', JSON.stringify({
+        name: 'tavily',
+        skills: './skills/',
+      }))
+      await writeFileAt(root, 'skills/tavily-search/SKILL.md', '---\nname: tavily-search\ndescription: Search\n---\n')
+      const ctx = makeContext()
+      const names: string[] = []
+      const mount = await mountCcPlugin(ctx, {
+        root,
+        seams: { skills: { register: (d) => { names.push((d as { name: string }).name); return () => {} } } },
+      })
+      expect(mount.report.name).toBe('tavily')
+      expect(names).toEqual(['tavily-search'])
+      mount.dispose()
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('marketplace overlay with a matching nameHint loads only listed skills', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, '.claude-plugin/marketplace.json', JSON.stringify({
+        name: 'anthropic-agent-skills',
+        plugins: [{
+          name: 'document-skills',
+          skills: ['./skills/xlsx', './skills/docx'],
+        }],
+      }))
+      await writeFileAt(root, 'skills/xlsx/SKILL.md', '---\nname: xlsx\ndescription: Excel\n---\n')
+      await writeFileAt(root, 'skills/docx/SKILL.md', '---\nname: docx\ndescription: Word\n---\n')
+      await writeFileAt(root, 'skills/pdf/SKILL.md', '---\nname: pdf\ndescription: PDF\n---\n')
+      const ctx = makeContext()
+      const names: string[] = []
+      const mount = await mountCcPlugin(ctx, {
+        root,
+        nameHint: 'document-skills',
+        seams: { skills: { register: (d) => { names.push((d as { name: string }).name); return () => {} } } },
+      })
+      expect(mount.report.name).toBe('document-skills')
+      expect(names.sort()).toEqual(['docx', 'xlsx'])
+      mount.dispose()
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('fails a marketplace overlay whose nameHint matches no entry (zero skills)', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, '.claude-plugin/marketplace.json', JSON.stringify({
+        plugins: [{ name: 'document-skills', skills: ['./skills/xlsx'] }],
+      }))
+      await writeFileAt(root, 'skills/xlsx/SKILL.md', '---\nname: xlsx\ndescription: Excel\n---\n')
+      const ctx = makeContext()
+      const names: string[] = []
+      await expect(mountCcPlugin(ctx, {
+        root,
+        nameHint: 'ghost',
+        seams: { skills: { register: (d) => { names.push((d as { name: string }).name); return () => {} } } },
+      })).rejects.toThrow(/no plugin named "ghost"/)
+      expect(names).toEqual([])
+    } finally {
+      await dispose()
+    }
+  })
 })
