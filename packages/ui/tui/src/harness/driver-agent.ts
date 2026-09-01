@@ -188,8 +188,9 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
   let markedContent = false
   const persistResumeTarget = (): void => {
     const id = String(current.agent.session.id)
-    if (readResumeTarget() === id) return
-    writeResumeTarget(id)
+    const markerOpts = { cwd: rt.cwd }
+    if (readResumeTarget(markerOpts) === id) return
+    writeResumeTarget(id, markerOpts)
   }
 
   // Composer + bash histories: owned here, rebound through get/set seams.

@@ -137,7 +137,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
       // `dsh-cc` boot does not loop on the same failure, then degrade to a
       // fresh session. The empty session must not steal the (now-cleared)
       // marker — persistResumeTarget only fires after real content.
-      clearResumeTarget()
+      clearResumeTarget({ cwd })
       showNotice('上次会话已失效，已开启新会话，可 /resume 手动选择')
       handle = await ctx.agents.create({
         ...createArgs,
@@ -167,6 +167,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     agentOptions,
     liveMode,
     historyDir: config.historyDir,
+    cwd,
   })
   await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
@@ -283,7 +284,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     seedHud,
     seedTodos,
     refreshBranch,
-    writeResumeTarget,
+    writeResumeTarget: (id: string) => writeResumeTarget(id, { cwd }),
     setMarkedContent: agent.setMarkedContent,
     spliceAll: () => approvals.spliceAll(),
     withSelection,

@@ -3,7 +3,8 @@
  * decision table without spawning dsh.
  */
 
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { join, resolve } from 'node:path'
 
 export const PROFILE = 'tui'
 export const BUNDLES = [
@@ -250,6 +251,39 @@ export function worktreeEnv(plan, repoRoot, baseHead) {
       baseHead,
     }),
   }
+}
+
+/**
+ * Filename of the cwd-bucketed resume marker. Must stay in lockstep with
+ * `resumeMarkerFile` in packages/ui/tui/src/resume-target.ts: sha256 of
+ * `path.resolve(cwd)`, first 16 hex chars.
+ * @param {string} cwd
+ * @returns {string}
+ */
+export function resumeMarkerName(cwd) {
+  const key = createHash('sha256').update(resolve(cwd)).digest('hex').slice(0, 16)
+  return `resume-${key}.txt`
+}
+
+/**
+ * Absolute path of the cwd-bucketed resume marker under `$DSH_HOME/tui`.
+ * @param {string} home - DSH_HOME (typically `~/.dsh`).
+ * @param {string} cwd
+ * @returns {string}
+ */
+export function resumeMarkerPath(home, cwd) {
+  return join(home, 'tui', resumeMarkerName(cwd))
+}
+
+/**
+ * Collision policy for a *named* `--worktree <slug>` whose path already
+ * exists: reuse it (do not `git worktree add`). Random slugs still fail so
+ * they can retry a fresh name.
+ * @param {{ named: boolean, pathExists: boolean }} params
+ * @returns {'reuse' | 'create'}
+ */
+export function existingWorktreeDecision({ named, pathExists }) {
+  return named && pathExists ? 'reuse' : 'create'
 }
 
 /**

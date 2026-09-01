@@ -138,8 +138,9 @@ describe('createDriver switchSession', () => {
     expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'switched history' })
     // Busy synced from the new agent's status
     expect(driver.state.busy).toBe(true)
-    // Resume target written
-    expect(readResumeTarget()).toBe('s-b')
+    // Resume target written into the session cwd's bucket, not process.cwd().
+    expect(readResumeTarget({ cwd: PROJ_CWD })).toBe('s-b')
+    expect(readResumeTarget()).toBeUndefined()
   })
 
   it('is a no-op when switching to the current session (dispose NOT called)', async () => {
