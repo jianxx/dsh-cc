@@ -49,6 +49,10 @@ export type ParsedSlash =
 /**
  * Classify one composer line. Leading slash required; unknown names go to
  * the harness catalog so preset commands (`/permissions`, `/status`, …) work.
+ * At submit, a harness-kind line the command registry does not match falls
+ * through to a user prompt — user-invocable skills load through that
+ * host-side gesture boundary, so a hand-typed `/skill-name` reaches the model
+ * the same way a menu pick would.
  * @param line - the raw composer contents.
  */
 export function parseSlash(line: string): ParsedSlash {

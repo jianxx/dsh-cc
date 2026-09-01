@@ -127,7 +127,7 @@ export interface DriverCatalogCtx {
   state(): TuiState
   /** The rebindable agent holder (switchSession replaces it in place). */
   current: { agent: Agent }
-  /** Host context for the commands service lookup + event subscriptions. */
+  /** Host context for the commands/skills service lookups + event subscriptions. */
   ctx: Context
 }
 
@@ -234,6 +234,13 @@ export interface DriverSessionsCtx {
   recordProjectSession(sessionId: string, sessionCwd: string | undefined): void
   /** Drain the shared approval/question FIFO (returns parked entries). */
   spliceAll(): ModalEntry[]
+  /**
+   * Rebuild the slash-command catalog for the (new) live agent: commands
+   * synchronously, skills via a fresh snapshot. Called after a successful
+   * session switch — `list()`/`snapshot()` are agent- and cwd-scoped and no
+   * change event fires on a switch.
+   */
+  refreshCatalog(): void
   /** The agent setup closure (wraps presetSetup + installModelSelection). */
   withSelection: AgentSetup
   /** Explicit provider/model override, or undefined when unset. */
@@ -318,6 +325,8 @@ export interface DriverQueueCtx {
   runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
   /** Open the /permissions overlay picker (pickers section). */
   openPermissionPicker(): void
+  /** Surface a transient notice line (e.g. an empty slash command). */
+  showNotice(text: string): void
   /** Run a `!` bash-mode line (driver-bash section). */
   runShellCommand(raw: string): Promise<void>
   /** Read the current composer prompt history (oldest→newest). */

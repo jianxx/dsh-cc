@@ -39,6 +39,14 @@ one backend.
 - `/usage` — open the usage panel: a context-occupancy bar, the token totals (input/output/cache buckets), and the system/tools/messages breakdown, all live while open; Esc closes it. Quota data has no source in this stack and is never shown
 - `/permissions` — open a picker of the five CC permission modes (`default` / `acceptEdits` / `plan` / `auto` / `bypassPermissions`); `/permissions <mode>` still switches directly. `bypassPermissions` asks for an in-overlay confirmation first. The rule listing is no longer reachable from the TUI bare invocation (browser popupSelect parity)
 - other `/commands` — harness catalog (CC preset)
+- user-invocable skills from the skills registry also appear in the `/` menu
+  (after commands; a name claimed by a command resolves to the command). A
+  `/name` that is not a registered command is sent as a normal user prompt —
+  when it names a user-invocable skill, the host's pre-step boundary injects
+  the skill instructions (the same path as the web client); anything else is
+  ordinary prose. Known limitation: because pi-tui drops autocomplete when its
+  provider is replaced, an open `/` menu may close at the moment the skill
+  catalog arrives.
 
 ## Rendering
 

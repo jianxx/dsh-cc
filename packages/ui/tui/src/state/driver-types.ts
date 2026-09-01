@@ -256,9 +256,10 @@ export interface Driver {
   loadModelEfforts(): Promise<readonly string[]>
   /**
    * Merged slash-command catalog: TUI-local commands first, then harness
-   * commands (deduped by name, local wins). The array identity is stable
-   * across calls until the catalog changes (so callers can detect a refresh
-   * by reference equality).
+   * commands (deduped by name, local wins), then user-invocable skills from
+   * the skills registry (a name claimed by a command resolves to the
+   * command). The array identity is stable across calls until the catalog
+   * changes (so callers can detect a refresh by reference equality).
    */
   listCommands(): readonly { name: string; description?: string; argumentHint?: string }[]
   dispose(): Promise<void>

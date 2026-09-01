@@ -101,12 +101,32 @@ const submit = async (rt: DriverQueueCtx, text?: string): Promise<void> => {
       rt.openPermissionPicker()
       return
     }
-    await rt.runHarness(parsed.line)
-    return
+    // An empty name segment (bare `/` or `/   `) is not a command, a skill,
+    // or a prompt worth a model turn.
+    const name = parsed.line.slice(1).split(/\s/, 1)[0] ?? ''
+    if (name.length === 0) {
+      rt.showNotice('Empty slash command.')
+      return
+    }
+    const result = await rt.runHarness(parsed.line)
+    if (result !== undefined) {
+      // A result object (success or error) means a known command ran in the
+      // command plane; `null` means no command registry is mounted (runHarness
+      // already noticed). Neither becomes a prompt.
+      return
+    }
+    // Unknown name: fall through to the prompt path below. This is the whole
+    // user-invocable-skill mechanism — the TUI never decides "is this a
+    // skill?"; the host's closed-set matching does. The followup message
+    // below MUST keep `source: { kind: 'user' }` because dsh-tool-skill's
+    // pre-step gesture boundary only scans `source.kind === 'user'` messages;
+    // if the name is a user-invocable skill it injects <skill_content>, and
+    // otherwise the line stays ordinary prose.
   }
   // Persist the prompt (not slash commands — they are commands, not prompts,
-  // and would dilute the recall signal). Consecutive duplicates and the cap
-  // are handled inside saveHistory. This is also the first real-content
+  // and would dilute the recall signal; an unknown slash IS a prompt and
+  // persists here via the fall-through above). Consecutive duplicates and the
+  // cap are handled inside saveHistory. This is also the first real-content
   // signal: mark the session so the launcher can resume it.
   rt.setHistory(saveHistory([...rt.getHistory(), draft], rt.historyDir))
   rt.setMarkedContent(true)
