@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   HISTORY_CAP,
+  coldCutGlobalHistory,
   historyFilePath,
   loadHistory,
   saveHistory,
@@ -55,5 +56,33 @@ describe('composer history file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-history-'))
     writeFileSync(historyFilePath(dir), 'this is not json\n{broken\n')
     expect(loadHistory(dir)).toEqual([])
+  })
+})
+
+describe('coldCutGlobalHistory', () => {
+  it('sets aside both legacy global files as .global.bak', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-coldcut-'))
+    writeFileSync(join(dir, 'history.txt'), '"old prompt"\n')
+    writeFileSync(join(dir, 'bash-history.txt'), '"ls -la"\n')
+    coldCutGlobalHistory(dir)
+    expect(existsSync(join(dir, 'history.txt'))).toBe(false)
+    expect(existsSync(join(dir, 'bash-history.txt'))).toBe(false)
+    expect(readFileSync(join(dir, 'history.global.bak'), 'utf8')).toBe('"old prompt"\n')
+    expect(readFileSync(join(dir, 'bash-history.global.bak'), 'utf8')).toBe('"ls -la"\n')
+  })
+
+  it('overwrites a previous backup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-coldcut-'))
+    writeFileSync(join(dir, 'history.txt'), '"newer"\n')
+    writeFileSync(join(dir, 'history.global.bak'), '"stale backup"\n')
+    coldCutGlobalHistory(dir)
+    expect(readFileSync(join(dir, 'history.global.bak'), 'utf8')).toBe('"newer"\n')
+  })
+
+  it('is a no-op when the legacy files are absent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-cc-coldcut-'))
+    expect(() => coldCutGlobalHistory(dir)).not.toThrow()
+    expect(existsSync(join(dir, 'history.global.bak'))).toBe(false)
+    expect(existsSync(join(dir, 'bash-history.global.bak'))).toBe(false)
   })
 })

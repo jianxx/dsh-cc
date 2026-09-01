@@ -27,6 +27,7 @@ import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
 import { attachBashMode } from './root-bash.ts'
+import { resetEditorHistory } from './editor-history.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
 import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, truncateActive } from './root-utils.ts'
 import { createEditorTheme, createTheme } from './theme.ts'
@@ -112,8 +113,11 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	const editor = new Editor(tui, createEditorTheme(theme))
 	// Seed the editor's ↑/↓ recall from persisted history (oldest first —
 	// addToHistory unshifts, so the last-seeded/newest becomes index 0 and is
-	// recalled on the first ↑ press).
-	for (const entry of driver.promptHistory) editor.addToHistory(entry)
+	// recalled on the first ↑ press). The reference is tracked so a /resume
+	// history rebind (new array identity) reseeds the stack in the subscribe
+	// callback below.
+	let seededHistory = driver.promptHistory
+	resetEditorHistory(editor, seededHistory)
 
 	const bashMode = attachBashMode({ editor, driver, tui, theme })
 	const { bashRunning, inShellMode, browseBashHistory, resetBashHistoryBrowsing } = bashMode
@@ -327,6 +331,17 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// already-running session (turn set before mount) starts the line.
 	let workingLineLive: boolean | undefined
 	const unsubscribe = driver.subscribe((state) => {
+		// /resume rebinds prompt history onto the switched session's project
+		// (a new array identity); reseed the editor's recall stack when it
+		// moves. Submits also replace the array — the reseed is then
+		// content-equivalent and only resets the (already exited) browsing
+		// state.
+		const liveHistory = driver.promptHistory
+		if (liveHistory !== seededHistory) {
+			seededHistory = liveHistory
+			resetEditorHistory(editor, liveHistory)
+		}
+
 		transcript.setRows(state.rows, {
 			thinkingExpanded: state.thinkingExpanded,
 			toolOutputExpanded: state.toolOutputExpanded,

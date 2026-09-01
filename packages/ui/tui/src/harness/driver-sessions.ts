@@ -12,7 +12,11 @@
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
+import { join } from 'node:path'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
+import { defaultTuiDir } from '../history.ts'
+import { isProjectMember, resolveProject, type ProjectInfo } from '../project.ts'
+import { readProjectSessionIds } from '../project-sessions.ts'
 import {
   clearQueue,
   clearRows,
@@ -73,6 +77,19 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
   // when the picker closes or reopens.
   let allSessions: SessionListEntry[] = []
   let switcherGeneration = 0
+  // Project scope for the open picker: resolved once at open (git probes are
+  // too expensive per refilter keystroke) and dropped on close. `members`
+  // is the sidecar index of the scope project's bucket.
+  let switcherProject: ProjectInfo | undefined
+  let switcherMembers: ReadonlySet<string> = new Set()
+
+  /** cwd-scope predicate: sidecar-indexed, or cwd inside the project (main
+   *  root or any of its worktrees) at a separator boundary. */
+  const isScopeMember = (entry: SessionListEntry): boolean =>
+    switcherMembers.has(entry.id)
+    || (entry.cwd !== undefined
+      && switcherProject !== undefined
+      && isProjectMember(entry.cwd, switcherProject))
 
   /**
    * Async title decoration for the open picker. The generation token read
@@ -121,10 +138,10 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     const sw = rt.state().sessionSwitcher
     if (sw === undefined) return
     const visible = filterSessions(allSessions, {
-      cwd: rt.current.agent.session.header.cwd ?? rt.cwd,
       scope: sw.scope,
       query: sw.query,
       currentId: sw.currentId,
+      isMember: isScopeMember,
     })
     const index = visible.findIndex((s) => s.id === sw.currentId)
     emit(setSessionSwitcher(rt.state(), {
@@ -149,14 +166,18 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     allSessions = sortByActivity(sessions)
     // Live header cwd wins over the process cwd: a marker-resumed session can
     // have been created elsewhere, and the current session must always be
-    // visible in the default (cwd) scope.
+    // visible in the default (cwd) scope. The scope is the session's
+    // *project* (main git root; worktrees collapse onto it), resolved once
+    // here — refilters on query keystrokes reuse it.
     const scopeCwd = rt.current.agent.session.header.cwd ?? rt.cwd
+    switcherProject = resolveProject(scopeCwd)
+    switcherMembers = readProjectSessionIds(join(defaultTuiDir(), 'projects', switcherProject.projectKey))
     const currentId = String(rt.current.agent.session.id)
     const visible = filterSessions(allSessions, {
-      cwd: scopeCwd,
       scope: 'cwd',
       query: '',
       currentId,
+      isMember: isScopeMember,
     })
     const index = visible.findIndex((s) => s.id === currentId)
     emit(setSessionSwitcher(rt.state(), {
@@ -166,6 +187,7 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
       currentId,
       query: '',
       scope: 'cwd',
+      cwd: scopeCwd,
       totalCount: allSessions.length,
     }))
     // Decorate the first screenful asynchronously — the overlay must appear
@@ -178,6 +200,8 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     // the working set with the overlay.
     switcherGeneration += 1
     allSessions = []
+    switcherProject = undefined
+    switcherMembers = new Set()
     emit(setSessionSwitcher(rt.state(), undefined))
   }
 
@@ -223,6 +247,14 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     await rt.current.handle.dispose()
     rt.current.handle = newHandle
     rt.current.agent = newHandle.agent
+
+    // Re-scope prompt/bash history onto the switched session's project: the
+    // new session may live in a different working directory, and recall must
+    // follow IT, not the boot directory. No-op for same-project switches.
+    rt.rebindHistory(rt.current.agent.session.header.cwd)
+    // Pin the switched session in its project's sidecar index so the picker
+    // scope no longer relies on the cwd-prefix heuristic for it.
+    rt.recordProjectSession(id, rt.current.agent.session.header.cwd)
 
     // Refresh the model selection from the new agent's resolved options,
     // falling back to the deployment default. Reset first so a stale selection

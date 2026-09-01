@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -29,6 +30,9 @@ export type { Driver } from '../state/driver-types.ts'
 import type { DriverConfig } from '../state/driver-types.ts'
 
 import { clearResumeTarget, writeResumeTarget } from '../resume-target.ts'
+import { coldCutGlobalHistory, defaultTuiDir } from '../history.ts'
+import { resolveProject } from '../project.ts'
+import { recordProjectSessionId } from '../project-sessions.ts'
 import type { ApprovalAnswerKind } from '../state/driver-types.ts'
 import {
   closeTodoPanel,
@@ -158,6 +162,21 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   // Deployment default-model service, effort resolution, history binding,
   // and the resume marker now live in the agent section (harness/driver-agent.ts).
+  //
+  // Per-project input history: prompts and bash commands are bucketed by the
+  // session's project (the main git root — worktrees collapse onto it), so
+  // ↑/↓ recall never leaks across working directories. An explicit
+  // config.historyDir stays an override (tests, embedding): no git probe, no
+  // legacy-global cold cut, no rebinding.
+  let historyDir = config.historyDir
+  let historyProjectKey: string | undefined
+  if (historyDir === undefined) {
+    const bootProject = resolveProject(cwd)
+    const tuiDir = defaultTuiDir()
+    coldCutGlobalHistory(tuiDir)
+    historyProjectKey = bootProject.projectKey
+    historyDir = join(tuiDir, 'projects', bootProject.projectKey)
+  }
   const agent = createAgentSection({
     emit,
     state: () => state,
@@ -166,9 +185,30 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     selection,
     agentOptions,
     liveMode,
-    historyDir: config.historyDir,
+    historyDir,
     cwd,
   })
+  // /resume rebinds history onto the switched session's project; the tracked
+  // key makes same-project switches no-ops.
+  const rebindHistory = (sessionCwd: string | undefined): void => {
+    if (config.historyDir !== undefined) return
+    const key = resolveProject(sessionCwd ?? cwd).projectKey
+    if (key === historyProjectKey) return
+    historyProjectKey = key
+    agent.bindHistoryDir(join(defaultTuiDir(), 'projects', key))
+  }
+  // Pin a session in its project's sidecar index (exact picker membership,
+  // complementing the cwd-prefix heuristic for legacy sessions).
+  const recordProjectSession = (sessionId: string, sessionCwd: string | undefined): void => {
+    const key = resolveProject(sessionCwd ?? cwd).projectKey
+    recordProjectSessionId(join(defaultTuiDir(), 'projects', key), sessionId)
+  }
+  // Every "real content arrived" path (submit, run-local, dispose) writes
+  // the resume marker AND pins the live session in its project's index.
+  const persistResumeTargetAndIndex = (): void => {
+    agent.persistResumeTarget()
+    recordProjectSession(String(current.agent.session.id), current.agent.session.header.cwd)
+  }
   await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
   // user prompt — never on an empty fresh boot. The agent section owns the
@@ -176,6 +216,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   if (resumed) {
     agent.setMarkedContent(true)
     agent.persistResumeTarget()
+    // The marker can attach a session whose recorded cwd differs from the
+    // process cwd (e.g. launched from another directory of the same repo):
+    // scope history to the LIVE session's project and pin it in that
+    // project's sidecar index.
+    rebindHistory(current.agent.session.header.cwd)
+    recordProjectSession(String(current.agent.session.id), current.agent.session.header.cwd)
   }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
@@ -286,6 +332,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     refreshBranch,
     writeResumeTarget: (id: string) => writeResumeTarget(id, { cwd }),
     setMarkedContent: agent.setMarkedContent,
+    rebindHistory,
+    recordProjectSession,
     spliceAll: () => approvals.spliceAll(),
     withSelection,
     agentOptions,
@@ -312,7 +360,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     openEffortPicker,
     loadCatalog: agent.loadCatalog,
     resolveEfforts: agent.resolveEfforts,
-    persistResumeTarget: agent.persistResumeTarget,
+    persistResumeTarget: persistResumeTargetAndIndex,
     getMarkedContent: agent.getMarkedContent,
     setMarkedContent: agent.setMarkedContent,
   })
@@ -341,8 +389,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     runShellCommand,
     getHistory: agent.getHistory,
     setHistory: agent.setHistory,
-    historyDir: agent.historyDir,
-    persistResumeTarget: agent.persistResumeTarget,
+    // Live getter, not a snapshot: /resume may rebind the history directory
+    // onto the switched session's project between submits.
+    get historyDir() { return agent.historyDir },
+    persistResumeTarget: persistResumeTargetAndIndex,
     setMarkedContent: agent.setMarkedContent,
   } satisfies DriverQueueCtx)
   actions.flushQueue = () => queue.flushQueue()
@@ -414,7 +464,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     async dispose() {
       if (noticeTimer !== undefined) { clearTimeout(noticeTimer); noticeTimer = undefined }
       approvals.dispose()
-      if (agent.getMarkedContent()) agent.persistResumeTarget()
+      if (agent.getMarkedContent()) persistResumeTargetAndIndex()
       await current.handle.dispose()
     },
   }

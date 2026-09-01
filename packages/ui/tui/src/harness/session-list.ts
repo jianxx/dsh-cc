@@ -38,22 +38,30 @@ export function sortByActivity(entries: readonly SessionListEntry[]): SessionLis
 
 /**
  * Filter sessions for the picker: child/fork sessions (those with
- * `parentSession`) are hidden unless they are the live session, cwd scope
- * keeps only entries from the given directory (entries without a cwd drop
- * out of cwd scope; a missing or empty cwd disables the scope), then a
- * non-empty query keeps entries whose title, id, or cwd contains it
- * case-insensitively. Never re-sorts — the caller controls order.
+ * `parentSession`) are hidden unless they are the live session; cwd scope
+ * keeps only entries the `isMember` predicate accepts (the driver builds it
+ * from the session's *project* — sidecar index ∪ cwd-prefix heuristic — so
+ * worktree and subdirectory sessions of the same repo stay visible; a
+ * missing predicate disables the scope); then a non-empty query keeps
+ * entries whose title, id, or cwd contains it case-insensitively. Never
+ * re-sorts — the caller controls order.
  */
 export function filterSessions(
   entries: readonly SessionListEntry[],
-  opts: { cwd?: string; scope: SessionScope; query: string; currentId?: string },
+  opts: {
+    scope: SessionScope
+    query: string
+    currentId?: string
+    /** Project-membership predicate for cwd scope; absence disables the scope. */
+    isMember?: (entry: SessionListEntry) => boolean
+  },
 ): SessionListEntry[] {
   let result = entries.slice()
   result = result.filter(entry =>
     entry.parentSession === undefined || entry.id === opts.currentId,
   )
-  if (opts.scope === 'cwd' && opts.cwd !== undefined && opts.cwd.length > 0) {
-    result = result.filter(entry => entry.cwd === opts.cwd)
+  if (opts.scope === 'cwd' && opts.isMember !== undefined) {
+    result = result.filter(opts.isMember)
   }
   const query = opts.query.trim().toLowerCase()
   if (query.length > 0) {

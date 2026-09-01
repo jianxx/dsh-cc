@@ -173,6 +173,12 @@ export interface SessionSwitcherView {
   query: string
   /** Visibility scope: this project's cwd (default) or every project. */
   scope: 'cwd' | 'all'
+  /**
+   * The cwd the project scope was derived from. Rows whose recorded cwd
+   * differs (worktree / subdirectory sessions of the same project) surface
+   * their cwd basename even in cwd scope.
+   */
+  cwd?: string
   /** Length of the unfiltered list, for the "Tab to view all (N)" hint. */
   totalCount?: number
 }

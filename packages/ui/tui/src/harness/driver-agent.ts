@@ -94,6 +94,12 @@ export interface AgentSection {
   getMarkedContent(): boolean
   setMarkedContent(value: boolean): void
   historyDir: string | undefined
+  /**
+   * Rebind prompt/bash history to a new data directory and reload both from
+   * disk. Used by /resume to re-scope history onto the switched session's
+   * project (a no-op caller-side when the project is unchanged).
+   */
+  bindHistoryDir(dir: string | undefined): void
   getHistory(): string[]
   setHistory(next: string[]): void
   getBashHistory(): string[]
@@ -114,7 +120,7 @@ export interface AgentSection {
  * get/set seams so no other module captures a stale copy.
  */
 export function createAgentSection(rt: DriverAgentCtx): AgentSection {
-  const { ctx, current, selection, agentOptions, historyDir } = rt
+  const { ctx, current, selection, agentOptions } = rt
 
   // Deployment default-model service (settings.yaml's agent-default-model).
   const agentDefaultModel = ctx.get('agentDefaultModel') as AgentDefaultModelLike | undefined
@@ -194,12 +200,21 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
   }
 
   // Composer + bash histories: owned here, rebound through get/set seams.
+  // `historyDir` is mutable so /resume can point it at the switched session's
+  // project directory (bindHistoryDir); every reader uses the live value via
+  // `get historyDir()` rather than a captured snapshot.
+  let historyDir = rt.historyDir
   let history = loadHistory(historyDir)
   let bashHistory: string[] = loadBashHistory(historyDir).reverse()
   const appendBashHistory = (command: string): void => {
     if (bashHistory[0] === command) return
     bashHistory = [command, ...bashHistory].slice(0, HISTORY_CAP)
     saveBashHistory([...bashHistory].reverse(), historyDir)
+  }
+  const bindHistoryDir = (dir: string | undefined): void => {
+    historyDir = dir
+    history = loadHistory(dir)
+    bashHistory = loadBashHistory(dir).reverse()
   }
 
   const tools = ctx.get('tools') as ToolsLike | undefined
@@ -251,7 +266,8 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
     persistResumeTarget,
     getMarkedContent: () => markedContent,
     setMarkedContent: (value) => { markedContent = value },
-    historyDir,
+    get historyDir() { return historyDir },
+    bindHistoryDir,
     getHistory: () => history,
     setHistory: (next) => { history = next },
     getBashHistory: () => bashHistory,

@@ -12,7 +12,7 @@
  * @module @jianxx/dsh-cc-tui/history
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -33,6 +33,52 @@ function dataDir(dir?: string): string {
 /** Absolute path to the history file under the data dir. */
 export function historyFilePath(dir?: string): string {
   return join(dataDir(dir), 'history.txt')
+}
+
+/**
+ * The default `tui` data dir (`$DSH_HOME/tui` or `~/.dsh/tui`) with no
+ * override — the parent of the per-project `projects/<key>` buckets and the
+ * home of the legacy global files {@link coldCutGlobalHistory} sets aside.
+ */
+export function defaultTuiDir(): string {
+  return dataDir()
+}
+
+/**
+ * One-time migration off the pre-project *global* history files. Before
+ * history was bucketed per project, prompts and bash commands both lived in
+ * single files under `$DSH_HOME/tui` (`history.txt`, `bash-history.txt`),
+ * leaking across every directory — the very reason per-project history now
+ * exists. Those files carry no provenance, so they cannot be split back onto
+ * their projects; they are set aside as `<name>.global.bak` (a previous backup
+ * is overwritten) and each project starts its history empty. Best-effort: a
+ * missing source or unwritable dir is a silent no-op that never breaks boot.
+ *
+ * @param tuiDir the `tui` directory holding the legacy global files
+ *   (`$DSH_HOME/tui`, or `~/.dsh/tui`).
+ */
+export function coldCutGlobalHistory(tuiDir: string): void {
+  const moves = {
+    'history.txt': 'history.global.bak',
+    'bash-history.txt': 'bash-history.global.bak',
+  } as const
+  for (const [from, to] of Object.entries(moves)) {
+    const src = join(tuiDir, from)
+    const dst = join(tuiDir, to)
+    // Drop any prior backup (POSIX rename would overwrite it, Windows refuses
+    // to — clearing first makes both platforms behave the same), then move the
+    // legacy global file aside. Missing source is the common no-op.
+    try {
+      rmSync(dst, { force: true })
+    } catch {
+      // Unwritable — best-effort.
+    }
+    try {
+      renameSync(src, dst)
+    } catch {
+      // Missing source (or unwritable dir) — best-effort, never break boot.
+    }
+  }
 }
 
 /**
