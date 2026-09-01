@@ -29,9 +29,11 @@ export async function mountTui(ctx: Context, config: Config): Promise<void> {
   const driver = await createDriver(ctx, {
     ...config.cwd === undefined ? {} : { cwd: config.cwd },
     ...config.agentPreset === undefined ? {} : { agentPreset: config.agentPreset },
-    ...config.sessionId === undefined || config.sessionId.length === 0
+    ...config.sessionId === undefined
       ? {}
       : { sessionId: config.sessionId },
+    ...config.autoResume === undefined ? {} : { autoResume: config.autoResume },
+    ...config.continueRequested === undefined ? {} : { continueRequested: config.continueRequested },
     ...config.provider === undefined || config.provider.length === 0
       ? {}
       : { provider: config.provider },

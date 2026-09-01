@@ -283,6 +283,10 @@ export interface DriverConfig {
   cwd?: string
   agentPreset?: string
   sessionId?: string
+  /** Boot-time resume from the project resume marker (`sessionId` unset). */
+  autoResume?: boolean
+  /** `-c`/`--continue` requested — only affects the no-previous-session notice. */
+  continueRequested?: boolean
   provider?: string
   model?: string
   /** Directory for the persisted history file (defaults to `$DSH_HOME/tui`). */

@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootstrapCommand, continueHint, existingWorktreeDecision, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, resumeMarkerPath, slugRetryDecision, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
+import { bootstrapCommand, existingWorktreeDecision, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, sanitizeInheritedEnv, slugRetryDecision, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ownVersion = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version
@@ -38,7 +38,12 @@ if (add !== undefined) {
   }
 }
 
-const env0 = { ...process.env }
+// A parent dsh-cc TUI process leaks DSH_CC_RESUME_SESSION / DSH_CC_AUTO_RESUME
+// / DSH_CC_CONTINUE into a child launcher's environment. Strip them up front —
+// before any flag is parsed — so the three are re-derived only from THIS
+// invocation's argv (see sanitizeInheritedEnv). In particular an inherited
+// DSH_CC_AUTO_RESUME=1 would otherwise defeat an explicit --new / --worktree.
+const env0 = sanitizeInheritedEnv({ ...process.env })
 
 // `--worktree [name]` is intercepted here (never forwarded to dsh): the
 // launcher creates `<repoRoot>/.claude/worktrees/<slug>` itself and starts
@@ -47,10 +52,10 @@ const env0 = { ...process.env }
 const worktree = parseWorktreeFlag(process.argv.slice(2))
 let spawnCwd
 if (worktree.name !== undefined) {
-  // Isolation: a parent dsh-cc session leaks DSH_CC_RESUME_SESSION in the
-  // environment. --worktree must not inherit it — argv --resume/--new still
-  // win later via interceptResume.
-  delete env0.DSH_CC_RESUME_SESSION
+  // A fresh worktree starts a new session (--new equivalent): set at the end
+  // of this block. A REUSED worktree leaves DSH_CC_RESUME_SESSION undefined,
+  // so interceptResume sets DSH_CC_AUTO_RESUME=1 and the TUI resumes the
+  // project's last session.
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' })
   if (top.error || top.status !== 0) {
     console.error('dsh-cc: --worktree requires a git repository (run from inside a git working tree).')
@@ -112,25 +117,15 @@ if (worktree.name !== undefined) {
   spawnCwd = plan.worktreePath
   const verb = created ? 'created' : 'reusing'
   console.error(`dsh-cc: worktree "${plan.slug}" ${verb} at ${plan.worktreePath} (branch ${plan.branch})`)
-  // A freshly created isolation worktree starts a new session (equivalent to
-  // --new), even if the parent process leaked DSH_CC_RESUME_SESSION.
+  // A freshly created isolation worktree starts a fresh session (equivalent
+  // to --new): the empty sentinel suppresses auto-resume. A reused worktree
+  // leaves the env undefined, so the TUI auto-resumes the project's last
+  // session (per the project model, main checkout and worktree share it).
   // interceptResume still lets an explicit --resume on argv win.
   if (created) env0.DSH_CC_RESUME_SESSION = ''
 }
 
-const { env, args, continueRequested } = interceptResume(undefined, worktree.args, env0)
-let marker = null
-if (env.DSH_CC_RESUME_SESSION === undefined) {
-  const markerCwd = spawnCwd ?? process.cwd()
-  try {
-    marker = readFileSync(resumeMarkerPath(home, markerCwd), 'utf8').trim()
-  } catch {
-    // No marker is the common first-run case.
-  }
-  if (marker !== null && marker.length > 0) env.DSH_CC_RESUME_SESSION = marker
-}
-const hint = continueHint(continueRequested, env.DSH_CC_RESUME_SESSION, marker)
-if (hint !== null) console.error(hint)
+const { env, args } = interceptResume(undefined, worktree.args, env0)
 env.NODE_ENV ??= 'production'
 
 const child = spawn('dsh', ['--profile', PROFILE, ...args], {

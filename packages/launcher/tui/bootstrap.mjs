@@ -3,8 +3,7 @@
  * decision table without spawning dsh.
  */
 
-import { createHash } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 export const PROFILE = 'tui'
 export const BUNDLES = [
@@ -14,12 +13,22 @@ export const BUNDLES = [
 ]
 
 /**
- * Scan dsh-cc args for resume-mode flags. Collection is order-independent:
- * all flags are gathered during the scan, then applied once afterwards with
- * fixed precedence `--resume <id>` / `--resume=<id>` > `--new` > `-c` >
- * default marker. Every resume-mode flag is stripped from the forwarded
- * args; combined shorts (e.g. -cn) are not recognized — each flag must be
- * its own token.
+ * Scan dsh-cc args for resume-mode flags and translate them into the env
+ * contract the TUI plugin consumes. Collection is order-independent: all
+ * flags are gathered during the scan, then applied once afterwards with
+ * fixed precedence `--resume <id>` / `--resume=<id>` > `--new` > `-c`.
+ *
+ * After precedence resolution the env is finished:
+ * - `DSH_CC_CONTINUE='1'` when `-c`/`--continue` was requested (the TUI
+ *   shows a "no previous session to continue" notice when no marker exists).
+ * - `DSH_CC_AUTO_RESUME='1'` exactly when `DSH_CC_RESUME_SESSION` is left
+ *   undefined — i.e. no explicit `--resume`/`--new` chose the session. The
+ *   TUI then reads its own project resume marker. An explicit `--resume` or
+ *   `--new` naturally suppresses AUTO_RESUME.
+ *
+ * Every resume-mode flag is stripped from the forwarded args; combined
+ * shorts (e.g. -cn) are not recognized — each flag must be its own token.
+ * The launcher never reads a marker itself: the TUI owns marker reads.
  *
  * @param {string | undefined} resumeFlag
  * @param {string[]} rest
@@ -65,30 +74,36 @@ export function interceptResume(resumeFlag, rest, env = {}) {
   if (hasResumeId) {
     nextEnv.DSH_CC_RESUME_SESSION = resumeId
   } else if (newSession) {
-    // Empty string is the fresh-session sentinel: the bin skips the marker
-    // read on any defined value and the downstream plugin drops ''.
+    // Empty string is the fresh-session sentinel (--new / freshly created
+    // worktree): the TUI starts fresh and must not read a marker.
     nextEnv.DSH_CC_RESUME_SESSION = ''
   }
+  if (continueRequested) nextEnv.DSH_CC_CONTINUE = '1'
+  if (nextEnv.DSH_CC_RESUME_SESSION === undefined) nextEnv.DSH_CC_AUTO_RESUME = '1'
   return { env: nextEnv, args, continueRequested }
 }
 
 /**
- * Decide whether `-c`/`--continue` has a previous session to continue into.
- * Pure so the bin stays a thin shell. Returns the one-line stderr hint when
- * continue was requested but no resume target exists (an env override —
- * including the empty `--new` sentinel, which already chose fresh — or a
- * non-empty marker); null otherwise.
+ * Strip the launcher-owned resume-session env vars that a parent dsh-cc TUI
+ * process leaks into a child launcher. The launcher must re-derive these
+ * from its own argv only (via {@link interceptResume}): an inherited
+ * `DSH_CC_AUTO_RESUME=1` would otherwise defeat the `--new`/`--worktree`
+ * gate (an explicit fresh start being ignored in favour of auto-resume), and
+ * an inherited `DSH_CC_RESUME_SESSION`/`DSH_CC_CONTINUE` would inject a
+ * session the user never asked this invocation to resume.
  *
- * @param {boolean} requested
- * @param {string | undefined} envTarget
- * @param {string | null} marker
- * @returns {string | null}
+ * Called once at the bin's entry, before any flag is parsed or the worktree
+ * block runs. Returns a NEW object — the input is never mutated.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {Record<string, string | undefined>}
  */
-export function continueHint(requested, envTarget, marker) {
-  if (!requested) return null
-  if (typeof envTarget === 'string') return null
-  if (typeof marker === 'string' && marker.length > 0) return null
-  return 'dsh-cc: no previous session to continue; starting a fresh session.'
+export function sanitizeInheritedEnv(env) {
+  const out = { ...env }
+  delete out.DSH_CC_RESUME_SESSION
+  delete out.DSH_CC_AUTO_RESUME
+  delete out.DSH_CC_CONTINUE
+  return out
 }
 
 /**
@@ -251,28 +266,6 @@ export function worktreeEnv(plan, repoRoot, baseHead) {
       baseHead,
     }),
   }
-}
-
-/**
- * Filename of the cwd-bucketed resume marker. Must stay in lockstep with
- * `resumeMarkerFile` in packages/ui/tui/src/resume-target.ts: sha256 of
- * `path.resolve(cwd)`, first 16 hex chars.
- * @param {string} cwd
- * @returns {string}
- */
-export function resumeMarkerName(cwd) {
-  const key = createHash('sha256').update(resolve(cwd)).digest('hex').slice(0, 16)
-  return `resume-${key}.txt`
-}
-
-/**
- * Absolute path of the cwd-bucketed resume marker under `$DSH_HOME/tui`.
- * @param {string} home - DSH_HOME (typically `~/.dsh`).
- * @param {string} cwd
- * @returns {string}
- */
-export function resumeMarkerPath(home, cwd) {
-  return join(home, 'tui', resumeMarkerName(cwd))
 }
 
 /**

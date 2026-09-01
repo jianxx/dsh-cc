@@ -18,7 +18,7 @@ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { loadHistory, HISTORY_CAP } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
-import { readResumeTarget, writeResumeTarget } from '../resume-target.ts'
+import { writeResumeTarget } from '../resume-target.ts'
 import {
   clearTurn,
   resetTurnStep,
@@ -194,9 +194,14 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
   let markedContent = false
   const persistResumeTarget = (): void => {
     const id = String(current.agent.session.id)
-    const markerOpts = { cwd: rt.cwd }
-    if (readResumeTarget(markerOpts) === id) return
-    writeResumeTarget(id, markerOpts)
+    // The NEW marker keys off the LIVE session's project (a resumed session
+    // created elsewhere writes its own bucket); legacy dual-write stays in
+    // the boot-cwd bucket. Dedupe is internal to writeResumeTarget (F4) —
+    // no read-compare here.
+    writeResumeTarget(id, {
+      cwd: current.agent.session.header.cwd ?? rt.cwd,
+      legacyCwd: rt.cwd,
+    })
   }
 
   // Composer + bash histories: owned here, rebound through get/set seams.

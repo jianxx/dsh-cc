@@ -5,8 +5,6 @@ import {
   planWorktree,
   randomWorktreeSlug,
   existingWorktreeDecision,
-  resumeMarkerName,
-  resumeMarkerPath,
   slugRetryDecision,
   validateWorktreeSlug,
   WORKTREE_ENV,
@@ -146,14 +144,5 @@ describe('existingWorktreeDecision', () => {
     expect(existingWorktreeDecision({ named: true, pathExists: false })).toBe('create')
     expect(existingWorktreeDecision({ named: false, pathExists: true })).toBe('create')
     expect(existingWorktreeDecision({ named: false, pathExists: false })).toBe('create')
-  })
-})
-
-describe('resumeMarkerName', () => {
-  it('hashes resolve(cwd) the same way as the TUI resume-target module', () => {
-    expect(resumeMarkerName('/repo/.claude/worktrees/feat'))
-      .toBe('resume-b42fd0bbc0e3c4cb.txt')
-    expect(resumeMarkerPath('/home/.dsh', '/repo/.claude/worktrees/feat'))
-      .toBe('/home/.dsh/tui/resume-b42fd0bbc0e3c4cb.txt')
   })
 })

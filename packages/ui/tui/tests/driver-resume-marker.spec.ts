@@ -1,15 +1,21 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
-import { readResumeTarget, writeResumeTarget } from '@jianxx/dsh-cc-tui/resume-target.ts'
+import {
+  legacyResumeMarkerFile,
+  readResumeTarget,
+  resumeMarkerFile,
+  writeResumeTarget,
+} from '@jianxx/dsh-cc-tui/resume-target.ts'
 
 /**
  * Fake session shape — one entry per persisted session the harness knows.
  */
 interface FakeSession {
   id: string
+  cwd?: string
   events?: unknown[]
   status?: string
   provider?: string
@@ -212,5 +218,111 @@ describe('createDriver resume marker', () => {
     // The degraded fresh session must not steal the marker (no content yet).
     await driver.dispose()
     expect(readResumeTarget()).toBeUndefined()
+  })
+
+  // --- autoResume / continueRequested boot state machine (§2.3) ------------
+
+  it('regression lock: autoResume false/undefined does not read the marker', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-noread-'))
+    writeResumeTarget('s-old', { cwd })
+    const { ctx, resumeCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+    })
+    const driver = await createDriver(ctx as never, { cwd })
+    expect(resumeCalls).toHaveLength(0)
+    // Marker untouched.
+    expect(readResumeTarget({ cwd })).toBe('s-old')
+    await driver.dispose()
+  })
+
+  it('autoResume true + marker hit resumes that session', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-hit-'))
+    writeResumeTarget('s-b', { cwd })
+    const { ctx, resumeCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      resumeSessions: { 's-b': { id: 's-b', events: [], status: 'idle' } },
+    })
+    const driver = await createDriver(ctx as never, { cwd, autoResume: true })
+    expect(resumeCalls).toHaveLength(1)
+    expect(resumeCalls[0]!.resumeSessionId).toBe('s-b')
+    await driver.dispose()
+  })
+
+  it('autoResume true + no marker + continueRequested -> fresh + notice', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-nomarker-'))
+    const { ctx, resumeCalls, createCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+    })
+    const driver = await createDriver(ctx as never, { cwd, autoResume: true, continueRequested: true })
+    expect(resumeCalls).toHaveLength(0)
+    expect(createCalls).toHaveLength(1)
+    // Assert the notice immediately — the notice TTL clears it on a timer.
+    expect(driver.state.notice).toMatch(/没有可继续/)
+    expect(driver.state.notice).toMatch(/\/resume/)
+    await driver.dispose()
+  })
+
+  it('autoResume true + no marker + continueRequested false -> fresh, no notice', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-nomarker2-'))
+    const { ctx, resumeCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+    })
+    const driver = await createDriver(ctx as never, { cwd, autoResume: true })
+    expect(resumeCalls).toHaveLength(0)
+    expect(driver.state.notice).toBeUndefined()
+    await driver.dispose()
+  })
+
+  it("sessionId '' (explicit --new) beats the marker even with autoResume true", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-new-'))
+    writeResumeTarget('s-b', { cwd })
+    const { ctx, resumeCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      resumeSessions: { 's-b': { id: 's-b', events: [], status: 'idle' } },
+    })
+    const driver = await createDriver(ctx as never, { cwd, sessionId: '', autoResume: true })
+    expect(resumeCalls).toHaveLength(0)
+    await driver.dispose()
+  })
+
+  it('stale marker with autoResume: clear BOTH the new and legacy marker files, degrade to fresh', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-resume-stale-'))
+    writeResumeTarget('s-gone', { cwd })
+    const { ctx, resumeCalls, createCalls } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      resumeSessions: {}, // 's-gone' not registered -> resume throws
+    })
+    const driver = await createDriver(ctx as never, { cwd, autoResume: true })
+
+    expect(resumeCalls).toHaveLength(1)
+    expect(resumeCalls[0]!.resumeSessionId).toBe('s-gone')
+    expect(createCalls).toHaveLength(1)
+    expect(driver.state.notice).toMatch(/已失效/)
+    // Both marker files are blanked (dual clear). `home` here is the `tui`
+    // data dir under DSH_HOME — the same one resume-target derives, so the
+    // paths line up with the driver's writes.
+    const home = join(tempHome, 'tui')
+    expect(readFileSync(resumeMarkerFile({ home, cwd }), 'utf8')).toBe('')
+    expect(readFileSync(legacyResumeMarkerFile({ home, cwd }), 'utf8')).toBe('')
+    await driver.dispose()
+  })
+
+  it('write-key fix: marker lands in the session\'s project bucket; legacy in the boot-cwd bucket', async () => {
+    const bootCwd = mkdtempSync(join(tmpdir(), 'dsh-resume-wk-boot-'))
+    const sessionCwd = mkdtempSync(join(tmpdir(), 'dsh-resume-wk-sess-'))
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', cwd: sessionCwd, events: [], status: 'idle' },
+    })
+    const driver = await createDriver(ctx as never, { cwd: bootCwd })
+    await driver.submit('real prompt') // triggers persistResumeTarget
+
+    const home = join(tempHome, 'tui')
+    // NEW marker (project-keyed) lives in the SESSION's project bucket.
+    expect(readFileSync(resumeMarkerFile({ home, cwd: sessionCwd }), 'utf8').trim())
+      .toBe('s-a')
+    // LEGACY marker (cwd-bucketed) lives in the BOOT cwd bucket.
+    expect(readFileSync(legacyResumeMarkerFile({ home, cwd: bootCwd }), 'utf8').trim())
+      .toBe('s-a')
+    await driver.dispose()
   })
 })
