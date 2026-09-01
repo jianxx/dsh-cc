@@ -283,7 +283,7 @@ describe('createDriver busy input semantics', () => {
     expect(driver.state.queued).toEqual([])
   })
 
-  it('an unknown slash command notices instead of becoming a prompt', async () => {
+  it('an unknown slash falls through as a user prompt (skill-load path)', async () => {
     const agent = makeFakeAgent('idle')
     const { ctx } = makeCtx(agent)
     const baseGet = ctx.get.bind(ctx) as (key: string) => unknown
@@ -293,9 +293,10 @@ describe('createDriver busy input semantics', () => {
     const driver = await createDriver(ctx as never, {})
 
     await driver.submit('/not-a-real-command')
-    expect(driver.state.notice).toContain('Unknown command')
-    expect(driver.state.notice).toContain('/not-a-real-command')
-    expect(agent.followup).not.toHaveBeenCalled()
+    // Registry miss is not an error notice: user-invocable skills load by
+    // sending the typed `/name` as an ordinary user message.
+    expect(driver.state.notice).toBeUndefined()
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['/not-a-real-command'])
   })
 
   it('a successful compact result with a painted compact row does not echo a status row', async () => {

@@ -282,7 +282,9 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
    * Execute a slash command line through the host registry and echo its
    * result text as a status row. Tri-state return:
    * - `null` — no command registry is mounted (already noticed here).
-   * - `undefined` — the registry matched nothing (the caller decides the notice).
+   * - `undefined` — the registry matched nothing. The submit path falls
+   *   through to a user prompt so a typed `/skill-name` can load through
+   *   dsh-tool-skill's gesture boundary; do not notice here.
    * - otherwise the command result.
    */
   const runHarness = async (line: string): Promise<{ kind: string; text?: string } | undefined | null> => {
@@ -292,13 +294,7 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       return null
     }
     const execution = await commands.execute(rt.current.agent, line, [], new AbortController().signal)
-    if (execution === undefined) {
-      // Registry miss: an unknown slash name must never fall through to the
-      // model as a prompt — surface it as a transient notice instead.
-      const name = /^\/([a-z][a-z0-9_-]*)/i.exec(line.trim())?.[1] ?? line.trim().slice(1)
-      showNotice(`Unknown command: /${name}`)
-      return undefined
-    }
+    if (execution === undefined) return undefined
     const result = execution.result
     // A successful `/compact` already painted its compact boundary row —
     // echoing `Compacted N history items…` on top would duplicate it.
