@@ -1,6 +1,6 @@
 {
   "name": "@jianxx/dsh-cc-tui",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude Code-style terminal surface for the dsh tui profile (CC agent preset)",
   "type": "module",
   "main": "lib/index.js",
