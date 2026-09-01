@@ -11,15 +11,13 @@
  * @module
  */
 
-import { readFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { access, readdir, readFile } from 'node:fs/promises'
+import { basename, join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   ccInvocation,
-  discoverCcSkills,
   parseCcFrontmatter,
   parseCcFrontmatterDocument,
-  type CcSkillFile,
   type CcSkillMetadata,
 } from '@jianxx/dsh-cc-skill-loader'
 import { isSkillName, type SkillDefinition } from '@deepseek-ai/dsh-skill'
@@ -29,6 +27,13 @@ import { PROVIDER, registerSkillPathActivator, activationFor } from './skill-sem
 
 /** Skills live under this directory in a plugin root, when present. */
 export const STANDARD_SKILLS_DIR = 'skills'
+
+/** One skill file located under a plugin skill root. */
+interface PluginSkillFile {
+  readonly name: string
+  readonly path: string
+  readonly directory: string
+}
 
 /** The skill registry seam that accepts runtime skill registrations. */
 export interface SkillsSeam {
@@ -71,7 +76,7 @@ export async function mountSkills(options: MountSkillsOptions): Promise<{ dispos
     tally.addSkipped('plugin ships no skills directory or manifest skills paths')
     return { disposers, tally }
   }
-  const files = await discoverCcSkills({ dshHome: resolve(options.pluginRoot), additionalDirs: roots })
+  const files = await collectSkillFiles(roots)
   if (files.length === 0) {
     tally.addSkipped('plugin ships no skills')
     return { disposers, tally }
@@ -87,7 +92,7 @@ export async function mountSkills(options: MountSkillsOptions): Promise<{ dispos
       continue
     }
     const { parsed, body } = loaded
-    const metadata = toMetadata(file, parsed)
+    const metadata = toMetadata(parsed)
     const definition: SkillDefinition = {
       name: file.name,
       description: parsed.description,
@@ -108,18 +113,65 @@ export async function mountSkills(options: MountSkillsOptions): Promise<{ dispos
   return { disposers, tally }
 }
 
-/** Standard plus manifest skills roots, resolved against the plugin root. */
+/** Default `skills/` plus manifest paths; overlay replace drops the default dir. */
 function skillRoots(pluginRoot: string, manifest: CcPluginManifest): string[] {
   const roots: string[] = []
-  roots.push(join(pluginRoot, STANDARD_SKILLS_DIR))
-  for (const path of manifest.skills) {
-    roots.push(resolve(pluginRoot, path))
-  }
+  if (!manifest.skillsReplaceDefault) roots.push(join(pluginRoot, STANDARD_SKILLS_DIR))
+  for (const path of manifest.skills) roots.push(resolve(pluginRoot, path))
   return roots
 }
 
+/**
+ * Collect `SKILL.md` files from plugin skill roots. A root that itself holds
+ * `SKILL.md` is one skill (marketplace overlay listing `./skills/xlsx`);
+ * otherwise scan one-level children (`skills/<name>/SKILL.md`).
+ */
+async function collectSkillFiles(roots: string[]): Promise<PluginSkillFile[]> {
+  const found: PluginSkillFile[] = []
+  const seen = new Set<string>()
+  for (const root of roots) {
+    for (const file of await skillsInRoot(root)) {
+      if (seen.has(file.path)) continue
+      seen.add(file.path)
+      found.push(file)
+    }
+  }
+  return found
+}
+
+async function skillsInRoot(root: string): Promise<PluginSkillFile[]> {
+  const direct = join(root, 'SKILL.md')
+  if (await isReadable(direct)) {
+    return [{ name: basename(root), path: direct, directory: root }]
+  }
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const found: PluginSkillFile[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+    const directory = join(root, entry.name)
+    const path = join(directory, 'SKILL.md')
+    if (!await isReadable(path)) continue
+    found.push({ name: entry.name, path, directory })
+  }
+  return found
+}
+
+async function isReadable(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Read and parse one skill file's frontmatter and body. */
-async function loadSkillFile(file: CcSkillFile): Promise<{ parsed: CcPluginFrontmatter; body: string } | undefined> {
+async function loadSkillFile(file: PluginSkillFile): Promise<{ parsed: CcPluginFrontmatter; body: string } | undefined> {
   let raw: string
   try {
     raw = await readFile(file.path, 'utf8')
@@ -136,11 +188,11 @@ async function loadSkillFile(file: CcSkillFile): Promise<{ parsed: CcPluginFront
 type CcPluginFrontmatter = ReturnType<typeof parseCcFrontmatter> & {}
 
 /** Build CC metadata for a parsed plugin skill, mirroring the provider's view. */
-function toMetadata(file: CcSkillFile, parsed: CcPluginFrontmatter): CcSkillMetadata {
+function toMetadata(parsed: CcPluginFrontmatter): CcSkillMetadata {
   return {
     allowedTools: parsed.allowedTools,
     arguments: parsed.arguments,
-    deprecated: file.deprecated,
+    deprecated: false,
     source: 'additional',
     unknown: parsed.unknown,
     ...parsed.argumentHint !== undefined ? { argumentHint: parsed.argumentHint } : {},

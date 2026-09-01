@@ -105,6 +105,31 @@ describe('mountSkills', () => {
       await dispose()
     }
   })
+
+  it('loads listed skill directories and skips the default skills/ when replace-default', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeSkill(root, 'xlsx', { name: 'xlsx', description: 'Excel' })
+      await writeSkill(root, 'pdf', { name: 'pdf', description: 'PDF' })
+      const ctx = makeContext()
+      const defs: SkillDefinition[] = []
+      const { tally } = await mountSkills({
+        ctx,
+        pluginRoot: root,
+        manifest: parsePluginManifest(
+          { name: 'p', skills: ['./skills/xlsx'] },
+          'p',
+          { skillsReplaceDefault: true },
+        ),
+        skills: { register: (d) => { defs.push(d as unknown as SkillDefinition); return () => {} } },
+        subagentsPresent: true,
+      })
+      expect(tally.result().loaded).toBe(1)
+      expect(defs.map(d => d.name)).toEqual(['xlsx'])
+    } finally {
+      await dispose()
+    }
+  })
 })
 
 describe('registerSkillPathActivator', () => {

@@ -56,10 +56,17 @@ export interface CcPluginManifest {
   readonly author?: unknown
   /** Slash commands from the manifest `commands` field. */
   readonly commands: readonly CcCommand[]
+  /** True when the manifest declared `commands` (even as an empty list). */
+  readonly commandsDeclared: boolean
   /** Agent file paths from the manifest `agents` field. */
   readonly agents: readonly string[]
   /** Skill paths from the manifest `skills` field. */
   readonly skills: readonly string[]
+  /**
+   * When true, do not scan the default `skills/` directory — the listed
+   * `skills` paths replace it (marketplace-root overlay).
+   */
+  readonly skillsReplaceDefault: boolean
   /** Whether the plugin ships a `hooks/` directory or inline `hooks`. */
   readonly hooks?: unknown
   /** MCP server definitions (inline record, or keys from an `.mcp.json`). */

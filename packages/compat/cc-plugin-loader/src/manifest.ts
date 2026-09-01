@@ -14,14 +14,25 @@
 
 import type { CcPluginManifest, CcCommand, CcMcpServer } from './types.ts'
 
+/** Extra flags the resolver threads in (not authored in plugin.json). */
+export interface ParsePluginManifestOptions {
+  /** Marketplace-root overlay: listed `skills` replace the default `skills/` scan. */
+  readonly skillsReplaceDefault?: boolean
+}
+
 /**
  * Validate a raw `plugin.json` object into the loader's typed manifest subset.
  * @param raw - the parsed JSON contents of `plugin.json`.
  * @param source - the plugin name or path used to prefix validation errors.
+ * @param options - resolver flags that are not authored in the JSON.
  * @returns the normalized manifest subset.
  * @throws when the manifest is structurally invalid.
  */
-export function parsePluginManifest(raw: unknown, source: string): CcPluginManifest {
+export function parsePluginManifest(
+  raw: unknown,
+  source: string,
+  options: ParsePluginManifestOptions = {},
+): CcPluginManifest {
   if (!isRecord(raw)) {
     throw new Error(`plugin ${source}: manifest must be a JSON object`)
   }
@@ -37,8 +48,10 @@ export function parsePluginManifest(raw: unknown, source: string): CcPluginManif
     ...typeof raw['description'] === 'string' ? { description: raw['description'] } : {},
     ...raw['author'] !== undefined ? { author: raw['author'] } : {},
     commands,
+    commandsDeclared: raw['commands'] !== undefined,
     agents,
     skills,
+    skillsReplaceDefault: options.skillsReplaceDefault === true,
     ...raw['hooks'] !== undefined ? { hooks: raw['hooks'] } : {},
     mcpServers,
     ...mcpServersPath !== undefined ? { mcpServersPath } : {},

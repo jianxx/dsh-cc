@@ -21,7 +21,11 @@ import { CcPluginsService } from './ccPlugins.ts'
 
 /** Plugin config: which on-disk CC surfaces to mount. */
 export interface Config {
-  /** Directories that each carry a plugin.json. Absent → discovery defaults; explicit [] or null disables. */
+  /**
+   * Directories that each carry a plugin.json (or `.claude-plugin/plugin.json`).
+   * Absent → installed ∩ enabled under `$CLAUDE_CONFIG_DIR` / `~/.claude`;
+   * explicit [] or null disables.
+   */
   pluginDirs?: string[] | null
   /** `.mcp.json` documents whose accepted servers become mcp-client instances. Absent → discovery defaults; explicit [] or null disables. */
   mcpConfigFiles?: string[] | null
@@ -47,11 +51,6 @@ function defaultMcpFiles(): string[] {
     join(homedir(), '.claude', '.mcp.json'),
     join(homedir(), '.claude.json'),
   ]
-}
-
-/** Default Claude Code plugin roots: the user's enabled-plugins dir. */
-function defaultPluginDirs(): string[] {
-  return [join(homedir(), '.claude', 'plugins')]
 }
 
 /**
@@ -84,16 +83,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolveModel = (model: string | undefined) =>
     (ctx.get('ccModelRoutes') as ModelRoutes | undefined)?.resolve(model)
 
-  // 1. Claude Code plugins (each dir = one plugin root holding plugin.json).
-  //    The CcPluginsService tracks every mount so host plugins can enumerate
-  //    and rescan; mountAll performs the same best-effort discovery the glue
-  //    always performed, tolerating any number of absent/invalid roots.
-  const pluginDirs = config.pluginDirs ?? defaultPluginDirs()
-  const plugins = new CcPluginsService(ctx, pluginDirs, resolveModel)
-  const pluginErrors = await plugins.mountAll()
-  for (const { root, error } of pluginErrors) {
-    ctx.logger.warn(`cc-shell-glue: failed to mount CC plugin at ${root}: ${error}`)
-  }
+  // 1. Claude Code plugins. Absent pluginDirs uses installed ∩ enabled;
+  //    explicit []/null disables; a non-empty list flattens those dirs.
+  const plugins = new CcPluginsService(ctx, {
+    ...config.pluginDirs !== undefined ? { pluginDirs: config.pluginDirs } : {},
+    resolveModel,
+  })
+  await plugins.mountAll()
   for (const summary of plugins.list()) {
     const tallies = summary.components
     const loaded = tallies.reduce((n, c) => n + c.loaded, 0)

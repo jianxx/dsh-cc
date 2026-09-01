@@ -59,6 +59,59 @@ describe('mountCommands', () => {
       await dispose()
     }
   })
+
+  it('scans commands/*.md when the manifest omitted commands', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, 'commands/foo.md', '# foo')
+      const defs: Array<{ name: string }> = []
+      const { tally } = mountCommands({
+        pluginRoot: root,
+        manifest: parsePluginManifest({ name: 'p' }, 'p'),
+        commands: { register: (d) => { defs.push(d as never); return () => {} } },
+      })
+      expect(tally.result().loaded).toBe(1)
+      expect(defs.map(d => d.name)).toEqual(['foo'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('does not scan commands/ when the manifest declared commands', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, 'commands/foo.md', '# foo')
+      const defs: Array<{ name: string }> = []
+      const { tally } = mountCommands({
+        pluginRoot: root,
+        manifest: parsePluginManifest({ name: 'p', commands: { hello: { content: 'hi' } } }, 'p'),
+        commands: { register: (d) => { defs.push(d as never); return () => {} } },
+      })
+      expect(tally.result().loaded).toBe(1)
+      expect(defs.map(d => d.name)).toEqual(['hello'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('skips nested command directories with a reason instead of registering them', async () => {
+    const { root, dispose } = await tempPluginRoot()
+    try {
+      await writeFileAt(root, 'commands/sub/x.md', '# nested')
+      await writeFileAt(root, 'commands/bar.md', '# bar')
+      const defs: Array<{ name: string }> = []
+      const { tally } = mountCommands({
+        pluginRoot: root,
+        manifest: parsePluginManifest({ name: 'p' }, 'p'),
+        commands: { register: (d) => { defs.push(d as never); return () => {} } },
+      })
+      expect(defs.map(d => d.name)).toEqual(['bar'])
+      expect(tally.result().skipped).toBeGreaterThanOrEqual(1)
+      expect(tally.result().reasons.some(reason => /nested commands directory/.test(reason))).toBe(true)
+    } finally {
+      await dispose()
+    }
+  })
 })
 
 describe('mountHooks', () => {
