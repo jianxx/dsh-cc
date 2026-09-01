@@ -344,6 +344,8 @@ export interface DriverAgentCtx {
   liveMode(agent: Agent, fallback: string): string
   /** Directory backing prompt/bash-history persistence. */
   historyDir: string | undefined
+  /** Working directory the resume marker is keyed by. */
+  cwd: string
 }
 
 /**

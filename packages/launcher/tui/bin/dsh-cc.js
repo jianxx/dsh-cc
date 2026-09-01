@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootstrapCommand, continueHint, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, slugRetryDecision, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
+import { bootstrapCommand, continueHint, existingWorktreeDecision, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, resumeMarkerPath, slugRetryDecision, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ownVersion = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version
@@ -47,6 +47,10 @@ const env0 = { ...process.env }
 const worktree = parseWorktreeFlag(process.argv.slice(2))
 let spawnCwd
 if (worktree.name !== undefined) {
+  // Isolation: a parent dsh-cc session leaks DSH_CC_RESUME_SESSION in the
+  // environment. --worktree must not inherit it — argv --resume/--new still
+  // win later via interceptResume.
+  delete env0.DSH_CC_RESUME_SESSION
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' })
   if (top.error || top.status !== 0) {
     console.error('dsh-cc: --worktree requires a git repository (run from inside a git working tree).')
@@ -62,6 +66,7 @@ if (worktree.name !== undefined) {
   }
   const named = worktree.name !== null
   let plan = null
+  let created = false
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     let candidate
     try {
@@ -70,10 +75,15 @@ if (worktree.name !== undefined) {
       console.error(`dsh-cc: ${error.message}`)
       process.exit(1)
     }
-    const collision = existsSync(candidate.worktreePath)
+    const pathExists = existsSync(candidate.worktreePath)
+    if (existingWorktreeDecision({ named, pathExists }) === 'reuse') {
+      plan = candidate
+      created = false
+      break
+    }
+    let failure = pathExists
       ? `path already exists: ${candidate.worktreePath}`
       : null
-    let failure = collision
     if (failure === null) {
       const add = spawnSync('git', ['-C', repoRoot, ...worktreeAddArgv(candidate)], { encoding: 'utf8' })
       if (add.error || add.status !== 0) {
@@ -82,6 +92,7 @@ if (worktree.name !== undefined) {
     }
     if (failure === null) {
       plan = candidate
+      created = true
       break
     }
     if (slugRetryDecision({ named, attempt }) === 'fail') {
@@ -99,14 +110,20 @@ if (worktree.name !== undefined) {
   }
   Object.assign(env0, worktreeEnv(plan, repoRoot, head.stdout.trim()))
   spawnCwd = plan.worktreePath
-  console.error(`dsh-cc: worktree "${plan.slug}" at ${plan.worktreePath} (branch ${plan.branch})`)
+  const verb = created ? 'created' : 'reusing'
+  console.error(`dsh-cc: worktree "${plan.slug}" ${verb} at ${plan.worktreePath} (branch ${plan.branch})`)
+  // A freshly created isolation worktree starts a new session (equivalent to
+  // --new), even if the parent process leaked DSH_CC_RESUME_SESSION.
+  // interceptResume still lets an explicit --resume on argv win.
+  if (created) env0.DSH_CC_RESUME_SESSION = ''
 }
 
 const { env, args, continueRequested } = interceptResume(undefined, worktree.args, env0)
 let marker = null
 if (env.DSH_CC_RESUME_SESSION === undefined) {
+  const markerCwd = spawnCwd ?? process.cwd()
   try {
-    marker = readFileSync(join(home, 'tui', 'resume.txt'), 'utf8').trim()
+    marker = readFileSync(resumeMarkerPath(home, markerCwd), 'utf8').trim()
   } catch {
     // No marker is the common first-run case.
   }
