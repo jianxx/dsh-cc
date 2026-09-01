@@ -29,7 +29,7 @@ import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
 import type { DriverConfig } from '../state/driver-types.ts'
 
-import { clearResumeTarget, writeResumeTarget } from '../resume-target.ts'
+import { clearResumeTarget, readResumeTarget, writeResumeTarget } from '../resume-target.ts'
 import { coldCutGlobalHistory, defaultTuiDir } from '../history.ts'
 import { resolveProject } from '../project.ts'
 import { recordProjectSessionId } from '../project-sessions.ts'
@@ -106,7 +106,6 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
 
   const composition = await composePreset(ctx, config.agentPreset ?? 'cc')
-  const sessionId = SessionId(config.sessionId ?? `tui-${randomUUID()}`)
   const cwd = config.cwd ?? process.cwd()
   const selection: ModelSelectionRef = { assembled: undefined, current: undefined }
 
@@ -116,40 +115,62 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     installModelSelection(agentCtx, selection)
   }
 
-  const resume = config.sessionId !== undefined && config.sessionId.length > 0
   const agentOptions = config.provider !== undefined && config.model !== undefined
     ? { provider: config.provider, model: config.model }
     : undefined
-  const createArgs = {
-    sessionId,
+  const createArgs = (id: SessionId) => ({
+    sessionId: id,
     meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
     setup: withSelection,
     ...agentOptions === undefined ? {} : { agentOptions },
+  })
+
+  // Boot session resolution (§2.3): non-empty sessionId → resume that id;
+  // '' → explicit fresh (never read the marker); undefined + autoResume →
+  // read the project marker; else fresh. `SessionId` is never built from ''.
+  let resumeSession: SessionId | undefined
+  let attemptedAutoResume = false
+  let markerFound = false
+  if (config.sessionId !== undefined && config.sessionId.length > 0) {
+    resumeSession = SessionId(config.sessionId)
+  } else if (config.sessionId === '') {
+    resumeSession = undefined
+  } else if (config.autoResume === true) {
+    attemptedAutoResume = true
+    const markerId = readResumeTarget({ cwd })
+    markerFound = markerId !== undefined && markerId.length > 0
+    resumeSession = markerFound ? SessionId(markerId!) : undefined
   }
+
   let resumed = false
   let handle: AgentHandle
-  if (resume) {
+  if (resumeSession !== undefined) {
     try {
       handle = await ctx.agents.resume({
-        resumeSessionId: sessionId,
+        resumeSessionId: resumeSession,
         setup: withSelection,
         ...agentOptions === undefined ? {} : { agentOptions },
       })
       resumed = true
     } catch {
-      // Stale marker: the recorded session is gone. Clear it so the next
-      // `dsh-cc` boot does not loop on the same failure, then degrade to a
-      // fresh session. The empty session must not steal the (now-cleared)
-      // marker — persistResumeTarget only fires after real content.
+      // Stale marker: the recorded session is gone. Clear it so the next boot
+      // does not loop on the same failure, then degrade to a fresh session
+      // (which must not steal the marker — persist only fires on real content).
+      // The dual clear (legacyCwd defaults to cwd) covers both buckets.
       clearResumeTarget({ cwd })
       showNotice('上次会话已失效，已开启新会话，可 /resume 手动选择')
-      handle = await ctx.agents.create({
-        ...createArgs,
-        sessionId: SessionId(`tui-${randomUUID()}`),
-      })
+      handle = await ctx.agents.create(createArgs(SessionId(`tui-${randomUUID()}`)))
     }
   } else {
-    handle = await ctx.agents.create(createArgs)
+    handle = await ctx.agents.create(createArgs(SessionId(`tui-${randomUUID()}`)))
+  }
+
+  // `-c`/`--continue` is the only reason bare boots show a hint: the marker
+  // was checked, nothing to continue, so point the user at /resume. Shown
+  // only when autoResume actually looked at the marker and came up empty
+  // (a stale-marker degrade already surfaced its own notice above).
+  if (attemptedAutoResume && !markerFound && config.continueRequested === true) {
+    showNotice('没有可继续的上一会话，可 /resume 手动选择')
   }
 
   // Rebindable holder: switchSession replaces handle/agent in-place so every
@@ -330,7 +351,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     seedHud,
     seedTodos,
     refreshBranch,
-    writeResumeTarget: (id: string) => writeResumeTarget(id, { cwd }),
+    writeResumeTarget: (id: string) => writeResumeTarget(id, {
+      // NEW marker keys off the LIVE session's project (a switch into a
+      // session created elsewhere writes its own bucket); the legacy one
+      // stays in the boot-cwd bucket (symmetric with the old launcher read).
+      cwd: current.agent.session.header.cwd ?? cwd,
+      legacyCwd: cwd,
+    }),
     setMarkedContent: agent.setMarkedContent,
     rebindHistory,
     recordProjectSession,

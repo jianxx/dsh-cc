@@ -15,6 +15,20 @@ export interface Config {
   cwd?: string
   agentPreset?: string
   sessionId?: string
+  /**
+   * Allow boot-time resume from the project's resume marker. When true (and
+   * `sessionId` is not set), the TUI reads `projects/<projectKey>/resume.txt`
+   * on boot and attaches the most recent session of this project. The
+   * `dsh-cc` launcher sets this for a bare `dsh-cc` launch; false/undefined
+   * default to a fresh session.
+   */
+  autoResume?: boolean
+  /**
+   * `-c`/`--continue` was requested. Only affects the "no previous session
+   * to continue" notice when `autoResume` finds no marker — it does not force
+   * a resume by itself.
+   */
+  continueRequested?: boolean
   provider?: string
   model?: string
   allowNoTty?: boolean
@@ -43,6 +57,8 @@ export const Config: Schema<Config> = Schema.object({
   cwd: Schema.string(),
   agentPreset: Schema.string(),
   sessionId: Schema.string(),
+  autoResume: Schema.boolean(),
+  continueRequested: Schema.boolean(),
   provider: Schema.string(),
   model: Schema.string(),
   allowNoTty: Schema.boolean(),

@@ -95,6 +95,8 @@
         cwd: !!js process.cwd()
         agentPreset: cc
         sessionId: !!js process.env.DSH_CC_RESUME_SESSION
+        autoResume: !!js process.env.DSH_CC_AUTO_RESUME === '1'
+        continueRequested: !!js process.env.DSH_CC_CONTINUE === '1'
         provider: !!js process.env.DSH_CC_PROVIDER
         model: !!js process.env.DSH_CC_MODEL
         # Fullscreen on entry: the transcript scrolls inside a primary
