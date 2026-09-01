@@ -119,7 +119,13 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
     const agent = rt.current.agent
     // cwd and scope are read from the LIVE agent at refresh time — never a
     // captured boot cwd (switchSession rebinds `current` in place).
-    void skillsService.snapshot({ cwd: agent.session.header.cwd, scope: agent })
+    // exactOptionalPropertyTypes: omit cwd when the header has none; do not
+    // pass `undefined` into `{ cwd?: string }`.
+    const cwd = agent.session.header.cwd
+    void skillsService.snapshot({
+      ...cwd === undefined ? {} : { cwd },
+      scope: agent,
+    })
       .then(obs => {
         if (gen !== generation) return // superseded by a newer refresh
         if (!obs.complete) return // incomplete: retain last-good entries
