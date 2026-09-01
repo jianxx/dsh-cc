@@ -24,9 +24,18 @@ import { defaultTheme, type Theme } from './theme.ts'
 export const TRANSCRIPT_LINE_BUDGET = 2000
 
 /** Cheap source-line count for a row (NOT rendered lines). */
-function rowSourceLines(row: TranscriptRow, theme: Theme): number {
+export function rowSourceLines(
+  row: TranscriptRow,
+  theme: Theme,
+  options?: RowRenderOptions,
+): number {
   if (row.kind === 'tool') {
     return 1 + toolOutputLines(row, theme)
+  }
+  if (row.kind === 'compact') {
+    const expanded = options?.compactExpanded ?? false
+    if (!expanded || row.summary.length === 0) return 1
+    return 1 + row.summary.split('\n').length
   }
   return row.text.split('\n').length
 }
@@ -55,6 +64,24 @@ export interface RowRenderOptions {
    * collapsed tool row renders only its head plus a dim summary line.
    */
   toolOutputExpanded?: boolean
+  /** Expand compact rows' summary body; default false (one-line boundary). */
+  compactExpanded?: boolean
+}
+
+/** Collapse-mode line for a compact boundary row. */
+function compactRowText(
+  row: Extract<TranscriptRow, { kind: 'compact' }>,
+  options: RowRenderOptions | undefined,
+  theme: Theme,
+): string {
+  const expanded = options?.compactExpanded ?? false
+  const head = `${row.trigger === 'auto' ? 'Auto-compacted' : 'Compacted'} ${row.items} messages (~${row.tokens} tokens)`
+  if (!expanded) {
+    return theme.muted(theme.italic(`── ${head} — Ctrl+O to show summary ──`))
+  }
+  return row.summary.length > 0
+    ? theme.muted(`── ${head} ──\n${row.summary}`)
+    : theme.muted(`── ${head} ──`)
 }
 
 export function renderRowText(row: TranscriptRow, options?: RowRenderOptions, theme: Theme = defaultTheme): string {
@@ -102,6 +129,8 @@ export function renderRowText(row: TranscriptRow, options?: RowRenderOptions, th
       }
       return headLine
     }
+    case 'compact':
+      return compactRowText(row, options, theme)
     case 'status':
       // Error status rows (turn/end failures) render in the error role; plain
       // status notices stay muted.
@@ -135,6 +164,7 @@ export class TranscriptView extends Container {
   private prevCache = new Map<ChildCacheKey, Component>()
   private prevThinkingExpanded = false
   private prevToolOutputExpanded = true
+  private prevCompactExpanded = false
 
   constructor(theme: Theme = defaultTheme) {
     super()
@@ -144,8 +174,10 @@ export class TranscriptView extends Container {
   setRows(rows: readonly TranscriptRow[], options?: RowRenderOptions): void {
     const thinkingExpanded = options?.thinkingExpanded ?? false
     const toolOutputExpanded = options?.toolOutputExpanded ?? true
+    const compactExpanded = options?.compactExpanded ?? false
     const thinkingFlagChanged = thinkingExpanded !== this.prevThinkingExpanded
     const toolFlagChanged = toolOutputExpanded !== this.prevToolOutputExpanded
+    const compactFlagChanged = compactExpanded !== this.prevCompactExpanded
 
     // Apply the line budget: drop oldest rows until under budget (always keep
     // at least one row so a single huge paste is not emptied entirely). The
@@ -153,9 +185,9 @@ export class TranscriptView extends Container {
     // and only affects rendering.
     const clipped = Array.from(rows)
     let dropped = 0
-    let total = clipped.reduce((sum, r) => sum + rowSourceLines(r, this.theme), 0)
+    let total = clipped.reduce((sum, r) => sum + rowSourceLines(r, this.theme, { compactExpanded }), 0)
     while (total > TRANSCRIPT_LINE_BUDGET && clipped.length > 1) {
-      total -= rowSourceLines(clipped[0]!, this.theme)
+      total -= rowSourceLines(clipped[0]!, this.theme, { compactExpanded })
       clipped.shift()
       dropped++
     }
@@ -181,9 +213,10 @@ export class TranscriptView extends Container {
       const row = item.row
       const stale =
         (thinkingFlagChanged && row.kind === 'thinking') ||
-        (toolFlagChanged && row.kind === 'tool')
+        (toolFlagChanged && row.kind === 'tool') ||
+        (compactFlagChanged && row.kind === 'compact')
       const child = (stale ? undefined : this.prevCache.get(row))
-        ?? buildChild(row, { thinkingExpanded, toolOutputExpanded }, this.theme)
+        ?? buildChild(row, { thinkingExpanded, toolOutputExpanded, compactExpanded }, this.theme)
       cache.set(row, child)
       rowChildren.push(child)
     }
@@ -196,5 +229,6 @@ export class TranscriptView extends Container {
     this.prevCache = cache
     this.prevThinkingExpanded = thinkingExpanded
     this.prevToolOutputExpanded = toolOutputExpanded
+    this.prevCompactExpanded = compactExpanded
   }
 }

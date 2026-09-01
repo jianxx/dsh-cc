@@ -17,6 +17,7 @@ export function createInitialState(permissionMode = 'default'): TuiState {
     queued: [],
     thinkingExpanded: false,
     toolOutputExpanded: true,
+    compactExpanded: false,
     subagents: [],
   }
 }
@@ -142,11 +143,12 @@ export function toggleThinking(state: TuiState): TuiState {
  * collapsed, regardless of how the individual flags got there.
  */
 export function toggleGlobalCollapse(state: TuiState): TuiState {
-  const allExpanded = state.thinkingExpanded && state.toolOutputExpanded
+  const allExpanded = state.thinkingExpanded && state.toolOutputExpanded && state.compactExpanded
   return {
     ...state,
     thinkingExpanded: !allExpanded,
     toolOutputExpanded: !allExpanded,
+    compactExpanded: !allExpanded,
   }
 }
 

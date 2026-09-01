@@ -1,6 +1,64 @@
 import { describe, expect, it } from 'vitest'
 import { createInitialState, enqueue } from '@jianxx/dsh-cc-tui/store.ts'
 import { applySessionEvent } from '@jianxx/dsh-cc-tui/transcript.ts'
+import {
+  dropRowsInRange,
+  extractCompactSummary,
+  isCompactCheckpointSource,
+  shouldEchoCommandResult,
+} from '@jianxx/dsh-cc-tui/compact-fold.ts'
+
+/** Build a compact checkpoint user/message replace event (real shape). */
+function compactCheckpoint(
+  seq: number,
+  opts: { sourceCommandId?: string; start?: number; end?: number } = {},
+): {
+  type: 'user/message'
+  seq: number
+  surfaceOp: { op: 'replace'; start: number; end: number }
+  data: Record<string, unknown>
+} {
+  const source: Record<string, unknown> = {
+    kind: 'plugin',
+    plugin: 'compact',
+    compactionId: 'cca-1',
+    ...opts.sourceCommandId === undefined ? {} : { sourceCommandId: opts.sourceCommandId },
+  }
+  return {
+    type: 'user/message',
+    seq,
+    surfaceOp: { op: 'replace', start: opts.start ?? 10, end: opts.end ?? 20 },
+    data: {
+      content: [
+        { type: 'text', text: 'This is an automatically generated checkpoint...\n\n<compacted-summary>' },
+        { type: 'text', text: '## Primary Request\n- foo' },
+        { type: 'text', text: '</compacted-summary>' },
+      ],
+      source,
+    },
+  }
+}
+
+/** A preceding compaction/summary metering event for the checkpoint above. */
+function compactSummary(
+  seq: number,
+  opts: { items?: number; tokens?: number; sourceCommandId?: string } = {},
+): { type: 'compaction/summary'; seq: number; data: Record<string, unknown> } {
+  return {
+    type: 'compaction/summary',
+    seq,
+    data: {
+      compactionId: 'cca-1',
+      summary: [{ type: 'text', text: '## Primary Request\n- foo' }],
+      shadowedRange: { start: 10, end: 20 },
+      shadowedSeqs: Array.from({ length: opts.items ?? 3 }, (_, i) => 10 + i),
+      shadowedTokenCount: opts.tokens ?? 120,
+      ...opts.sourceCommandId === undefined ? {} : { sourceCommandId: opts.sourceCommandId },
+      provider: 'p',
+      model: 'm',
+    },
+  }
+}
 
 describe('applySessionEvent', () => {
   it('appends user text and streams assistant deltas', () => {
@@ -174,7 +232,7 @@ describe('applySessionEvent', () => {
       expect(next).toBe(state)
     })
 
-    it('renders a notice form as exactly one dim status row with its summary', () => {
+    it('renders an unknown plugin notice form as exactly one dim status row', () => {
       let state = createInitialState()
       state = applySessionEvent(state, {
         type: 'user/message',
@@ -183,6 +241,8 @@ describe('applySessionEvent', () => {
           source: { kind: 'plugin', plugin: 'compaction', form: 'notice', summary: 'Compacted 12 messages' },
         },
       })
+      // `compaction` here is NOT the compact checkpoint plugin — a plain
+      // notice-form plugin message renders its summary as a status row.
       expect(state.rows).toEqual([{ kind: 'status', text: 'Compacted 12 messages' }])
     })
 
@@ -557,5 +617,171 @@ describe('applySessionEvent', () => {
       expect(state.busy).toBe(false)
       expect(state.rows.filter(r => r.kind === 'status')).toHaveLength(0)
     })
+  })
+})
+
+describe('compact checkpoint fold', () => {
+  it('paints ONE compact row for a real checkpoint — manual trigger when sourceCommandId present', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, compactSummary(9, { sourceCommandId: 'cmd-1' }))
+    state = applySessionEvent(state, compactCheckpoint(21, { sourceCommandId: 'cmd-1' }))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'manual', items: 3, tokens: 120, summary: '## Primary Request\n- foo', seq: 21 },
+    ])
+    expect(state.pendingCompact).toBeUndefined()
+  })
+
+  it('marks an auto trigger when no sourceCommandId is present anywhere', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, compactSummary(9))
+    state = applySessionEvent(state, compactCheckpoint(21))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'auto', items: 3, tokens: 120, summary: '## Primary Request\n- foo', seq: 21 },
+    ])
+  })
+
+  it('replace drops seq-tagged rows in range and keeps the tail', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, { type: 'user/message', seq: 10, data: { text: 'old', source: { kind: 'user' } } })
+    state = applySessionEvent(state, { type: 'assistant/chunk', seq: 12, data: { text: 'reply' } })
+    state = applySessionEvent(state, {
+      type: 'tool/call',
+      seq: 15,
+      data: { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' },
+    })
+    state = applySessionEvent(state, { type: 'user/message', seq: 30, data: { text: 'recent', source: { kind: 'user' } } })
+    state = applySessionEvent(state, compactCheckpoint(21, { start: 10, end: 20 }))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'auto', items: 0, tokens: 0, summary: '## Primary Request\n- foo', seq: 21 },
+      { kind: 'user', text: 'recent', seq: 30 },
+    ])
+  })
+
+  it('assistant rows carry the last chunk seq and drop whole when it falls in range', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, { type: 'assistant/chunk', seq: 11, data: { text: 'he' } })
+    state = applySessionEvent(state, { type: 'assistant/chunk', seq: 19, data: { text: 'llo' } })
+    expect(state.rows).toEqual([{ kind: 'assistant', text: 'hello', seq: 19 }])
+    state = applySessionEvent(state, compactCheckpoint(21, { start: 10, end: 20 }))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'auto', items: 0, tokens: 0, summary: '## Primary Request\n- foo', seq: 21 },
+    ])
+  })
+
+  it('non-compact plugin messages stay hidden and notice forms stay status rows', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, {
+      type: 'user/message',
+      seq: 12,
+      surfaceOp: { op: 'replace', start: 10, end: 20 },
+      data: { content: [{ type: 'text', text: 'injected' }], source: { kind: 'plugin', plugin: 'skills', form: 'catalog' } },
+    })
+    expect(state.rows).toEqual([])
+    state = applySessionEvent(state, {
+      type: 'user/message',
+      seq: 13,
+      data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'plugin', plugin: 'some-plugin', form: 'notice', summary: 'note' } },
+    })
+    expect(state.rows).toEqual([{ kind: 'status', text: 'note', seq: 13 }])
+  })
+
+  it('a second replace covering the first compact row seq drops it — only newest remains', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, compactSummary(9, { sourceCommandId: 'cmd-1' }))
+    state = applySessionEvent(state, compactCheckpoint(21, { sourceCommandId: 'cmd-1' }))
+    state = applySessionEvent(state, compactSummary(40, { items: 5, tokens: 300 }))
+    state = applySessionEvent(state, compactCheckpoint(41, { start: 15, end: 45 }))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'auto', items: 5, tokens: 300, summary: '## Primary Request\n- foo', seq: 41 },
+    ])
+  })
+
+  it('full-list reduce equals live sequential apply (foldHistory is a plain reduce)', () => {
+    const events: Parameters<typeof applySessionEvent>[1][] = [
+      { type: 'user/message', seq: 1, data: { text: 'hello', source: { kind: 'user' } } },
+      { type: 'assistant/chunk', seq: 2, data: { text: 'hi' } },
+      { type: 'compaction/summary', seq: 9, data: compactSummary(9).data },
+      compactCheckpoint(21, { sourceCommandId: 'cmd-1', start: 1, end: 20 }),
+      { type: 'user/message', seq: 30, data: { text: 'next', source: { kind: 'user' } } },
+    ]
+    // Same reference shape as foldHistory: a plain reduce over the log.
+    let reduced = createInitialState()
+    for (const event of events) reduced = applySessionEvent(reduced, event)
+    let sequential = createInitialState()
+    for (const event of events) sequential = applySessionEvent(sequential, event)
+    expect(reduced).toEqual(sequential)
+    expect(reduced.rows).toEqual([
+      { kind: 'compact', trigger: 'manual', items: 3, tokens: 120, summary: '## Primary Request\n- foo', seq: 21 },
+      { kind: 'user', text: 'next', seq: 30 },
+    ])
+  })
+
+  it('missing pendingCompact still paints a compact row with items=0 tokens=0', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, compactCheckpoint(21, { sourceCommandId: 'cmd-1' }))
+    expect(state.rows).toEqual([
+      { kind: 'compact', trigger: 'manual', items: 0, tokens: 0, summary: '## Primary Request\n- foo', seq: 21 },
+    ])
+  })
+
+  it('compaction/summary alone paints no row', () => {
+    let state = createInitialState()
+    const next = applySessionEvent(state, compactSummary(9, { sourceCommandId: 'cmd-1' }))
+    expect(next.rows).toEqual([])
+    expect(next.pendingCompact).toEqual({ items: 3, tokens: 120, sourceCommandId: 'cmd-1' })
+  })
+})
+
+describe('compact-fold helpers', () => {
+  it('isCompactCheckpointSource duck-types the compact plugin source', () => {
+    expect(isCompactCheckpointSource({ kind: 'plugin', plugin: 'compact' })).toBe(true)
+    expect(isCompactCheckpointSource({ kind: 'plugin', plugin: 'compact', sourceCommandId: 'cmd-1' })).toBe(true)
+    expect(isCompactCheckpointSource({ kind: 'plugin', plugin: 'compaction' })).toBe(false)
+    expect(isCompactCheckpointSource({ kind: 'user' })).toBe(false)
+    expect(isCompactCheckpointSource(undefined)).toBe(false)
+    expect(isCompactCheckpointSource('compact')).toBe(false)
+  })
+
+  it('extractCompactSummary slices between the summary tags and trims', () => {
+    expect(extractCompactSummary([
+      { type: 'text', text: 'prelude\n\n<compacted-summary>' },
+      { type: 'text', text: '## A\n- b' },
+      { type: 'text', text: '</compacted-summary>' },
+    ])).toBe('## A\n- b')
+    expect(extractCompactSummary([{ type: 'text', text: 'no tags' }])).toBe('')
+    expect(extractCompactSummary(undefined)).toBe('')
+    expect(extractCompactSummary([
+      { type: 'text', text: '</compacted-summary>' },
+      { type: 'text', text: '<compacted-summary>' },
+    ])).toBe('')
+  })
+
+  it('dropRowsInRange drops only tagged rows inside the inclusive range', () => {
+    const rows = [
+      { kind: 'user', text: 'a', seq: 5 },
+      { kind: 'user', text: 'untagged' },
+      { kind: 'status', text: 's', seq: 10 },
+      { kind: 'user', text: 'b', seq: 11 },
+    ] as never[]
+    expect(dropRowsInRange(rows, 5, 10)).toEqual([
+      { kind: 'user', text: 'untagged' },
+      { kind: 'user', text: 'b', seq: 11 },
+    ])
+    expect(dropRowsInRange(rows, 100, 200)).toEqual(rows)
+  })
+
+  it('shouldEchoCommandResult suppresses success echo when a compact row exists', () => {
+    const withCompact = [{ kind: 'compact', trigger: 'manual', items: 1, tokens: 1, summary: '' }]
+    const noCompact = [{ kind: 'user', text: 'hi' }]
+    expect(shouldEchoCommandResult(
+      { kind: 'success', text: 'Compacted 3 history items (~10 tokens).', sourceEventSeq: 99 },
+      withCompact as never[],
+    )).toBe(false)
+    expect(shouldEchoCommandResult(
+      { kind: 'success', text: 'Compacted 3 history items (~10 tokens).', sourceEventSeq: 99 },
+      noCompact as never[],
+    )).toBe(true)
+    expect(shouldEchoCommandResult({ kind: 'error', text: 'boom' }, withCompact as never[])).toBe(true)
+    expect(shouldEchoCommandResult(undefined, withCompact as never[])).toBe(false)
   })
 })

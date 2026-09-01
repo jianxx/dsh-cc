@@ -345,6 +345,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 		transcript.setRows(state.rows, {
 			thinkingExpanded: state.thinkingExpanded,
 			toolOutputExpanded: state.toolOutputExpanded,
+			compactExpanded: state.compactExpanded,
 		})
 
 		queueLine.setText(

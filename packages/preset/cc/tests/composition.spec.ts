@@ -264,7 +264,21 @@ describe('agent.cordis.yml composition', () => {
           (op.b !== -1 && b[op.b].includes('searchTimeoutMs:')) ||
           (op.a !== -1 && a[op.a].trim() === 'disabled: true')
         const isComment = mine.trimStart().startsWith('#') || vend.trimStart().startsWith('#')
-        if (isConfigChange || isComment) continue
+        // Whitelist: the two deliberate name swaps in the compaction group
+        // (row ids stay identical). The CC engine subclass folds /compact
+        // hints into the summarizer; the CC command forwards the free-text
+        // argument instead of rejecting it. Matched both directions so the
+        // LCS may report the swap as one del/add pair or two one-sided ops.
+        const isNameSwap =
+          ((mine.includes("name: '@jianxx/dsh-cc-compaction-basic'")
+            && (vend === '' || vend.includes("name: '@deepseek-ai/dsh-compaction-basic'")))
+          || (mine.includes("name: '@jianxx/dsh-cc-command-compact'")
+            && (vend === '' || vend.includes("name: '@deepseek-ai/dsh-command-compact'")))
+          || (vend.includes("name: '@deepseek-ai/dsh-compaction-basic'")
+            && (mine === '' || mine.includes("name: '@jianxx/dsh-cc-compaction-basic'")))
+          || (vend.includes("name: '@deepseek-ai/dsh-command-compact'")
+            && (mine === '' || mine.includes("name: '@jianxx/dsh-cc-command-compact'"))))
+        if (isConfigChange || isComment || isNameSwap) continue
         diffs.push(
           `${op.type === 'add' ? '+' : '-'}  mine: ${mine}\n` +
             `${op.type === 'del' ? '-' : '+'}  vendored: ${vend}`,

@@ -74,6 +74,9 @@
       "path": "./packages/compaction/compaction-micro"
     },
     {
+      "path": "./packages/compaction/compaction-basic-cc"
+    },
+    {
       "path": "./packages/session/command-cost"
     },
     {
@@ -84,6 +87,9 @@
     },
     {
       "path": "./packages/interaction/command-branch"
+    },
+    {
+      "path": "./packages/interaction/command-compact"
     },
     {
       "path": "./packages/interaction/command-config"

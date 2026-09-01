@@ -473,16 +473,19 @@ describe('toolOutputExpanded / toggleGlobalCollapse', () => {
     const expanded = toggleGlobalCollapse(createInitialState())
     expect(expanded.thinkingExpanded).toBe(true)
     expect(expanded.toolOutputExpanded).toBe(true)
+    expect(expanded.compactExpanded).toBe(true)
     // Everything expanded -> everything collapsed.
     const collapsed = toggleGlobalCollapse(expanded)
     expect(collapsed.thinkingExpanded).toBe(false)
     expect(collapsed.toolOutputExpanded).toBe(false)
+    expect(collapsed.compactExpanded).toBe(false)
     // Mixed (thinking collapsed, tools expanded) -> everything expanded, not
     // a per-flag flip.
     const mixed = createInitialState()
     const next = toggleGlobalCollapse(mixed)
     expect(next.thinkingExpanded).toBe(true)
     expect(next.toolOutputExpanded).toBe(true)
+    expect(next.compactExpanded).toBe(true)
   })
 
   it('expands both flags from the fully-collapsed state', () => {
@@ -491,6 +494,7 @@ describe('toolOutputExpanded / toggleGlobalCollapse', () => {
     state = toggleGlobalCollapse(state) // back to all expanded
     expect(state.thinkingExpanded).toBe(true)
     expect(state.toolOutputExpanded).toBe(true)
+    expect(state.compactExpanded).toBe(true)
   })
 
   it('does not mutate the original state', () => {
@@ -501,6 +505,23 @@ describe('toolOutputExpanded / toggleGlobalCollapse', () => {
     expect(next).not.toBe(state)
     expect(next.thinkingExpanded).toBe(true)
     expect(next.toolOutputExpanded).toBe(true)
+    expect(next.compactExpanded).toBe(true)
+  })
+
+  it('defaults compactExpanded to false and includes it in the all-expanded gate', () => {
+    const fresh = createInitialState()
+    expect(fresh.compactExpanded).toBe(false)
+    // Default state is NOT all-expanded (thinking false, tools true, compact
+    // false) — first toggle expands all three.
+    const expanded = toggleGlobalCollapse(fresh)
+    expect(expanded.thinkingExpanded).toBe(true)
+    expect(expanded.toolOutputExpanded).toBe(true)
+    expect(expanded.compactExpanded).toBe(true)
+    // Second toggle collapses all three.
+    const collapsed = toggleGlobalCollapse(expanded)
+    expect(collapsed.thinkingExpanded).toBe(false)
+    expect(collapsed.toolOutputExpanded).toBe(false)
+    expect(collapsed.compactExpanded).toBe(false)
   })
 })
 

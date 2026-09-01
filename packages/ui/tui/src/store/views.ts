@@ -7,9 +7,9 @@ import type { FileDiff } from '../tool-card.ts'
 import type { TurnAnchor } from '../working-line.ts'
 
 export type TranscriptRow =
-  | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string }
-  | { kind: 'thinking'; text: string }
+  | { kind: 'user'; text: string; seq?: number }
+  | { kind: 'assistant'; text: string; seq?: number }
+  | { kind: 'thinking'; text: string; seq?: number }
   | {
     kind: 'tool'
     callId: string
@@ -22,6 +22,7 @@ export type TranscriptRow =
     running: boolean
     /** Structured file diffs from a presenter's diff-card view; rendered as hunks. */
     diffs?: readonly FileDiff[]
+    seq?: number
   }
   | {
     kind: 'status'
@@ -31,6 +32,19 @@ export type TranscriptRow =
      * of dim. Set by `turn/end` error folding; plain status notices stay dim.
      */
     error?: boolean
+    seq?: number
+  }
+  | {
+    kind: 'compact'
+    /** `'manual'` when a /compact command drove it, `'auto'` for pressure compaction. */
+    trigger: 'manual' | 'auto'
+    /** Shadowed history item count (from the compaction/summary metering). */
+    items: number
+    /** Heuristic tokens the compaction shadowed. */
+    tokens: number
+    /** Extracted `<compacted-summary>` body; '' when unavailable. */
+    summary: string
+    seq?: number
   }
 
 /**
@@ -334,6 +348,14 @@ export interface TuiState {
    * (Ctrl+O). Expanded by default — collapsing is opt-in via the toggle.
    */
   toolOutputExpanded: boolean
+  /** Whether compact rows render their summary body (Ctrl+O). Collapsed by default. */
+  compactExpanded: boolean
+  /**
+   * Metering carried from the `compaction/summary` event to the immediately
+   * following surface replacement, so the compact row can show how much the
+   * checkpoint shadowed. Cleared when a replace consumes it.
+   */
+  pendingCompact?: { items: number; tokens: number; sourceCommandId?: string }
   /** Observed subagent runs (newest appended; capped at 20). */
   subagents: readonly SubagentRunView[]
   /** Statusline HUD (context %, token totals) from the projections feed. */

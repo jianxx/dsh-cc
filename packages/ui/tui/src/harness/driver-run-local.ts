@@ -26,6 +26,7 @@ import {
 import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { shortenSession } from '../statusline.ts'
+import { shouldEchoCommandResult } from '../compact-fold.ts'
 import { clearRows, moveWorktreeExitFocus, openUsagePanel, setWorktreeExit, upsertRow } from '../store.ts'
 import {
   createWorktreeExitHooks,
@@ -291,9 +292,23 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       return null
     }
     const execution = await commands.execute(rt.current.agent, line, [], new AbortController().signal)
-    const result = execution?.result
-    if (result !== undefined && result.text !== undefined && result.text.length > 0) {
-      emit(upsertRow(rt.state(), { kind: 'status', text: result.text }))
+    if (execution === undefined) {
+      // Registry miss: an unknown slash name must never fall through to the
+      // model as a prompt — surface it as a transient notice instead.
+      const name = /^\/([a-z][a-z0-9_-]*)/i.exec(line.trim())?.[1] ?? line.trim().slice(1)
+      showNotice(`Unknown command: /${name}`)
+      return undefined
+    }
+    const result = execution.result
+    // A successful `/compact` already painted its compact boundary row —
+    // echoing `Compacted N history items…` on top would duplicate it.
+    if (result !== undefined && result.text !== undefined && result.text.length > 0
+      && shouldEchoCommandResult(result, rt.state().rows)) {
+      emit(upsertRow(rt.state(), {
+        kind: 'status',
+        text: result.text,
+        ...(result.kind === 'error' ? { error: true } : {}),
+      }))
     }
     return result
   }

@@ -22,6 +22,7 @@ import { writeResumeTarget } from '../resume-target.ts'
 import {
   clearTurn,
   resetTurnStep,
+  setBusy,
   setPermissionMode,
   setTurnActive,
   upsertRow,
@@ -47,6 +48,11 @@ import type { DriverAgentCtx, DriverSessionEventsCtx } from './driver-ctx.ts'
  * the live agent.
  */
 export function attachSessionEvents(rt: DriverSessionEventsCtx): void {
+  // Whether a compact this driver anchored owns the working line: a manual
+  // `/compact` on an IDLE agent starts its own pseudo-turn (busy + anchor),
+  // and its `compaction/end` clears that anchor and flushes the outbox. An
+  // auto-compact riding a live turn never touches the anchor.
+  let compactOwnedTurn = false
   rt.ctx.on('session/event', (session, event: SessionEvent) => {
     // Late events from a disposed session are dropped by id mismatch.
     if (session.id !== rt.current.agent.session.id) return
@@ -54,6 +60,23 @@ export function attachSessionEvents(rt: DriverSessionEventsCtx): void {
     rt.emit(applySessionEvent(rt.state(), event as SessionEventLike, rt.presenters))
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       rt.emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent, rt.state().permissionMode)))
+    }
+    // Manual-compaction working line: an idle agent's `/compact` runs outside
+    // any turn, so anchor the working line for its duration. A live turn's
+    // anchor (auto-compact mid-request) is left untouched.
+    if (eventType === 'compaction/start') {
+      if (rt.state().turn === undefined) {
+        compactOwnedTurn = true
+        rt.emit(setBusy(rt.state(), true))
+        rt.emit(setTurnActive(rt.state(), { startedAt: Date.now(), outputBase: rt.state().hud?.tokens?.output }))
+      }
+    } else if (eventType === 'compaction/end' && compactOwnedTurn) {
+      compactOwnedTurn = false
+      rt.emit(clearTurn(rt.state()))
+      rt.emit(setBusy(rt.state(), false))
+      // Same contract as turn/end: entries submitted during the compaction
+      // flush into the next durable turn.
+      rt.flushQueue()
     }
     // Working-line anchor backstop: a live `turn/start` (or `agent/status`
     // running) can be the first evidence of a turn this UI never saw
