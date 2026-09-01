@@ -18,6 +18,7 @@
 
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 
 /**
@@ -105,15 +106,59 @@ function unquoteWorktreePath(line: string): string {
  * Resolve the project identity for `cwd`. Git is probed via the injectable
  * exec (defaults to real `git`); any failure or timeout degrades to a
  * directory identity (`projectRoot = resolve(cwd)`, no worktrees).
+ *
+ * Results are memoised per resolved `cwd` so every process probes git at
+ * most once per working directory (driver clients call this in hot spots —
+ * boot, picker open, history rebind — and reuse the same identity). Only
+ * default-exec calls participate: an injected `exec` bypasses the cache
+ * entirely, so scripted-exec tests and external probing stay deterministic.
+ * {@link __clearProjectCache} resets the memo (used by tests).
  */
 export function resolveProject(cwd: string, exec: ProjectExec = gitExecSync): ProjectInfo {
+  const key = resolve(cwd)
+  const memoised = exec === gitExecSync ? projectCache.get(key) : undefined
+  if (memoised !== undefined) return memoised
+
+  const info = probeProject(cwd, exec)
+
+  if (exec === gitExecSync) projectCache.set(key, info)
+  return info
+}
+
+/** Module-level memo keyed by `resolve(cwd)` (see {@link resolveProject}). */
+const projectCache = new Map<string, ProjectInfo>()
+
+/** Test hook: drop the module-level memo (also safe as a no-op cleanup). */
+export function __clearProjectCache(): void {
+  projectCache.clear()
+}
+
+/**
+ * Canonicalise a path: `resolve()` then dereference symlinks via realpath so
+ * a repo reached through a symlinked ancestor (e.g. macOS `/var` →
+ * `/private/var`) yields the SAME string whether it came from `resolve(cwd)`,
+ * git's toplevel, or git's common-dir — git may mix realpath'd and non-
+ * realpath'd output for the same directory, which would otherwise split one
+ * project into two keys. Falls back to `resolve()` if realpath fails (e.g.
+ * the path no longer exists).
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/** The uncached git probe (shared by {@link resolveProject} and tests). */
+function probeProject(cwd: string, exec: ProjectExec): ProjectInfo {
   const top = exec(['rev-parse', '--show-toplevel'], cwd)?.stdout.trim()
   if (top === undefined || top.length === 0) return fallbackProject(cwd)
   const commonRaw = exec(['rev-parse', '--git-common-dir'], cwd)?.stdout.trim()
   if (commonRaw === undefined || commonRaw.length === 0) return fallbackProject(cwd)
 
-  const topAbs = resolve(top)
-  const commonDir = resolve(cwd, commonRaw)
+  const topAbs = canonical(top)
+  const commonDir = canonical(resolve(cwd, commonRaw))
   const projectRoot = isLinkedWorktree(commonDir, topAbs) ? dirname(commonDir) : topAbs
 
   // Best-effort worktree enumeration; a failure just yields an empty set —
@@ -124,7 +169,7 @@ export function resolveProject(cwd: string, exec: ProjectExec = gitExecSync): Pr
     for (const line of porcelain.stdout.split('\n')) {
       if (!line.startsWith('worktree ')) continue
       const path = unquoteWorktreePath(line.slice('worktree '.length).trim())
-      if (path.length > 0) worktrees.push(resolve(path))
+      if (path.length > 0) worktrees.push(canonical(path))
     }
   }
 

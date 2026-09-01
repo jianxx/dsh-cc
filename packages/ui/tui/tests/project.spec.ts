@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  __clearProjectCache,
   gitExecSync,
   isProjectMember,
   resolveProject,
@@ -172,5 +176,62 @@ describe('isProjectMember', () => {
 
   it('rejects entries outside every candidate path', () => {
     expect(isProjectMember('/repo-other', project)).toBe(false)
+  })
+})
+
+describe('resolveProject memo', () => {
+  /** A real, non-git directory so the default exec probes real git and fails. */
+  function plainCwd(prefix = 'dsh-memo-'): string {
+    return mkdtempSync(join(tmpdir(), prefix))
+  }
+
+  beforeEach(() => __clearProjectCache())
+  afterEach(() => __clearProjectCache())
+
+  it('same cwd twice returns the same object identity; clear returns a fresh one', () => {
+    const cwd = plainCwd()
+    const a = resolveProject(cwd)
+    const b = resolveProject(cwd)
+    expect(b).toBe(a) // memoised: identical object, single probe
+    __clearProjectCache()
+    const c = resolveProject(cwd)
+    expect(c).not.toBe(a) // cache cleared → recomputed
+    expect(c.projectRoot).toBe(a.projectRoot)
+  })
+
+  it('memoisation is keyed by the resolved cwd', () => {
+    const cwd = plainCwd()
+    const a = resolveProject(cwd)
+    // A different (unresolved) spelling that resolves to the same path hits
+    // the same bucket — verify via a second identical call returning the
+    // same object, and a sibling dir returning a different one.
+    const sib = plainCwd('dsh-memo-sib-')
+    expect(resolveProject(sib)).not.toBe(a)
+    expect(resolveProject(cwd)).toBe(a)
+  })
+
+  it('injected exec bypasses the cache and does not populate it', () => {
+    const cwd = plainCwd()
+    const fakeGit = scriptedExec({
+      'rev-parse --show-toplevel': { stdout: '/fake-repo\n' },
+      'rev-parse --git-common-dir': { stdout: '/fake-repo/.git\n' },
+      'worktree list --porcelain': { stdout: 'worktree /fake-repo\n' },
+    })
+    const viaFake = resolveProject(cwd, fakeGit)
+    expect(viaFake.projectRoot).toBe('/fake-repo')
+
+    // The fake call must not have warmed the cache: a subsequent default-exec
+    // call on the same (non-git) cwd resolves to the directory, not the fake.
+    const viaDefault = resolveProject(cwd)
+    expect(viaDefault.projectRoot).toBe(resolve(cwd))
+    expect(viaDefault).not.toBe(viaFake)
+  })
+
+  it('multiple distinct cwds are memoised independently', () => {
+    const one = plainCwd('dsh-memo-1-')
+    const two = plainCwd('dsh-memo-2-')
+    expect(resolveProject(one)).toBe(resolveProject(one))
+    expect(resolveProject(two)).toBe(resolveProject(two))
+    expect(resolveProject(one)).not.toBe(resolveProject(two))
   })
 })
