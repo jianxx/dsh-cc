@@ -44,37 +44,44 @@ describe('filterSessions', () => {
     { id: 'other-proj', cwd: '/other', createdAt: 2, title: 'Other thing' },
     { id: 'no-cwd', createdAt: 3 },
   )
+  /** Stand-in for the driver's project-membership closure. */
+  const inProj = (e: SessionListEntry): boolean => e.cwd === '/proj'
 
-  it('cwd scope keeps only same-project entries (cwd-less entries drop out)', () => {
-    expect(filterSessions(list, { cwd: '/proj', scope: 'cwd', query: '' }).map(e => e.id))
+  it('cwd scope keeps only entries the membership predicate accepts', () => {
+    expect(filterSessions(list, { isMember: inProj, scope: 'cwd', query: '' }).map(e => e.id))
       .toEqual(['in-proj'])
+  })
+
+  it('cwd scope can accept by id (sidecar index) regardless of cwd', () => {
+    const indexed = (e: SessionListEntry): boolean => e.id === 'no-cwd'
+    expect(filterSessions(list, { isMember: indexed, scope: 'cwd', query: '' }).map(e => e.id))
+      .toEqual(['no-cwd'])
   })
 
   it('scope all keeps every entry including other projects and cwd-less ones', () => {
-    expect(filterSessions(list, { cwd: '/proj', scope: 'all', query: '' }).map(e => e.id))
+    expect(filterSessions(list, { isMember: inProj, scope: 'all', query: '' }).map(e => e.id))
       .toEqual(['in-proj', 'other-proj', 'no-cwd'])
   })
 
-  it('a missing or empty cwd keeps all entries even in cwd scope', () => {
-    expect(filterSessions(list, { cwd: undefined, scope: 'cwd', query: '' })).toHaveLength(3)
-    expect(filterSessions(list, { cwd: '', scope: 'cwd', query: '' })).toHaveLength(3)
+  it('a missing membership predicate keeps all entries even in cwd scope', () => {
+    expect(filterSessions(list, { scope: 'cwd', query: '' })).toHaveLength(3)
   })
 
   it('query matches title, id, or cwd case-insensitively and trims whitespace', () => {
-    expect(filterSessions(list, { cwd: undefined, scope: 'all', query: '  PICKER  ' }).map(e => e.id))
+    expect(filterSessions(list, { scope: 'all', query: '  PICKER  ' }).map(e => e.id))
       .toEqual(['in-proj'])
-    expect(filterSessions(list, { cwd: undefined, scope: 'all', query: 'IN-PROJ' }).map(e => e.id))
+    expect(filterSessions(list, { scope: 'all', query: 'IN-PROJ' }).map(e => e.id))
       .toEqual(['in-proj'])
-    expect(filterSessions(list, { cwd: undefined, scope: 'all', query: '/other' }).map(e => e.id))
+    expect(filterSessions(list, { scope: 'all', query: '/other' }).map(e => e.id))
       .toEqual(['other-proj'])
   })
 
   it('a query with no match yields an empty list', () => {
-    expect(filterSessions(list, { cwd: undefined, scope: 'all', query: 'zzz' })).toEqual([])
+    expect(filterSessions(list, { scope: 'all', query: 'zzz' })).toEqual([])
   })
 
   it('applies scope first, then the query', () => {
-    expect(filterSessions(list, { cwd: '/proj', scope: 'cwd', query: 'other' })).toEqual([])
+    expect(filterSessions(list, { isMember: inProj, scope: 'cwd', query: 'other' })).toEqual([])
   })
 
   it('does not re-sort the filtered list', () => {
@@ -83,7 +90,7 @@ describe('filterSessions', () => {
       { id: 'a', createdAt: 1, title: 'same' },
       { id: 'b', createdAt: 2, title: 'same' },
     )
-    expect(filterSessions(unsorted, { cwd: undefined, scope: 'all', query: 'same' }).map(e => e.id))
+    expect(filterSessions(unsorted, { scope: 'all', query: 'same' }).map(e => e.id))
       .toEqual(['c', 'a', 'b'])
   })
 
@@ -94,10 +101,10 @@ describe('filterSessions', () => {
       { id: 'child-b', cwd: '/proj', createdAt: 3, parentSession: 'root', title: 'Root work' },
       { id: 'other-root', cwd: '/proj', createdAt: 4, title: 'Other work' },
     )
-    expect(filterSessions(forked, { cwd: '/proj', scope: 'cwd', query: '' }).map(e => e.id))
+    expect(filterSessions(forked, { isMember: inProj, scope: 'cwd', query: '' }).map(e => e.id))
       .toEqual(['root', 'other-root'])
     expect(filterSessions(forked, {
-      cwd: '/proj',
+      isMember: inProj,
       scope: 'cwd',
       query: '',
       currentId: 'child-a',

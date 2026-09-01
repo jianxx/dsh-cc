@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
+import { recordProjectSessionId } from '@jianxx/dsh-cc-tui/project-sessions.ts'
 import { readResumeTarget } from '@jianxx/dsh-cc-tui/resume-target.ts'
 
 /**
@@ -553,11 +555,49 @@ describe('createDriver /resume session switcher overlay', () => {
     const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
 
     await driver.submit('/resume')
-
     // The overlay still opens (Tab can reveal the rest) — no status fallback.
     expect(driver.state.sessionSwitcher?.sessions).toEqual([])
     expect(driver.state.sessionSwitcher?.totalCount).toBe(1)
     expect(driver.state.sessionSwitcher?.focused).toBe(0)
+  })
+
+  it('project scope shows subdirectory/worktree-cwd sessions of the same repo', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-cur', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-cur', createdAt: 1000 },
+        { id: 's-sub', cwd: '/proj/packages/x', createdAt: 2000 },
+        { id: 's-wt', cwd: '/proj/.claude/worktrees/feat', createdAt: 3000 },
+        { id: 's-sibling', cwd: '/proj2', createdAt: 4000 },
+      ],
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+
+    const ids = driver.state.sessionSwitcher?.sessions.map(s => s.id)
+    expect(ids).toContain('s-sub')
+    expect(ids).toContain('s-wt')
+    // Prefix boundary: a sibling directory is NOT part of the project.
+    expect(ids).not.toContain('s-sibling')
+  })
+
+  it('project scope shows sidecar-indexed sessions recorded under a foreign cwd', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-cur', events: [], status: 'idle' },
+      sessionList: [
+        { id: 's-cur', createdAt: 1000 },
+        { id: 's-pinned', cwd: '/elsewhere', createdAt: 2000 },
+      ],
+    })
+    // Pin the foreign-cwd session in /proj's bucket (as a switch into it
+    // from within this project would have done).
+    const key = createHash('sha256').update(resolve(PROJ_CWD)).digest('hex').slice(0, 16)
+    recordProjectSessionId(join(tempHome, 'tui', 'projects', key), 's-pinned')
+
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await driver.submit('/resume')
+
+    expect(driver.state.sessionSwitcher?.sessions.map(s => s.id)).toContain('s-pinned')
   })
 
   it('types a query filter, backspaces it away, and refilters with focus tracking', async () => {

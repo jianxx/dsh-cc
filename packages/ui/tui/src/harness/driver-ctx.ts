@@ -220,6 +220,18 @@ export interface DriverSessionsCtx {
   writeResumeTarget(id: string): void
   /** Set the `markedContent` flag (createDriver owns the binding). */
   setMarkedContent(value: boolean): void
+  /**
+   * Rebind prompt/bash history onto the project of the switched session's
+   * cwd (reloads both from disk). No-op for same-project switches and when
+   * an explicit historyDir pins the bucket.
+   */
+  rebindHistory(sessionCwd: string | undefined): void
+  /**
+   * Pin a session id in the sidecar index of the project that owns
+   * `sessionCwd` (falling back to the process cwd), so the /resume picker's
+   * project scope has an exact membership record. Best-effort.
+   */
+  recordProjectSession(sessionId: string, sessionCwd: string | undefined): void
   /** Drain the shared approval/question FIFO (returns parked entries). */
   spliceAll(): ModalEntry[]
   /** The agent setup closure (wraps presetSetup + installModelSelection). */

@@ -272,7 +272,11 @@ export function createSessionSwitcherBox(sw: SessionSwitcherView, theme: Theme =
       const row = formatSessionRow(session, {
         now: Date.now(),
         currentId: sw.currentId,
-        showCwd: sw.scope === 'all',
+        // All scope labels every row; cwd (project) scope labels only rows
+        // recorded elsewhere — worktree / subdirectory sessions of the same
+        // project — so they stay distinguishable from same-cwd ones.
+        showCwd: sw.scope === 'all'
+          || (session.cwd !== undefined && sw.cwd !== undefined && session.cwd !== sw.cwd),
       })
       const marker = sw.focused === index ? '❯ ' : '  '
       const currentMark = row.current ? ' ●' : ''
