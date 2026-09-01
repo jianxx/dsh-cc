@@ -98,6 +98,12 @@
       "@jianxx/dsh-cc-compaction-micro": [
         "./packages/compaction/compaction-micro/src/index.ts"
       ],
+      "@jianxx/dsh-cc-compaction-basic": [
+        "./packages/compaction/compaction-basic-cc/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-compact": [
+        "./packages/interaction/command-compact/src/index.ts"
+      ],
       "@jianxx/dsh-cc-command-cost": [
         "./packages/session/command-cost/src/index.ts"
       ],

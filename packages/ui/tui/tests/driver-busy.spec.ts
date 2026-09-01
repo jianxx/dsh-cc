@@ -237,6 +237,104 @@ describe('createDriver busy input semantics', () => {
     const interrupted = driver.state.rows.filter(r => r.kind === 'status' && r.text.includes('Interrupted'))
     expect(interrupted).toHaveLength(1)
   })
+
+  it('compaction/start anchors a working line on an idle agent (manual compact is busy)', async () => {
+    const agent = makeFakeAgent('idle')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+    expect(driver.state.busy).toBe(false)
+
+    emitSession({ type: 'compaction/start', data: { compactionId: 'c1', turn: null } })
+    expect(driver.state.busy).toBe(true)
+    expect(driver.state.turn).toBeDefined()
+  })
+
+  it('compaction/start during a live turn keeps the existing anchor (auto-compact)', async () => {
+    const agent = makeFakeAgent('running')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+    expect(driver.state.busy).toBe(true)
+    const startedAt = driver.state.turn?.startedAt
+    expect(startedAt).toBeDefined()
+    await new Promise(resolve => setTimeout(resolve, 5))
+
+    emitSession({ type: 'compaction/start', data: { compactionId: 'c1', turn: null } })
+    expect(driver.state.busy).toBe(true)
+    expect(driver.state.turn?.startedAt).toBe(startedAt)
+    // The turn belongs to the live request — compaction/end must not clear it.
+    emitSession({ type: 'compaction/end', data: { compactionId: 'c1', turn: null } })
+    expect(driver.state.turn?.startedAt).toBe(startedAt)
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('idle manual compact: submit queues while busy; compaction/end flushes via followup', async () => {
+    const agent = makeFakeAgent('idle')
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    emitSession({ type: 'compaction/start', data: { compactionId: 'c1', turn: null } })
+    expect(driver.state.busy).toBe(true)
+    await driver.submit('queued during compact')
+    expect(driver.state.queued).toEqual(['queued during compact'])
+    expect(agent.followup).not.toHaveBeenCalled()
+
+    emitSession({ type: 'compaction/end', data: { compactionId: 'c1', turn: null } })
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['queued during compact'])
+    expect(driver.state.queued).toEqual([])
+  })
+
+  it('an unknown slash falls through as a user prompt (skill-load path)', async () => {
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const baseGet = ctx.get.bind(ctx) as (key: string) => unknown
+    ctx.get = (key: string) => key === 'commands'
+      ? { execute: async () => undefined }
+      : baseGet(key)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('/not-a-real-command')
+    // Registry miss is not an error notice: user-invocable skills load by
+    // sending the typed `/name` as an ordinary user message.
+    expect(driver.state.notice).toBeUndefined()
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['/not-a-real-command'])
+  })
+
+  it('a successful compact result with a painted compact row does not echo a status row', async () => {
+    const agent = makeFakeAgent('idle')
+    const { ctx, emitSession } = makeCtx(agent)
+    const baseGet = ctx.get.bind(ctx) as (key: string) => unknown
+    ctx.get = (key: string) => key === 'commands'
+      ? {
+          execute: async () => ({
+            result: { kind: 'success', text: 'Compacted 3 history items (~10 tokens).', sourceEventSeq: 99 },
+          }),
+        }
+      : baseGet(key)
+    const driver = await createDriver(ctx as never, {})
+
+    emitSession({ type: 'compaction/summary', seq: 9, data: { shadowedSeqs: [1, 2, 3], shadowedTokenCount: 10, sourceCommandId: 'cmd-1' } })
+    emitSession({ type: 'user/message', seq: 10, surfaceOp: { op: 'replace', start: 1, end: 3 }, data: { content: [{ type: 'text', text: '<compacted-summary>body</compacted-summary>' }], source: { kind: 'plugin', plugin: 'compact', sourceCommandId: 'cmd-1' } } })
+    expect(driver.state.rows.some(r => r.kind === 'compact')).toBe(true)
+
+    await driver.submit('/compact')
+    const echoes = driver.state.rows.filter(r => r.kind === 'status' && r.text.includes('Compacted 3 history items'))
+    expect(echoes).toHaveLength(0)
+  })
+
+  it('a failed compact result still echoes as an error status row', async () => {
+    const agent = makeFakeAgent('idle')
+    const { ctx } = makeCtx(agent)
+    const baseGet = ctx.get.bind(ctx) as (key: string) => unknown
+    ctx.get = (key: string) => key === 'commands'
+      ? { execute: async () => ({ result: { kind: 'error', text: 'No compactable history yet.' } }) }
+      : baseGet(key)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('/compact')
+    const rows = driver.state.rows.filter(r => r.kind === 'status' && r.text === 'No compactable history yet.')
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as { error?: boolean }).error).toBe(true)
+  })
 })
 
 describe('createDriver composer history persistence', () => {

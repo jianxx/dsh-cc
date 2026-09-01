@@ -199,3 +199,25 @@ describe('rowsToMarkdown', () => {
     expect(lines('x\n')).toEqual(['x'])
   })
 })
+
+describe('compact rows', () => {
+  it('exports a compact row as an italic one-liner plus a details summary block', () => {
+    const md = rowsToMarkdown([{
+      kind: 'compact',
+      trigger: 'manual',
+      items: 328,
+      tokens: 119542,
+      summary: '## Primary Request\n- foo',
+    }])
+    expect(md).toBe(
+      '*Compacted 328 messages (~119542 tokens)*\n\n'
+      + '<details>\n<summary>compacted summary</summary>\n\n'
+      + '## Primary Request\n- foo\n\n</details>\n',
+    )
+  })
+
+  it('prefixes Auto-compacted for the auto trigger', () => {
+    const md = rowsToMarkdown([{ kind: 'compact', trigger: 'auto', items: 4, tokens: 500, summary: '' }])
+    expect(md).toBe('*Auto-compacted 4 messages (~500 tokens)*\n')
+  })
+})

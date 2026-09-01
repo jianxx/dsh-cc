@@ -14,13 +14,22 @@ import {
   setBusy,
   setPermissionMode,
   upsertRow,
+  type TranscriptRow,
   type TuiState,
 } from './store.ts'
+import { dropRowsInRange, extractCompactSummary, isCompactCheckpointSource } from './compact-fold.ts'
 
-/** Minimal session-event face the TUI understands. */
+/**
+ * Minimal session-event face the TUI understands. `seq` tags created rows so
+ * a surface replacement can drop exactly the replaced span; `surfaceOp`
+ * mirrors the session surface contract (plain `'append'` or a positional
+ * `'replace'` range).
+ */
 export interface SessionEventLike {
   readonly type: string
   readonly data?: unknown
+  readonly seq?: number
+  readonly surfaceOp?: 'append' | { op: 'replace'; start: number; end: number }
 }
 
 /** Optional presenters looked up by tool name (agent-scoped registry). */
@@ -139,13 +148,83 @@ function chunkText(data: unknown): string {
 }
 
 /**
+ * Seq tag for rows created by `event`: rows carry the log position that
+ * produced them so a surface `replace` can drop the exact replaced span.
+ * Omitted (key absent) when the envelope carries no seq.
+ */
+function seqTag(event: SessionEventLike): { seq: number } | Record<string, never> {
+  return typeof event.seq === 'number' ? { seq: event.seq } : {}
+}
+
+/** The surface-replacement range of a `user/message`, when it replaces. */
+function replaceOpOf(
+  event: SessionEventLike,
+): { start: number; end: number } | undefined {
+  const op = event.surfaceOp
+  if (typeof op !== 'object' || op === null || op.op !== 'replace') return undefined
+  return typeof op.start === 'number' && typeof op.end === 'number' ? { start: op.start, end: op.end } : undefined
+}
+
+/** Drop `pendingCompact` (exactOptionalPropertyTypes-safe field removal). */
+function withoutPendingCompact(state: TuiState): TuiState {
+  const { pendingCompact: _dropped, ...rest } = state
+  return rest
+}
+
+/**
+ * Apply one surface replacement: drop the replaced span from the transcript
+ * and — when the replacement is a compact checkpoint — paint the collapsible
+ * compact boundary at the cut point using the metering armed by the adjacent
+ * `compaction/summary`. Non-checkpoint replacements just shrink the visible
+ * transcript (the model sees the same surface).
+ */
+function applySurfaceReplace(
+  state: TuiState,
+  event: SessionEventLike,
+  op: { start: number; end: number },
+): TuiState {
+  const data = event.data
+  const source = data !== null && typeof data === 'object'
+    ? (data as { source?: unknown }).source
+    : undefined
+  const rows = dropRowsInRange(state.rows, op.start, op.end)
+  if (!isCompactCheckpointSource(source)) {
+    return withoutPendingCompact({ ...state, rows })
+  }
+  const pending = state.pendingCompact
+  const sourceCommandId = pending?.sourceCommandId
+    ?? (source !== null && typeof source === 'object'
+      && typeof (source as { sourceCommandId?: unknown }).sourceCommandId === 'string'
+      ? (source as { sourceCommandId: string }).sourceCommandId
+      : undefined)
+  const compact: TranscriptRow = {
+    kind: 'compact',
+    trigger: sourceCommandId === undefined ? 'auto' : 'manual',
+    items: pending?.items ?? 0,
+    tokens: pending?.tokens ?? 0,
+    summary: extractCompactSummary((data as { content?: unknown }).content),
+    ...seqTag(event),
+  }
+  // Insert at the cut point: before the first surviving row past the
+  // replaced range (or the tail when the compaction kept nothing newer).
+  const insertAt = rows.findIndex(row => {
+    const seq = (row as { seq?: unknown }).seq
+    return typeof seq === 'number' && seq > op.end
+  })
+  const withCompact = insertAt === -1
+    ? [...rows, compact]
+    : [...rows.slice(0, insertAt), compact, ...rows.slice(insertAt)]
+  return withoutPendingCompact({ ...state, rows: withCompact })
+}
+
+/**
  * Fold a tool-call-delta chunk into the pending tool row, accumulating
  * `argumentsDelta` per callId. Presenters are NOT invoked on partial JSON;
  * the durable tool/call finalizes the card through the existing callId
  * upsert. A delta arriving after the row was finalized (running:false with
  * a result) is ignored — durable order normally prevents this.
  */
-function foldToolCallDelta(state: TuiState, chunk: ToolCallDeltaChunk): TuiState {
+function foldToolCallDelta(state: TuiState, chunk: ToolCallDeltaChunk, seq: number | undefined): TuiState {
   const callId = String(chunk.id)
   const carriedName = typeof chunk.name === 'string' && chunk.name.length > 0 ? chunk.name : undefined
   const existing = state.rows.find(row => row.kind === 'tool' && row.callId === callId)
@@ -163,6 +242,7 @@ function foldToolCallDelta(state: TuiState, chunk: ToolCallDeltaChunk): TuiState
       ...existing.result !== undefined ? { result: existing.result } : {},
       ...existing.error !== undefined ? { error: existing.error } : {},
       running: true,
+      ...seq === undefined ? {} : { seq },
     }), true)
   }
   const initialName = carriedName ?? 'tool'
@@ -173,6 +253,7 @@ function foldToolCallDelta(state: TuiState, chunk: ToolCallDeltaChunk): TuiState
     args: chunk.argumentsDelta,
     title: initialName,
     running: true,
+    ...seq === undefined ? {} : { seq },
   }), true)
 }
 
@@ -190,6 +271,11 @@ export function applySessionEvent(
   const data = event.data
   switch (event.type) {
     case 'user/message': {
+      // A surface replacement follows the compact seam: drop the replaced
+      // span and (for the checkpoint) paint the compact boundary. Busy and
+      // turn anchoring stay driver-side.
+      const replace = replaceOpOf(event)
+      if (replace !== undefined) return applySurfaceReplace(state, event, replace)
       // Route on UserMessage.source.kind: only human input renders as a user
       // row. Injected context (kind 'plugin') is model-facing — a notice form
       // surfaces as a one-line dim status per its contract, every other form
@@ -207,7 +293,7 @@ export function applySessionEvent(
         if (kind === 'plugin') {
           const plugin = source as { form?: unknown; summary?: unknown }
           if (plugin.form === 'notice' && typeof plugin.summary === 'string') {
-            return upsertRow(state, { kind: 'status', text: plugin.summary })
+            return upsertRow(state, { kind: 'status', text: plugin.summary, ...seqTag(event) })
           }
         }
         return state
@@ -219,14 +305,31 @@ export function applySessionEvent(
       // user re-queued in the meantime. Empty or whitespace-only text adds no
       // row (no blank `> ` lines).
       if (text.trim().length === 0) return state
-      return upsertRow(state, { kind: 'user', text })
+      return upsertRow(state, { kind: 'user', text, ...seqTag(event) })
+    }
+    case 'compaction/summary': {
+      // Metering for the immediately following surface replacement: park the
+      // shadowed accounting on state; the replacement paints the compact row.
+      const record = data !== null && typeof data === 'object'
+        ? (data as { shadowedSeqs?: unknown; shadowedTokenCount?: unknown; sourceCommandId?: unknown })
+        : {}
+      const items = Array.isArray(record.shadowedSeqs) ? record.shadowedSeqs.length : 0
+      const tokens = typeof record.shadowedTokenCount === 'number' ? record.shadowedTokenCount : 0
+      return {
+        ...state,
+        pendingCompact: {
+          items,
+          tokens,
+          ...typeof record.sourceCommandId === 'string' ? { sourceCommandId: record.sourceCommandId } : {},
+        },
+      }
     }
     case 'assistant/chunk': {
       const chunk = unwrapChunk(data)
-      if (isToolCallDelta(chunk)) return foldToolCallDelta(state, chunk)
+      if (isToolCallDelta(chunk)) return foldToolCallDelta(state, chunk, event.seq)
       const text = chunkText(data)
       if (text.length === 0) return setBusy(state, true)
-      return setBusy(upsertRow(state, { kind: chunkKind(data), text }), true)
+      return setBusy(upsertRow(state, { kind: chunkKind(data), text, ...seqTag(event) }), true)
     }
     case 'assistant/message':
       return setBusy(state, false)
@@ -245,6 +348,7 @@ export function applySessionEvent(
         ...card.body === undefined ? {} : { body: card.body },
         ...diffs !== undefined ? { diffs } : {},
         running: true,
+        ...seqTag(event),
       })
     }
     case 'tool/result': {
@@ -271,6 +375,7 @@ export function applySessionEvent(
         ...diffs !== undefined ? { diffs } : {},
         error: card.error,
         running: false,
+        ...seqTag(event),
       })
     }
     case 'turn/start':
@@ -295,13 +400,13 @@ export function applySessionEvent(
         const text = typeof message === 'string' && message.length > 0
           ? `⚠ Turn failed: ${message}`
           : '⚠ Turn failed'
-        return setBusy(upsertRow(state, { kind: 'status', text, error: true }), false)
+        return setBusy(upsertRow(state, { kind: 'status', text, error: true, ...seqTag(event) }), false)
       }
       if (kind === 'blocked') {
-        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Turn blocked' }), false)
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Turn blocked', ...seqTag(event) }), false)
       }
       if (kind === 'max-tokens') {
-        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Reached the token ceiling' }), false)
+        return setBusy(upsertRow(state, { kind: 'status', text: '⚠ Reached the token ceiling', ...seqTag(event) }), false)
       }
       return setBusy(state, false)
     }

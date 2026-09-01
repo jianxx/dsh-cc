@@ -76,6 +76,24 @@ function toolBlocks(row: ToolRow): string[] {
 }
 
 /**
+ * A compact boundary exports as an italic one-liner plus a collapsed details
+ * block carrying the checkpoint summary (omitted when there is none).
+ */
+function compactBlock(row: Extract<TranscriptRow, { kind: 'compact' }>): string {
+  const head = `${row.trigger === 'auto' ? 'Auto-compacted' : 'Compacted'} ${row.items} messages (~${row.tokens} tokens)`
+  if (row.summary.length === 0) return `*${head}*`
+  const details = [
+    '<details>',
+    '<summary>compacted summary</summary>',
+    '',
+    row.summary,
+    '',
+    '</details>',
+  ].join('\n')
+  return `*${head}*\n\n${details}`
+}
+
+/**
  * Italicize per line so multi-line status text stays valid Markdown. Error
  * rows get a ⚠ marker — unless the text already carries one (the transcript
  * fold bakes `⚠` into turn-failure texts), in which case it must not double.
@@ -97,6 +115,7 @@ export function rowsToMarkdown(rows: readonly TranscriptRow[]): string {
     else if (row.kind === 'assistant') blocks.push(row.text)
     else if (row.kind === 'thinking') blocks.push(details(row.text))
     else if (row.kind === 'tool') blocks.push(...toolBlocks(row))
+    else if (row.kind === 'compact') blocks.push(compactBlock(row))
     else blocks.push(statusBlock(row.text, row.error))
   }
   if (blocks.length === 0) return ''

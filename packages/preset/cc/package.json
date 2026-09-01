@@ -19,6 +19,7 @@
   "dependencies": {
     "@jianxx/dsh-cc-bundle-shell": "workspace:^",
     "@jianxx/dsh-cc-command-branch": "workspace:^",
+    "@jianxx/dsh-cc-command-compact": "workspace:^",
     "@jianxx/dsh-cc-command-config": "workspace:^",
     "@jianxx/dsh-cc-command-cost": "workspace:^",
     "@jianxx/dsh-cc-command-diff": "workspace:^",
@@ -37,6 +38,7 @@
     "@jianxx/dsh-cc-command-status": "workspace:^",
     "@jianxx/dsh-cc-command-tasks": "workspace:^",
     "@jianxx/dsh-cc-command-version": "workspace:^",
+    "@jianxx/dsh-cc-compaction-basic": "workspace:^",
     "@jianxx/dsh-cc-compaction-micro": "workspace:^",
     "@jianxx/dsh-cc-coordinator": "workspace:^",
     "@jianxx/dsh-cc-hooks-claude-code": "workspace:^",
