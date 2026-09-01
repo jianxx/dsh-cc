@@ -765,3 +765,110 @@ describe('createDriver /resume session switcher overlay', () => {
     expect(driver.state.sessionSwitcher?.sessions[0]!.title).toBeUndefined()
   })
 })
+
+describe('createDriver catalog refresh on session switch', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-skillcat-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  function makeCatalogSwitchCtx(opts: {
+    resumeSessions: Record<string, { id: string; status?: string }>
+  }): { ctx: Record<string, unknown> } {
+    const makeAgent = (id: string): Record<string, unknown> => ({
+      options: {},
+      session: { id, header: { cwd: PROJ_CWD }, events: [] },
+      id: `agent-${id}`,
+      status: 'idle',
+      followup: vi.fn(),
+      steer: vi.fn(),
+      cancel: vi.fn(),
+    })
+    const ctx: Record<string, unknown> = {
+      get(key: string) {
+        if (key === 'agentPresets') {
+          return {
+            defaultId: 'cc',
+            resolve: async () => ({ id: 'cc' }),
+            mount: async () => ({ id: 'cc' }),
+          }
+        }
+        if (key === 'commands') {
+          return {
+            list: (agent: { session: { id: string } }) => [
+              { name: `cmd-for-${agent.session.id}`, description: 'scoped' },
+            ],
+          }
+        }
+        if (key === 'skills') {
+          return {
+            snapshot: async (opts: { scope?: { session: { id: string } } }) => ({
+              skills: [{
+                name: `skill-for-${opts.scope?.session.id ?? 'unknown'}`,
+                description: 'scoped skill',
+                invocation: { modelInvocable: true, userInvocable: true },
+              }],
+              complete: true,
+            }),
+          }
+        }
+        return undefined
+      },
+      on: () => () => {},
+      agents: {
+        create: async () => ({ agent: makeAgent('s-a'), dispose: async () => {} }),
+        resume: async (req: { resumeSessionId: string }) => {
+          const raw = opts.resumeSessions[req.resumeSessionId]
+          if (raw === undefined) throw new Error(`unknown session: ${req.resumeSessionId}`)
+          return { agent: makeAgent(raw.id), dispose: async () => {} }
+        },
+      },
+    }
+    return { ctx }
+  }
+
+  it('refreshes commands AND skills after a successful switchSession', async () => {
+    const { ctx } = makeCatalogSwitchCtx({ resumeSessions: { 's-b': { id: 's-b' } } })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('cmd-for-s-a')
+      expect(names).toContain('skill-for-s-a')
+    })
+
+    await driver.switchSession('s-b')
+
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('cmd-for-s-b')
+      expect(names).toContain('skill-for-s-b')
+      expect(names).not.toContain('cmd-for-s-a')
+      expect(names).not.toContain('skill-for-s-a')
+    })
+  })
+
+  it('a failed resume does NOT swap the catalog', async () => {
+    const { ctx } = makeCatalogSwitchCtx({ resumeSessions: {} })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('cmd-for-s-a')
+      expect(names).toContain('skill-for-s-a')
+    })
+    await driver.switchSession('s-missing')
+    await new Promise(r => setTimeout(r, 10))
+    const names = driver.listCommands().map(c => c.name)
+    expect(names).toContain('cmd-for-s-a')
+    expect(names).toContain('skill-for-s-a')
+    expect(names).not.toContain('cmd-for-s-missing')
+  })
+})

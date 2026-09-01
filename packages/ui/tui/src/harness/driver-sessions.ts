@@ -252,6 +252,11 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     // new session may live in a different working directory, and recall must
     // follow IT, not the boot directory. No-op for same-project switches.
     rt.rebindHistory(rt.current.agent.session.header.cwd)
+    // Rebuild the slash-command catalog for the NEW agent: commands.list()
+    // and skills.snapshot() are agent- and cwd-scoped, and neither service
+    // emits a change event on a switch. Failed resumes returned above, so a
+    // failed switch keeps the old catalog.
+    rt.refreshCatalog()
     // Pin the switched session in its project's sidecar index so the picker
     // scope no longer relies on the cwd-prefix heuristic for it.
     rt.recordProjectSession(id, rt.current.agent.session.header.cwd)

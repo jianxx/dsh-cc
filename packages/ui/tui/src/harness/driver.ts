@@ -335,6 +335,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     rebindHistory,
     recordProjectSession,
     spliceAll: () => approvals.spliceAll(),
+    refreshCatalog: () => catalog.refreshCatalog(),
     withSelection,
     agentOptions,
   })
@@ -386,6 +387,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     runLocal,
     runHarness,
     openPermissionPicker,
+    showNotice,
     runShellCommand,
     getHistory: agent.getHistory,
     setHistory: agent.setHistory,

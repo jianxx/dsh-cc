@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 
 /**
@@ -206,10 +206,17 @@ describe('createDriver agentOptions passthrough', () => {
 /**
  * A ctx stub with a controllable commands service: `list(agent)` returns the
  * current catalog and the test can fire `commands/change` to simulate
- * register/unregister. `on` captures the commands/change listener.
+ * register/unregister. `on` captures the commands/change listener. An optional
+ * `skills` service stub is duck-typed like driver-catalog's SkillsLike, and
+ * `skills/change` fires through the same handler map.
  */
 function makeCommandsCtx(commands: {
   list(agent: unknown): { name: string; description?: string; input?: { hint?: string } }[]
+}, skills?: {
+  snapshot(opts: { cwd?: string; scope?: unknown }): Promise<{
+    skills: readonly { name: string; description: string; invocation: { modelInvocable: boolean; userInvocable: boolean } }[]
+    complete: boolean
+  }>
 }) {
   const handlers = new Map<string, Set<(...args: unknown[]) => void>>()
   return {
@@ -223,6 +230,7 @@ function makeCommandsCtx(commands: {
           }
         }
         if (key === 'commands') return commands
+        if (key === 'skills' && skills !== undefined) return skills
         return undefined
       },
       on(event: string, handler: (...args: unknown[]) => void) {
@@ -332,5 +340,198 @@ describe('createDriver listCommands catalog', () => {
     const { ctx } = makeCommandsCtx({ list: () => [] })
     const driver = await createDriver(ctx as never, { cwd: '/some/dir' })
     expect(driver.cwd).toBe('/some/dir')
+  })
+})
+
+describe('createDriver skill catalog merge', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-skill-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  const skillOf = (name: string, opts: { user?: boolean; model?: boolean; description?: string } = {}) => ({
+    name,
+    description: opts.description ?? `${name} description`,
+    invocation: { modelInvocable: opts.model ?? true, userInvocable: opts.user ?? true },
+  })
+
+  it('merges user-invocable skills AFTER commands', async () => {
+    const { ctx } = makeCommandsCtx(
+      { list: () => [{ name: 'status', description: 'harness status' }] },
+      { snapshot: async () => ({ skills: [skillOf('lark-im')], complete: true }) },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('lark-im')
+      expect(names.indexOf('status')).toBeLessThan(names.indexOf('lark-im'))
+    })
+  })
+
+  it('skips a skill whose name collides with a local or harness command', async () => {
+    const { ctx } = makeCommandsCtx(
+      { list: () => [{ name: 'status', description: 'harness status' }] },
+      { snapshot: async () => ({ skills: [skillOf('status'), skillOf('model')], complete: true }) },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('status')
+      expect(names.filter(n => n === 'model')).toHaveLength(1) // local only
+      expect(names.filter(n => n === 'status')).toHaveLength(1)
+    })
+  })
+
+  it('hides userInvocable:false skills', async () => {
+    const { ctx } = makeCommandsCtx(
+      { list: () => [] },
+      { snapshot: async () => ({ skills: [skillOf('visible'), skillOf('hidden', { user: false })], complete: true }) },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('visible')
+      expect(names).not.toContain('hidden')
+    })
+  })
+
+  it('shows user-only skills with a user-only description prefix', async () => {
+    const { ctx } = makeCommandsCtx(
+      { list: () => [] },
+      { snapshot: async () => ({ skills: [skillOf('user-only', { model: false })], complete: true }) },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      const entry = driver.listCommands().find(c => c.name === 'user-only')
+      expect(entry).toBeDefined()
+      expect(entry!.description).toBe('user-only · user-only description')
+    })
+  })
+
+  it('incomplete snapshot retains previous skill names', async () => {
+    let snapshot = { skills: [skillOf('kept')], complete: true }
+    const { ctx, fire } = makeCommandsCtx(
+      { list: () => [] },
+      { snapshot: async () => snapshot },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).toContain('kept')
+    })
+    const before = driver.listCommands()
+    snapshot = { skills: [skillOf('kept')], complete: false }
+    fire('skills/change')
+    await vi.waitFor(() => {
+      // Catalog rebuilt (identity change) but skills retained.
+      expect(driver.listCommands()).not.toBe(before)
+    })
+    expect(driver.listCommands().map(c => c.name)).toContain('kept')
+  })
+
+  it('thrown snapshot retains last-good skills and does not throw', async () => {
+    let shouldThrow = false
+    const { ctx, fire } = makeCommandsCtx(
+      { list: () => [] },
+      {
+        snapshot: async () => {
+          if (shouldThrow) throw new Error('boom')
+          return { skills: [skillOf('stable')], complete: true }
+        },
+      },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).toContain('stable')
+    })
+    shouldThrow = true
+    fire('skills/change')
+    // Give the rejected snapshot a beat, then assert retention.
+    await new Promise(r => setTimeout(r, 10))
+    expect(driver.listCommands().map(c => c.name)).toContain('stable')
+  })
+
+  it('complete empty snapshot drops stale skills', async () => {
+    let snapshot = { skills: [skillOf('gone')], complete: true }
+    const { ctx, fire } = makeCommandsCtx(
+      { list: () => [] },
+      { snapshot: async () => snapshot },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).toContain('gone')
+    })
+    snapshot = { skills: [], complete: true }
+    fire('skills/change')
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).not.toContain('gone')
+    })
+  })
+
+  it('overlapping snapshots publish only the latest complete generation', async () => {
+    let resolveGen1: (v: { skills: unknown[]; complete: boolean }) => void = () => {}
+    let resolveGen2: (v: { skills: unknown[]; complete: boolean }) => void = () => {}
+    let calls = 0
+    const { ctx, fire } = makeCommandsCtx(
+      { list: () => [] },
+      {
+        snapshot: async () => {
+          calls += 1
+          if (calls === 1) {
+            return await new Promise(resolve => { resolveGen1 = resolve })
+          }
+          return await new Promise(resolve => { resolveGen2 = resolve })
+        },
+      },
+    )
+    const driver = await createDriver(ctx as never, {}) // boot snapshot = gen1 (pending)
+    fire('skills/change') // gen2 kicked off, also pending
+    await vi.waitFor(() => expect(calls).toBe(2))
+    resolveGen1({ skills: [skillOf('skill-a')], complete: true })
+    resolveGen2({ skills: [skillOf('skill-b')], complete: true })
+    await vi.waitFor(() => {
+      const names = driver.listCommands().map(c => c.name)
+      expect(names).toContain('skill-b')
+      expect(names).not.toContain('skill-a')
+    })
+  })
+
+  it('skills/change refresh publishes a new identity and notifies subscribers', async () => {
+    let snapshot = { skills: [skillOf('first')], complete: true }
+    const { ctx, fire } = makeCommandsCtx(
+      { list: () => [{ name: 'status', description: 'harness status' }] },
+      { snapshot: async () => snapshot },
+    )
+    const driver = await createDriver(ctx as never, {})
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).toContain('first')
+    })
+    const before = driver.listCommands()
+    let emissions = 0
+    driver.subscribe(() => { emissions += 1 })
+    snapshot = { skills: [skillOf('second')], complete: true }
+    fire('skills/change')
+    await vi.waitFor(() => {
+      expect(driver.listCommands().map(c => c.name)).toContain('second')
+      expect(driver.listCommands().map(c => c.name)).not.toContain('first')
+    })
+    expect(driver.listCommands()).not.toBe(before)
+    expect(emissions).toBeGreaterThan(0)
+  })
+
+  it('missing skills service leaves commands only', async () => {
+    const { ctx } = makeCommandsCtx({ list: () => [{ name: 'status', description: 'harness status' }] })
+    const driver = await createDriver(ctx as never, {})
+    const names = driver.listCommands().map(c => c.name)
+    expect(names).toContain('status')
+    expect(names).not.toContain('lark-im')
   })
 })

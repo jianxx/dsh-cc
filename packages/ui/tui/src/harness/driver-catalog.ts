@@ -3,6 +3,16 @@
  * harness/driver.ts. Free-function collaborator: takes a
  * {@link DriverCatalogCtx} instead of closing over createDriver's locals, so
  * the harness factory stays out of this leaf.
+ *
+ * The catalog merges three sources with command-name precedence:
+ * TUI-local commands, the harness command registry (`ctx.commands`), and
+ * user-invocable skills (`ctx.skills.snapshot()`). Skill names are duck-typed
+ * against upstream `SkillRegistry.snapshot` — the TUI never imports
+ * `@deepseek-ai/dsh-skill`; skills are optional and a missing service only
+ * leaves the skill half empty. Publishing a new catalog array emits the
+ * current state so root.ts's reference-equality guard rebuilds the
+ * autocomplete provider.
+ *
  * @module @jianxx/dsh-cc-tui/harness/driver-catalog
  */
 
@@ -17,22 +27,58 @@ export interface CommandsLike {
 }
 
 /**
- * Build the slash-command catalog section: merges LOCAL_COMMANDS with the
- * harness registry and subscribes to subagent lifecycle events. The cached
- * array identity stays stable between refreshes so root.ts can detect a change
- * by reference equality and rebuild the autocomplete provider only when needed.
+ * Duck-typed surface for the optional skills registry — the shape of upstream
+ * `SkillRegistry.snapshot` (see `@deepseek-ai/dsh-skill`). Only the fields the
+ * catalog merge reads are named; a missing service simply contributes no
+ * skill entries.
  */
-export function createCatalogSection(rt: DriverCatalogCtx): { listCommands(): readonly { name: string; description?: string; argumentHint?: string }[] } {
+export interface SkillsLike {
+  snapshot(opts: { cwd?: string; scope?: unknown }): Promise<{
+    skills: readonly {
+      name: string
+      description: string
+      invocation: { modelInvocable: boolean; userInvocable: boolean }
+    }[]
+    complete: boolean
+  }>
+}
+
+/** One merged catalog entry (commands and skills share the shape). */
+export interface CatalogItem {
+  name: string
+  description?: string
+  argumentHint?: string
+}
+
+/**
+ * Build the slash-command catalog section: merges LOCAL_COMMANDS with the
+ * harness registry and user-invocable skills, subscribes to
+ * `commands/change` / `skills/change` and subagent lifecycle events. The
+ * cached array identity stays stable between refreshes so root.ts can detect
+ * a change by reference equality and rebuild the autocomplete provider only
+ * when needed.
+ */
+export function createCatalogSection(rt: DriverCatalogCtx): {
+  listCommands(): readonly CatalogItem[]
+  refreshCatalog(): void
+} {
   const commandsService = rt.ctx.get('commands') as CommandsLike | undefined
-  let commandCatalog: readonly { name: string; description?: string; argumentHint?: string }[] = []
-  const refreshCommandCatalog = (): void => {
+  const skillsService = rt.ctx.get('skills') as SkillsLike | undefined
+  let commandCatalog: readonly CatalogItem[] = []
+  // Last-good user-invocable skill entries (already filtered/prefixed at
+  // snapshot time). Retained across incomplete or thrown snapshots.
+  let skillEntries: readonly CatalogItem[] = []
+  // Generation token for in-flight skill snapshots: only the latest
+  // generation may publish, so overlapping snapshots are latest-wins.
+  let generation = 0
+
+  const buildMerged = (): CatalogItem[] => {
     const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
-    const merged: { name: string; description?: string; argumentHint?: string }[] =
-      LOCAL_COMMANDS.map(c => ({
-        name: c.name,
-        description: c.description,
-        ...c.argumentHint === undefined ? {} : { argumentHint: c.argumentHint },
-      }))
+    const merged: CatalogItem[] = LOCAL_COMMANDS.map(c => ({
+      name: c.name,
+      description: c.description,
+      ...c.argumentHint === undefined ? {} : { argumentHint: c.argumentHint },
+    }))
     if (commandsService !== undefined) {
       try {
         const harnessList = commandsService.list(rt.current.agent)
@@ -48,9 +94,68 @@ export function createCatalogSection(rt: DriverCatalogCtx): { listCommands(): re
         // A failing list() degrades to local-only; don't poison the catalog.
       }
     }
-    commandCatalog = merged
+    // Skills come last; a name already claimed by a local or harness command
+    // resolves to the command (web adjudication precedence).
+    const used = new Set(merged.map(c => c.name))
+    for (const skill of skillEntries) {
+      if (used.has(skill.name)) continue
+      used.add(skill.name)
+      merged.push(skill)
+    }
+    return merged
   }
-  refreshCommandCatalog()
+
+  const publish = (): void => {
+    commandCatalog = buildMerged()
+    // Notify subscribers so root.ts compares the new catalog identity and
+    // rebuilds the autocomplete provider (skills arrive asynchronously, so
+    // the refresh must ride an emit, not just the next state change).
+    rt.emit(rt.state())
+  }
+
+  const refreshSkillsSnapshot = (): void => {
+    if (skillsService === undefined) return
+    const gen = ++generation
+    const agent = rt.current.agent
+    // cwd and scope are read from the LIVE agent at refresh time — never a
+    // captured boot cwd (switchSession rebinds `current` in place).
+    // exactOptionalPropertyTypes: omit cwd when the header has none; do not
+    // pass `undefined` into `{ cwd?: string }`.
+    const cwd = agent.session.header.cwd
+    void skillsService.snapshot({
+      ...cwd === undefined ? {} : { cwd },
+      scope: agent,
+    })
+      .then(obs => {
+        if (gen !== generation) return // superseded by a newer refresh
+        if (!obs.complete) return // incomplete: retain last-good entries
+        skillEntries = obs.skills
+          .filter(skill => skill.invocation.userInvocable === true)
+          .map(skill => ({
+            name: skill.name,
+            description: skill.invocation.modelInvocable === false
+              ? `user-only · ${skill.description}`
+              : skill.description,
+          }))
+        publish()
+      })
+      .catch(() => {
+        // A rejected snapshot keeps the last-good skill entries; nothing to
+        // publish and nothing to surface — the next skills/change retries.
+      })
+  }
+
+  /**
+   * Rebuild the full catalog for the current agent: commands synchronously
+   * (including current skillEntries), skills via a fresh snapshot. Called at
+   * boot, on commands/change and skills/change, and after a session switch.
+   */
+  const refreshCatalog = (): void => {
+    publish()
+    refreshSkillsSnapshot()
+  }
+  refreshCatalog()
+
   if (commandsService !== undefined) {
     // `commands/change` is declared via module augmentation in
     // @deepseek-ai/dsh-commands, but the tui package doesn't import that
@@ -60,7 +165,14 @@ export function createCatalogSection(rt: DriverCatalogCtx): { listCommands(): re
     // pulling a new dep into the type graph.
     const changeEvent = 'commands/change' as Parameters<typeof rt.ctx.on>[0]
     rt.ctx.on(changeEvent, () => {
-      refreshCommandCatalog()
+      refreshCatalog()
+    })
+  }
+  if (skillsService !== undefined) {
+    // `skills/change` — same cast pattern; declared in @deepseek-ai/dsh-skill.
+    const skillChangeEvent = 'skills/change' as Parameters<typeof rt.ctx.on>[0]
+    rt.ctx.on(skillChangeEvent, () => {
+      refreshCatalog()
     })
   }
 
@@ -97,6 +209,9 @@ export function createCatalogSection(rt: DriverCatalogCtx): { listCommands(): re
   return {
     listCommands() {
       return commandCatalog
+    },
+    refreshCatalog() {
+      refreshCatalog()
     },
   }
 }
