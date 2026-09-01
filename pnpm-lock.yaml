@@ -181,6 +181,42 @@ importers:
         specifier: ^4.0.9
         version: 4.2.0
 
+  packages/compaction/compaction-basic-cc:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-include':
+        specifier: link:../../../../deepseek-harness/vendor/include
+        version: link:../../../../deepseek-harness/vendor/include
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../../../../deepseek-harness/vendor/loader
+        version: link:../../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-compaction':
+        specifier: link:../../../../deepseek-harness/packages/compaction/compaction
+        version: link:../../../../deepseek-harness/packages/compaction/compaction
+      '@deepseek-ai/dsh-compaction-basic':
+        specifier: link:../../../../deepseek-harness/packages/compaction/compaction-basic
+        version: link:../../../../deepseek-harness/packages/compaction/compaction-basic
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-token-meter':
+        specifier: link:../../../../deepseek-harness/packages/llm/token-meter
+        version: link:../../../../deepseek-harness/packages/llm/token-meter
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
+
   packages/compaction/compaction-micro:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -544,6 +580,40 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+
+  packages/interaction/command-compact:
+    dependencies:
+      '@jianxx/dsh-cc-compaction-basic':
+        specifier: workspace:^
+        version: link:../../compaction/compaction-basic-cc
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../../../../deepseek-harness/vendor/loader
+        version: link:../../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../../../../deepseek-harness/packages/interaction/commands
+        version: link:../../../../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-compaction':
+        specifier: link:../../../../deepseek-harness/packages/compaction/compaction
+        version: link:../../../../deepseek-harness/packages/compaction/compaction
+      '@deepseek-ai/dsh-compaction-basic':
+        specifier: link:../../../../deepseek-harness/packages/compaction/compaction-basic
+        version: link:../../../../deepseek-harness/packages/compaction/compaction-basic
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
@@ -1141,6 +1211,9 @@ importers:
       '@jianxx/dsh-cc-command-branch':
         specifier: workspace:^
         version: link:../../interaction/command-branch
+      '@jianxx/dsh-cc-command-compact':
+        specifier: workspace:^
+        version: link:../../interaction/command-compact
       '@jianxx/dsh-cc-command-config':
         specifier: workspace:^
         version: link:../../interaction/command-config
@@ -1195,6 +1268,9 @@ importers:
       '@jianxx/dsh-cc-command-version':
         specifier: workspace:^
         version: link:../../interaction/command-version
+      '@jianxx/dsh-cc-compaction-basic':
+        specifier: workspace:^
+        version: link:../../compaction/compaction-basic-cc
       '@jianxx/dsh-cc-compaction-micro':
         specifier: workspace:^
         version: link:../../compaction/compaction-micro
