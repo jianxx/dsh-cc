@@ -38,7 +38,8 @@
     "@jianxx/dsh-cc-plugin-loader": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",
     "@jianxx/dsh-cc-mcp-config": "workspace:^",
-    "@jianxx/dsh-cc-model-aliases": "workspace:^"
+    "@jianxx/dsh-cc-model-aliases": "workspace:^",
+    "@jianxx/dsh-cc-session-title-provider": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",

@@ -1,0 +1,31 @@
+/**
+ * Package-owned invariant companion for `@jianxx/dsh-cc-tool-web-fetch`.
+ * @module @jianxx/dsh-cc-tool-web-fetch/invariant
+ */
+
+/* jscpd:ignore-start */
+import type { Context } from '@deepseek-ai/cordis'
+import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
+
+const PACKAGE_NAME = '@jianxx/dsh-cc-tool-web-fetch'
+
+/** Cordis companion plugin name. */
+export const name = 'tool-web-fetch-invariant'
+/** Service required before the companion can reserve package ownership. */
+export const inject = ['invariants']
+
+/**
+ * No runtime invariant: the tool composes an upstream seam (`ctx.web.fetch`)
+ * with a one-shot summarize call, neither of which publishes a durable
+ * projection a companion could cross-check.
+ */
+const install: InvariantInstaller = () => {}
+
+/**
+ * Register this package's invariant companion.
+ * @param ctx - Cordis context carrying the invariant service.
+ * @returns the installed registration's disposer after setup succeeds.
+ */
+export const apply = (ctx: Context): Promise<() => void> =>
+  Promise.resolve(ctx.invariants.register(PACKAGE_NAME, install))
+/* jscpd:ignore-end */

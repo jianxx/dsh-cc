@@ -33,6 +33,7 @@
     "@jianxx/dsh-cc-command-plugin": "workspace:^",
     "@jianxx/dsh-cc-command-release-notes": "workspace:^",
     "@jianxx/dsh-cc-command-resume": "workspace:^",
+    "@jianxx/dsh-cc-command-rename": "workspace:^",
     "@jianxx/dsh-cc-command-skills": "workspace:^",
     "@jianxx/dsh-cc-command-stats": "workspace:^",
     "@jianxx/dsh-cc-command-status": "workspace:^",
@@ -53,7 +54,8 @@
     "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
     "@jianxx/dsh-cc-tool-search": "workspace:^",
     "@jianxx/dsh-cc-tool-sleep": "workspace:^",
-    "@jianxx/dsh-cc-tool-structured-output": "workspace:^"
+    "@jianxx/dsh-cc-tool-structured-output": "workspace:^",
+    "@jianxx/dsh-cc-tool-web-fetch": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis-plugin-include": "link:../../../../deepseek-harness/vendor/include",

@@ -13,6 +13,12 @@
 - id: tools
   disabled: true
 
+# CC host-plane session-title overlay: disable the stock session-title-llm row
+# and remount a CC provider below (inside the insert list) that stamps the
+# `haiku` cheap lane for first-prompt title generation.
+- id: session-title-llm
+  disabled: true
+
 - insert:
     # Remount below (in the insert list) with fetch enabled and the fetch provider.
     - id: tools-cc
@@ -26,3 +32,15 @@
     # (equivalent to CC's runMigrations). Empty registry — mechanism only — for now.
     - id: settings-migrations
       name: '@jianxx/dsh-cc-settings-migrations'
+
+    # Host-plane first-prompt session titles on the CC cheap lane: stamps
+    # resolve('haiku') when configured, else inherits the logged main route
+    # (explicit provider+model config in this row would win over the alias).
+    - id: session-title-llm-cc
+      name: '@jianxx/dsh-cc-session-title-provider'
+      config:
+        targetWords: 5
+        targetCjkCharacters: 10
+        maxInputBytes: 4096
+        maxOutputTokens: 64
+        timeoutMs: 60000

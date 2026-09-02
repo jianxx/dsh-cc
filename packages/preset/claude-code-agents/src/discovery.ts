@@ -1,13 +1,15 @@
 /**
- * Discover Claude Code agent definition files across the user and project
- * layers and load each into an {@link AgentDefinition}.
+ * Discover Claude Code agent definition files across the bundled, user, and
+ * project layers and load each into an {@link AgentDefinition}.
  *
  * The project layer is the nearest `.claude/agents` directory found by walking
  * up from the project root (a `.claude` directory at any ancestor defines the
  * project scope, exactly as Claude Code resolves it). The user layer is the
  * author's own `~/.claude/agents`. A definition is keyed by its file basename;
- * the project layer SHADOWS the user layer on a name collision (nearest wins),
- * mirroring how a project-level agent overrides a user-level one.
+ * the layers shadow by rank — bundled (in-package, always present) is lowest,
+ * the user layer shadows bundled, and the project layer SHADOWS the user layer
+ * on a name collision (nearest wins), mirroring how a project-level agent
+ * overrides a user-level one and either overrides a built-in.
  *
  * Every file that looks like an agent (a `.md` or `.json` in either directory)
  * is loaded, and a file that fails to parse raises — discovery is intentionally
@@ -19,6 +21,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
+import { discoverBundledAgents } from './bundled/index.ts'
 import { parseAgentJson, parseAgentMarkdown } from './parse.ts'
 import type { AgentDefinition, AgentSource } from './types.ts'
 
@@ -94,12 +97,13 @@ export async function loadAgentsDir(dir: string, source: AgentSource): Promise<A
 /**
  * Load every agent definition visible from a project root: the project layer
  * (nearest `.claude/agents` walking up) shadowing the user layer
- * (`~/.claude/agents`). A file that fails to parse throws; the caller keeps
- * the project root and user home that produced a failure.
+ * (`~/.claude/agents`), both shadowing the bundled in-package agents. A file
+ * that fails to parse throws; the caller keeps the project root and user home
+ * that produced a failure.
  * @param projectRoot - the project directory to resolve the project layer from.
  * @param userDir - the user `.claude/agents` directory; `undefined` to skip the
  *   user layer (used by callers that pass an explicit home).
- * @returns the merged, project-shadowing-user agent list.
+ * @returns the merged agent list, project shadowing user shadowing bundled.
  * @throws when a discovered agent file cannot be parsed.
  */
 export async function discoverAgents(
@@ -111,6 +115,7 @@ export async function discoverAgents(
   const user = userDir === undefined ? [] : await loadAgentsDir(userDir, 'user')
 
   const byName = new Map<string, AgentDefinition>()
+  for (const agent of discoverBundledAgents()) byName.set(agent.agentType, agent)
   for (const agent of user) byName.set(agent.agentType, agent)
   for (const agent of project) byName.set(agent.agentType, agent)
   return Array.from(byName.values())

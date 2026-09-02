@@ -152,7 +152,7 @@ describe('agent.cordis.yml composition', () => {
     }
   })
 
-  it('isolates exactly the five cc-services services, hosting the commands and the two ccModelRoutes consumers', () => {
+  it('isolates exactly the five cc-services services, hosting the commands and the ccModelRoutes consumers', () => {
     const group = doc.find((r) => r.id === 'cc-services')!
     expect(group.name).toBe('cordis:group')
     expect(group.isolate).toEqual({
@@ -173,9 +173,16 @@ describe('agent.cordis.yml composition', () => {
     // share the group realm; memory-consolidation stays outside (inherit).
     expect(configIds).toContain('memory')
     expect(configIds).toContain('hooks-claude-code')
+    expect(configIds).toContain('tool-web-fetch')
     expect(topIds).not.toContain('memory')
     expect(topIds).not.toContain('hooks-claude-code')
+    expect(topIds).not.toContain('tool-web-fetch')
     expect(topIds).toContain('memory-consolidation')
+
+    // tool-web row: fetch is disabled here — web_fetch comes from the
+    // cc-services tool-web-fetch row instead.
+    const toolWeb = doc.find((r) => r.id === 'tool-web')!
+    expect(toolWeb.config).toMatchObject({ fetch: false })
   })
 
   it('declares every @jianxx row name as a dependency (top level and group-nested)', () => {

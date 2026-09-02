@@ -89,15 +89,53 @@ describe('discoverAgents', () => {
     await writeFile(join(userDir, 'only.md'), AGENT_MD('u'))
 
     const agents = await discoverAgents(root, userDir)
-    expect(agents.map(agent => agent.agentType)).toEqual(['only'])
-    expect(agents[0]?.source).toBe('user')
+    expect(agents.map(agent => agent.agentType)).toEqual(expect.arrayContaining(['only']))
+    const only = agents.find(agent => agent.agentType === 'only')
+    expect(only?.source).toBe('user')
+  })
+
+  it('always yields the bundled agents even with no layers', async () => {
+    const root = await rootdir()
+    const agents = await discoverAgents(root, undefined)
+    expect(agents.map(agent => agent.agentType)).toEqual(expect.arrayContaining(['explore', 'dsh-cc-guide']))
+    for (const name of ['explore', 'dsh-cc-guide']) {
+      expect(agents.find(agent => agent.agentType === name)?.source).toBe('bundled')
+    }
+  })
+
+  it('a project agent shadows its bundled namesake', async () => {
+    const root = await rootdir()
+    await writeAgent(root, 'explore', 'project explore body')
+    const agents = await discoverAgents(root, undefined)
+    const explore = agents.find(agent => agent.agentType === 'explore')
+    expect(explore?.source).toBe('project')
+    expect(explore?.systemPrompt).toMatch(/project explore body/)
+  })
+
+  it('a user agent shadows bundled, and project shadows that user agent', async () => {
+    const root = await rootdir()
+    const userDir = join(await rootdir(), '.claude', 'agents')
+    await mkdir(userDir, { recursive: true })
+    await writeFile(join(userDir, 'dsh-cc-guide.md'), AGENT_MD('user guide body'))
+
+    const userWins = await discoverAgents(root, userDir)
+    const userGuide = userWins.find(agent => agent.agentType === 'dsh-cc-guide')
+    expect(userGuide?.source).toBe('user')
+    expect(userGuide?.systemPrompt).toMatch(/user guide body/)
+
+    await writeAgent(root, 'dsh-cc-guide', 'project guide body')
+    const projectWins = await discoverAgents(root, userDir)
+    const projectGuide = projectWins.find(agent => agent.agentType === 'dsh-cc-guide')
+    expect(projectGuide?.source).toBe('project')
+    expect(projectGuide?.systemPrompt).toMatch(/project guide body/)
   })
 
   it('skips the user layer when userDir is undefined', async () => {
     const root = await rootdir()
     await writeAgent(root, 'code', 'c')
     const agents = await discoverAgents(root, undefined)
-    expect(agents.map(agent => agent.agentType)).toEqual(['code'])
+    expect(agents.map(agent => agent.agentType)).toEqual(expect.arrayContaining(['code']))
+    expect(agents.find(agent => agent.agentType === 'code')?.source).toBe('project')
   })
 })
 
@@ -112,8 +150,9 @@ describe('loadClaudeCodeAgents', () => {
 
     const agents = await loadClaudeCodeAgents(root, { userDir })
     expect(agents.map(agent => agent.agentType).sort())
-      .toEqual(['code', 'user-only'])
+      .toEqual(expect.arrayContaining(['code', 'user-only']))
     const code = agents.find(agent => agent.agentType === 'code')
+    expect(code?.source).toBe('project')
     expect(code?.systemPrompt).toMatch(/project body/)
   })
 
@@ -122,6 +161,7 @@ describe('loadClaudeCodeAgents', () => {
     const root = await rootdir()
     await writeAgent(root, 'code', 'c')
     const agents = await loadClaudeCodeAgents(root)
-    expect(agents.map(agent => agent.agentType)).toEqual(['code'])
+    expect(agents.map(agent => agent.agentType)).toEqual(expect.arrayContaining(['code']))
+    expect(agents.find(agent => agent.agentType === 'code')?.source).toBe('project')
   })
 })

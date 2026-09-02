@@ -14,8 +14,9 @@
  * the FIRST assembly already carries the real catalog and no later request
  * sees a different prefix; on timeout the placeholder ships and the
  * `system-prompt/change` path lands the catalog on a later assembly. When a
- * workspace defines no agents (or there is no agent to scope to) the section
- * renders an empty string so it drops out of the prompt.
+ * workspace defines no agents of its own (or there is no agent to scope to)
+ * the section still lists the bundled agents, or renders an empty string when
+ * there is nothing to scope to.
  *
  * @module @jianxx/dsh-cc-subagent-task/catalog
  */
