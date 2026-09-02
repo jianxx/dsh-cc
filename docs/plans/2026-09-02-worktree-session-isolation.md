@@ -1,6 +1,6 @@
 # Worktree Session Isolation — Design Document
 
-**Date:** 2026-05-28
+**Date:** 2026-09-02
 **Status:** Ready for implementation (WS0 verification passed)
 **Scope:** `dsh-cc` monorepo — interactive harness, permission rules, workspace tools
 

@@ -9,17 +9,15 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
-import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
-import { foldSessionCwd } from '@jianxx/dsh-cc-session-cwd'
 import { composePreset } from './preset.ts'
 import { createSessionsSection } from './driver-sessions.ts'
 import { gitBranchOf } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
 import { createApprovalsSection } from './driver-approvals.ts'
 import { createCatalogSection } from './driver-catalog.ts'
-import type { DriverBashCtx, DriverQueueCtx } from './driver-ctx.ts'
+import type { DriverBashCtx, DriverQueueCtx, PermissionRulesLike } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
+import { liveMode, liveSessionCwd } from './driver-live.ts'
 import { createHudSection } from './driver-hud.ts'
 import { createPickersSection } from './driver-pickers.ts'
 import { createQueueSection } from './driver-queue.ts'
@@ -64,30 +62,6 @@ export { allowRuleOf, payloadOf } from './approval-preview.ts'
 
 /** Default lifetime of a transient `showNotice` hint. */
 const NOTICE_TTL_MS = 3000
-
-function liveMode(agent: Agent, fallback: string): string {
-  if (foldPlanMode(agent.session.events)) return 'plan'
-  return foldPermissionMode(agent.session.events) ?? fallback
-}
-
-/**
- * The LIVE session working directory: the session-cwd plugin's durable
- * `worktree/entered` fold first (authoritative across EnterWorktree/
- * ExitWorktree moves), then the boot-time header cwd.
- */
-function liveSessionCwd(agent: Agent, fallback: string): string {
-  return foldSessionCwd(agent.session.events) ?? agent.session.header.cwd ?? fallback
-}
-
-type PermissionRulesLike = {
-  readonly ruleSet: {
-    readonly allow: readonly unknown[]
-    readonly deny: readonly unknown[]
-    readonly ask: readonly unknown[]
-    readonly bypassImmune: readonly unknown[]
-  }
-  setMode(agent: Agent, mode: string): void
-}
 
 /**
  * Create the TUI driver: one agent under the CC preset, interaction providers,
