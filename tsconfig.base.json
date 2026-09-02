@@ -80,6 +80,12 @@
       "@jianxx/dsh-cc-tool-git-worktree": [
         "./packages/workspace/tool-git-worktree/src/index.ts"
       ],
+      "@jianxx/dsh-cc-session-cwd": [
+        "./packages/workspace/session-cwd/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-session-cwd/*": [
+        "./packages/workspace/session-cwd/src/*"
+      ],
       "@jianxx/dsh-cc-tool-sleep": [
         "./packages/core/tool-sleep/src/index.ts"
       ],

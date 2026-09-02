@@ -11,6 +11,7 @@ import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, t
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { foldPermissionMode } from '@jianxx/dsh-cc-permission-rules'
+import { foldSessionCwd } from '@jianxx/dsh-cc-session-cwd'
 import { composePreset } from './preset.ts'
 import { createSessionsSection } from './driver-sessions.ts'
 import { gitBranchOf } from './shell-output.ts'
@@ -67,6 +68,15 @@ const NOTICE_TTL_MS = 3000
 function liveMode(agent: Agent, fallback: string): string {
   if (foldPlanMode(agent.session.events)) return 'plan'
   return foldPermissionMode(agent.session.events) ?? fallback
+}
+
+/**
+ * The LIVE session working directory: the session-cwd plugin's durable
+ * `worktree/entered` fold first (authoritative across EnterWorktree/
+ * ExitWorktree moves), then the boot-time header cwd.
+ */
+function liveSessionCwd(agent: Agent, fallback: string): string {
+  return foldSessionCwd(agent.session.events) ?? agent.session.header.cwd ?? fallback
 }
 
 type PermissionRulesLike = {
@@ -228,7 +238,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // the resume marker AND pins the live session in its project's index.
   const persistResumeTargetAndIndex = (): void => {
     agent.persistResumeTarget()
-    recordProjectSession(String(current.agent.session.id), current.agent.session.header.cwd)
+    recordProjectSession(String(current.agent.session.id), liveSessionCwd(current.agent, cwd))
   }
   await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
@@ -241,8 +251,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     // process cwd (e.g. launched from another directory of the same repo):
     // scope history to the LIVE session's project and pin it in that
     // project's sidecar index.
-    rebindHistory(current.agent.session.header.cwd)
-    recordProjectSession(String(current.agent.session.id), current.agent.session.header.cwd)
+    rebindHistory(liveSessionCwd(current.agent, cwd))
+    recordProjectSession(String(current.agent.session.id), liveSessionCwd(current.agent, cwd))
   }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 

@@ -377,6 +377,9 @@
 - id: schedule
   name: '@deepseek-ai/dsh-schedule'
 
+- id: session-cwd
+  name: '@jianxx/dsh-cc-session-cwd'
+
 - id: tool-git-worktree
   name: '@jianxx/dsh-cc-tool-git-worktree'
 

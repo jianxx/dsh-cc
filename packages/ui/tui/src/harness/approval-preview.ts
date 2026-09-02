@@ -145,7 +145,7 @@ export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefin
     // For compound commands (&&, ||, ;), only consider the first segment
     // This is a simplification - the rule will match any command starting
     // with the first segment's command, which is the desired behavior.
-    const firstSegment = remaining.split(/&&|\|\||;/)[0].trim()
+    const firstSegment = remaining.split(/&&|\|\||;/)[0]?.trim() ?? ''
     
     const firstWord = firstSegment.split(/\s+/)[0] ?? ''
     if (firstWord === '') return undefined

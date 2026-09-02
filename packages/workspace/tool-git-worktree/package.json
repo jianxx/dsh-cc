@@ -31,6 +31,7 @@
     "@deepseek-ai/dsh-llm": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-shell": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": ">=0.1.1-rc.2",
+    "@jianxx/dsh-cc-session-cwd": "workspace:^",
     "@jianxx/dsh-cc-tools": "workspace:^",
     "@deepseek-ai/cordis": ">=0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1"
@@ -46,6 +47,7 @@
     "@deepseek-ai/dsh-shell": "link:../../../../deepseek-harness/packages/shell/shell",
     "@deepseek-ai/dsh-subprocess-local": "link:../../../../deepseek-harness/packages/subprocess/subprocess-local",
     "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt",
+    "@jianxx/dsh-cc-session-cwd": "link:../session-cwd",
     "@jianxx/dsh-cc-tools": "workspace:^",
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
