@@ -84,4 +84,5 @@ export const sessionCwd = {
   store: sessionCwdStore as SessionCwdStore,
 }
 
-export default sessionCwd
+// No default export: cordis-plugin-loader unwrapExports prefers `.default`, so
+// a convenience object without `apply` fails preset mount as "invalid plugin".
