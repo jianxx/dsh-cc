@@ -1,0 +1,180 @@
+# =============================================================================
+# Daily Release (propose) — dsh-cc
+#
+# Weekdays at 08:00 Beijing (00:00 UTC; China has no DST). Checks whether
+# main has unreleased work: HEAD is not contained in the latest v* tag
+# (merge-base ancestry, no commit-date window — a missed run self-heals
+# the next day). If so, opens a release PR (branch release/v<next>,
+# lockstep version bump only). After merge, release-tag.yml tags the
+# merge commit and dispatches publish.yml.
+#
+# Why two stages: main is branch-protected (no direct push), and a
+# GITHUB_TOKEN push does not start other workflows, so the tag must be
+# created after the PR lands and publish.yml must be dispatched
+# explicitly. This workflow never tags and never pushes main.
+#
+# Guards: open-PR dedupe on the release/v* branch name + release.mjs
+# validations (HEAD === origin/main, tag uniqueness, clean tree).
+# Manual dispatch defaults to dry_run=true (gates + release.mjs --dry-run,
+# no PR) so the logic can be exercised without proposing a release.
+# =============================================================================
+
+name: Daily Release (propose)
+
+on:
+  schedule: [{ cron: "0 0 * * 1-5" }]   # 08:00 Beijing, weekdays
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (auto = feat → minor, else patch)
+        type: choice
+        options: [auto, patch, minor]
+        default: auto
+      dry_run:
+        description: Validate only — do not push a branch or open a PR
+        type: boolean
+        default: true
+
+permissions:
+  contents: write        # push release/* branches
+  pull-requests: write   # gh pr create / list
+
+concurrency:
+  group: daily-release
+  cancel-in-progress: false
+
+env:
+  BUMP: ${{ inputs.bump || 'auto' }}
+  # schedule events have no inputs.dry_run → false → real proposal;
+  # manual dispatch defaults to dry-run.
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+
+jobs:
+  propose:
+    name: Gate, compute next version, propose release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0   # ancestry check + tag --merged need full history
+
+      # checkout@v4 leaves a detached HEAD; release.mjs requires branch == main.
+      # --force --tags: LAST_TAG selection and ancestry need a complete tag set.
+      - name: Sync main (undetach + tags)
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          git checkout -B main origin/main
+
+      # Predicate: HEAD already contained in the latest tag → nothing to ship.
+      # Tags are version-sorted so a stray non-v* tag or out-of-order tag
+      # cannot become the baseline (git describe is "nearest on the graph").
+      - id: gate
+        name: Gate — unreleased work on main?
+        run: |
+          set -euo pipefail
+          LAST_TAG=$(git tag --list 'v*' --merged origin/main --sort=-v:refname | head -n1)
+          if [ -z "$LAST_TAG" ]; then
+            echo "::error::no v* tag reachable from main; cannot establish a release baseline"
+            exit 1
+          fi
+          if git merge-base --is-ancestor origin/main "$LAST_TAG"; then
+            should_release=false
+            echo "main HEAD is contained in $LAST_TAG; no unreleased work" >> "$GITHUB_STEP_SUMMARY"
+          else
+            should_release=true
+            echo "main HEAD is ahead of $LAST_TAG; unreleased work exists" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "last_tag=$LAST_TAG"
+            echo "should_release=$should_release"
+          } >> "$GITHUB_OUTPUT"
+
+      # Recovery: tag covers HEAD but the GitHub Release is missing ⇒ the last
+      # publish never finished (dispatch failed / environment approval died).
+      # publish.yml is idempotent (already-published versions are skipped), so
+      # re-dispatching is cheap; otherwise just record the skip.
+      - name: Recover stuck release
+        if: steps.gate.outputs.should_release == 'false' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LAST_TAG: ${{ steps.gate.outputs.last_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$LAST_TAG" > /dev/null 2>&1; then
+            echo "$LAST_TAG already published; recovery skip" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$LAST_TAG has no GitHub Release; re-dispatching publish.yml" >> "$GITHUB_STEP_SUMMARY"
+            gh workflow run publish.yml -f tag="$LAST_TAG"
+          fi
+
+      - id: plan
+        name: Compute next version + open-PR dedupe
+        if: steps.gate.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LAST_TAG: ${{ steps.gate.outputs.last_tag }}
+          HEAD_REF: release/v
+        run: |
+          set -euo pipefail
+          NEXT=$(node scripts/daily-release-next-version.mjs "$LAST_TAG" "$BUMP")
+          echo "next version: $NEXT" >> "$GITHUB_STEP_SUMMARY"
+          open_prs=$(gh pr list --head "${HEAD_REF}${NEXT}" --state open --json number --jq length)
+          if [ "$open_prs" -gt 0 ]; then
+            echo "proposal already open (release/v$NEXT); skipping" >> "$GITHUB_STEP_SUMMARY"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "next=$NEXT"
+            echo "head_ref=${HEAD_REF}${NEXT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Dry run (no branch, no PR)
+        if: >-
+          steps.plan.outputs.exists == 'false' &&
+          steps.gate.outputs.should_release == 'true' &&
+          env.DRY_RUN == 'true'
+        run: |
+          set -euo pipefail
+          NEXT="${{ steps.plan.outputs.next }}"
+          node scripts/release.mjs "$NEXT" --dry-run
+          echo "DRY-RUN: validations passed; no branch/PR created (manual dispatch defaults to dry-run; the schedule path proposes for real)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Propose release PR
+        if: >-
+          steps.plan.outputs.exists == 'false' &&
+          steps.gate.outputs.should_release == 'true' &&
+          env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.plan.outputs.next }}
+          HEAD_REF: ${{ steps.plan.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # release.mjs: rewrite every manifest + FALLBACK_VERSION, commit, local tag
+          node scripts/release.mjs "$NEXT"
+          # Tag is created by release-tag.yml after merge. Pushing it here would
+          # fail publish.yml's "tag must be on main" ancestry gate.
+          git tag -d "v$NEXT"
+          # -f overwrites a leftover branch from a previously closed PR;
+          # release/* is not covered by main's branch protection.
+          git push -f origin "HEAD:refs/heads/$HEAD_REF"
+
+          url=$(gh pr create --base main --head "$HEAD_REF" \
+            --title "chore(release): v$NEXT" \
+            --body "$(cat <<'EOF'
+          Auto-opened by [daily-release.yml](.github/workflows/daily-release.yml): lockstep version bump only (all publishable manifests + FALLBACK_VERSION).
+
+          - After merge, [release-tag.yml](.github/workflows/release-tag.yml) tags the merge commit and dispatches publish.yml.
+          - publish.yml runs the full gate chain, then waits on the `npm-publish` environment for a human approval before publishing to npmjs and creating the GitHub Release.
+          - If publish fails: `gh workflow run publish.yml -f tag=<tag>`.
+          EOF
+          )")
+          echo "opened release PR: $url" >> "$GITHUB_STEP_SUMMARY"

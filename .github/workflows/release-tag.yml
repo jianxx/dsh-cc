@@ -1,0 +1,148 @@
+# =============================================================================
+# Release Tag — dsh-cc
+#
+# After a release PR (branch release/v*) lands on main, tags the merge
+# commit and dispatches publish.yml. Second half of the two-stage flow
+# started by daily-release.yml.
+#
+# Trigger is pull_request: closed rather than push + commit-message match:
+# immune to merge method (squash / rebase / merge commit) and to editing
+# the PR title. The version always comes from the source branch name
+# release/v<version>. The tag is applied to merge_commit_sha (main HEAD
+# after merge), which satisfies publish.yml's "tag must be an ancestor of
+# origin/main" gate.
+#
+# Why an explicit `gh workflow run`: a GITHUB_TOKEN push (including tags)
+# does not start other workflows, so publish.yml must be dispatched
+# (requires actions: write).
+#
+# Idempotent / rerunnable: skip tagging if the remote tag already exists;
+# on any path, re-dispatch publish.yml if the GitHub Release is missing
+# (last publish never finished). publish.yml skips versions already on
+# the registry, so a retry is free.
+#
+# Manual dispatch (workflow_dispatch): version=vX.Y.Z, dry_run defaults
+# to true — runs extraction / lockstep check / idempotency only, no tag
+# push, no publish dispatch, for exercising the logic. dry_run=false tags
+# main HEAD and dispatches publish, doubling as a manual publish /
+# recovery entry point (equivalent to `git tag` + push + `gh workflow run`).
+# =============================================================================
+
+name: Release Tag
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'vX.Y.Z — tag main HEAD and publish (manual recovery / logic test)'
+        required: true
+      dry_run:
+        description: Validate only — do not push a tag or dispatch publish
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # git tag + push tag
+  actions: write    # gh workflow run publish.yml
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+env:
+  # false on pull_request events; only a manual dispatch honors dry_run
+  # (default true).
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+
+jobs:
+  tag:
+    name: Tag merged release commit and trigger publish
+    # PR path: merged + source branch release/v*; manual path: workflow_dispatch.
+    # Events with a null head_commit (e.g. branch deletion) fail the if.
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'release/v')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Same extraction for both entries: PR merge → source branch name;
+      # manual → inputs.version.
+      - name: Resolve tag + target commit
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_VERSION"
+            TARGET="main"
+          else
+            TAG="${HEAD_REF#release/}"
+            TARGET="${{ github.event.pull_request.merge_commit_sha }}"
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::version '$TAG' is not a valid tag (expected v<major>.<minor>.<patch>[-prerelease])"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
+          echo "release tag: $TAG (target $TARGET)" >> "$GITHUB_STEP_SUMMARY"
+
+      # check-release-version only reads manifests at HEAD; no history needed.
+      # When TARGET=main this is the commit that will be tagged.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET }}
+          fetch-depth: 1
+
+      # Idempotent: if the tag is already on the remote (previous success /
+      # human-pushed), skip tagging and fall through to the recovery check.
+      - id: idem
+        name: Idempotency check
+        run: |
+          set -euo pipefail
+          if git ls-remote --tags origin "$TAG" | grep -q .; then
+            echo "tag $TAG already on remote; skip tagging" >> "$GITHUB_STEP_SUMMARY"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify manifests and tag target commit
+        if: steps.idem.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          # Refuse to tag if manifests != tag (fail-loud; leave publish to a human).
+          # dry-run stops here: the check *is* the logic under test.
+          node scripts/check-release-version.mjs "$TAG"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY-RUN: check passed — would tag $TAG -> $TARGET, push, and dispatch publish.yml (not executed)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" HEAD
+          git push origin "$TAG"
+          echo "tagged $TARGET as $TAG and pushed" >> "$GITHUB_STEP_SUMMARY"
+
+      # Primary path (just tagged) and recovery path (tag exists, publish
+      # never finished) collapse here: dispatch publish.yml if the GitHub
+      # Release is missing; otherwise record completion. dry-run never
+      # dispatches.
+      - name: Dispatch publish (primary or recovery)
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "tag $TAG already published (GitHub Release exists); no dispatch" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh workflow run publish.yml -f tag="$TAG"
+            echo "dispatched publish.yml for $TAG (after the gate chain it waits on the npm-publish environment for a human approval)" >> "$GITHUB_STEP_SUMMARY"
+          fi
