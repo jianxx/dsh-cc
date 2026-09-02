@@ -71,7 +71,7 @@ MCP 客户端桥接插件：连接外部 [Model Context Protocol](https://modelc
 
 ## 行为
 
-- 连接时：插件激活会等待 `listTools()`，并在组合开始首个轮次前通过 `ctx.tools.register()` 以公开名称注册每个工具。初始连接、发现或注册失败始终会记录日志；`failOnStartupError` 为 true 时拒绝激活，否则插件仍会激活但不注册工具。
+- 连接时：插件激活会等待 `listTools()`，并在组合开始首个轮次前以公开名称发布每个工具——默认通过 `ctx.tools.register()` 即时注册；当 `ctx.toolSearch` seam 已挂载且该服务器列出的工具数达到 `deferToolThreshold`（默认 8）时，改为经 `registerDeferred` 延迟注册。初始连接、发现或注册失败始终会记录日志；`failOnStartupError` 为 true 时拒绝激活，否则插件仍会激活但不注册工具。
 - 监听 `notifications/tools/list_changed` → 重新同步；获取阶段失败时保留上一世代的注册，注册冲突则会回滚本次尝试的世代，并且不保留该服务器的任何工具。
 - 工具执行：`client.callTool({ name: rawName, arguments }, { signal })`，支持超时 + 中止；公开名称绝不会发给服务器。
 - 规范成功值是 `{ content: JsonValue[], structuredContent? }`；完整的 JSON MCP 块会保留给编程调用方。受支持且已声明的 `outputSchema` 会验证 `structuredContent`；不受支持的 schema 词汇会回退为不受约束的 `JsonValue`。
@@ -86,6 +86,7 @@ MCP 客户端桥接插件：连接外部 [Model Context Protocol](https://modelc
 | 服务 | 用途 |
 |---|---|
 | `ctx.tools` | 注册／注销 MCP 工具及资源桥 |
+| `ctx.toolSearch` | 可选：把超过阈值的列出工具延迟注册（duck-type；不是必选 inject） |
 | `ctx.skills` | 可选：注册 MCP 提示词技能 |
 | `ctx.credentials` | 可选：持久化 OAuth token 及相关状态 |
 
@@ -108,13 +109,17 @@ supervisor 在中断期间保持每个能力的注册存活（保留最后一个
 
 初始发现成功后，每个已声明的 MCP 工具都会显示为名为 `mcp__<serverName>__<rawName>`（或其确定性规范化形式）的原生工具，并携带服务器提供的描述和输入 schema。成功的重新同步——包括自动重连后的同步——会替换整个世代；对插件执行 dispose（资源释放）或重连预算耗尽会移除该世代。
 
+当 `ctx.toolSearch` seam 已挂载、且该服务器列出的工具数达到 **8 个**（默认 `deferToolThreshold`；按 `tools/list` 数组长度计，含 alwaysLoad 工具）时，可延迟的工具改为**延迟注册**：它们向 ToolSearch 池贡献名称 + 描述 + 服务器限定的搜索提示，在 ToolSearch 命中激活之前不进入模型可见 schema（激活执行真正的注册，此后与任何提示词顶部的工具无异）。声明 `_meta['anthropic/alwaysLoad'] === true` 的工具即使在延迟服务器上也立即注册。资源桥工具（`mcp__<server>__list_mcp_resources` / `read_mcp_resource`）始终保持即时注册。没有 toolSearch seam 时——独立部署、其他 preset——任何阈值下全部工具都即时注册。
+
+世代替换（重连或 `tools/list_changed`）会先注销上一世代，这同时会卸载模型此前通过 ToolSearch 激活的工具：替换之后这些名字重新变为可搜索，模型必须再次搜索（或由会话重新激活）才能调用。同一客户端上的相同重新同步由 fingerprint 跳过，不会重新发布任何内容。
+
 #### Token 影响
 
-工具注册期间，每次请求都会承担数据相关的 schema 成本。重新同步会替换而非累积 schema，服务器限定名称也会为每个工具定义和调用增加 token。
+工具注册期间，每次请求都会承担数据相关的 schema 成本——延迟工具只在激活后才承担该成本，其 schema 成本被一个 ToolSearch 工具加每次命中的激活所取代。重新同步会替换而非累积 schema，服务器限定名称也会为每个工具定义和调用增加 token。
 
 #### KV Cache 影响
 
-只要已发现工具集合及其 schema 不变，前缀就保持稳定。增加、移除、重命名或更改工具的重新同步会替换定义，并可能使从第一个变化的 schema token 起的复用失效；恢复了未变列表的重连会生成完全相同的定义，前缀保持稳定。
+只要已发现工具集合及其 schema 不变，前缀就保持稳定。增加、移除、重命名或更改工具的重新同步会替换定义，并可能使从第一个变化的 schema token 起的复用失效；恢复了未变列表的重连会生成完全相同的定义，前缀保持稳定。首个延迟注册还会把 ToolSearch 工具插入模型可见集合（一次性前缀变化；此后保持注册——迟滞）。
 
 ### 工具调用历史与结果
 
@@ -131,6 +136,11 @@ supervisor 在中断期间保持每个能力的注册存活（保留最后一个
 仅追加；新可见内容位于可复用请求前缀之后，不会使现有 KV-cache 条目失效。
 
 ## 已知限制与暂缓事项
+
+- **延迟阈值按服务器工具数计，而非上下文占比**：按上下文百分比或跨服务器聚合的规则（Claude Code 的约 10%）会更激进地延迟；三个各 5 个工具的小服务器全部保持即时注册。阈值也尚不能通过插件 Config 配置（测试直接把选项传入 `syncTools`）。
+- **ToolSearch 激活是进程全局的**：加载一个延迟 MCP 工具后，凡工具限制放行该名字的 agent 都能看到它，且没有按会话的发现历史（见 `dsh-tool-search` README）。
+- **对已预留但未激活的 MCP 名字执行程序化 `ctx.tools.execute` 会以 unknown 失败**：定义在 ToolSearch 命中激活之前并不存在；仓库内没有调用方依赖此路径。
+- **frontmatter 里的精确 MCP 名字必须与公开名（可能带 hash 后缀）一致**：服务器前缀通配符可以绕开大多数此类问题。
 
 - **动态 OAuth 客户端注册委托给 MCP SDK**：SDK 负责 RFC 9728/8414 元数据发现、PKCE、动态客户端注册与 token 刷新；本包只提供基于凭据的 `OAuthClientProvider` seam 持久化半边与单次 401 重试。交互式 `redirectToAuthorization` 在 headless 主机上只记录 URL 而不会驱动浏览器；完成流程仍需操作者介入。
 - **启动超时继承自 MCP SDK**：DSH 尚未公开连接／发现超时。每次 initialize 请求或分页 `tools/list` 请求都使用 SDK 默认的 60 秒，因此在初始同步完成期间，无响应的 server 或 cursor chain 可能同时延迟激活与 teardown。

@@ -71,7 +71,7 @@ Every MCP tool has two names: the raw MCP name (sent on the wire in `tools/call`
 
 ## Behavior
 
-- On connect: plugin activation awaits `listTools()` and registers each tool via `ctx.tools.register()` under its public name before the composition starts its first turn. Initial connection, discovery, or registration failure is always logged; it rejects activation when `failOnStartupError` is true and otherwise activates with no tools.
+- On connect: plugin activation awaits `listTools()` and publishes each tool under its public name before the composition starts its first turn — eagerly via `ctx.tools.register()`, or deferred through `ctx.toolSearch.registerDeferred` when that seam is mounted and the server lists at least `deferToolThreshold` tools (default 8). Initial connection, discovery, or registration failure is always logged; it rejects activation when `failOnStartupError` is true and otherwise activates with no tools.
 - Listens for `notifications/tools/list_changed` → re-syncs; a fetch-phase failure keeps the previous generation registered, while a registration conflict rolls back the attempted generation and leaves no tools from that server.
 - Tool execute: `client.callTool({ name: rawName, arguments }, { signal })` with timeout + abort support—the public name is never sent to the server.
 - Canonical success is `{ content: JsonValue[], structuredContent? }`; complete JSON MCP blocks survive for programmatic callers. A supported advertised `outputSchema` validates `structuredContent`; unsupported schema vocabulary falls back to unconstrained `JsonValue`.
@@ -96,6 +96,7 @@ The supervisor keeps each capability's registrations live across an outage (last
 | Service | Usage |
 |---|---|
 | `ctx.tools` | Register/unregister MCP tools and the resource bridge |
+| `ctx.toolSearch` | Optional: defer over-threshold listed tools (duck-typed; never a required inject) |
 | `ctx.skills` | Optional: register MCP prompt skills |
 | `ctx.credentials` | Optional: persist OAuth tokens and related state |
 
@@ -107,13 +108,17 @@ The supervisor keeps each capability's registrations live across an outage (last
 
 After initial discovery succeeds, each advertised MCP tool appears as a native tool named `mcp__<serverName>__<rawName>` (or its deterministic normalized form), with the server-provided description and input schema. A successful re-sync — including the one after an automatic reconnect — replaces the generation; plugin disposal or an exhausted reconnect budget removes it.
 
+When the `ctx.toolSearch` seam is mounted and this server lists at least **8 tools** (the default `deferToolThreshold`; counts the `tools/list` length including alwaysLoad tools), deferrable tools register **deferred** instead: they contribute name + description + a server-qualified search hint to the ToolSearch pool and stay out of the model-visible schema until a ToolSearch hit activates them (`activate` performs the real registration, callable exactly like any top-of-prompt tool afterward). A tool advertising `_meta['anthropic/alwaysLoad'] === true` registers eagerly even on a deferred server. Resource-bridge tools (`mcp__<server>__list_mcp_resources` / `read_mcp_resource`) always stay eager. Without the toolSearch seam — standalone deployments, other presets — every tool registers eagerly at any threshold.
+
+A generation swap (reconnect or `tools/list_changed`) disposes the previous generation first, which also unloads tools the model had activated via ToolSearch: after the swap those names are searchable again, and the model must search (or the session must re-activate) before calling them. Identical re-syncs on the same client are skipped by fingerprint and re-publish nothing.
+
 #### Token effect
 
-Data-dependent schema cost is paid on every request while the tools are registered. Re-sync replaces rather than accumulates schemas, and the server-qualified name adds tokens to every tool definition and call.
+Data-dependent schema cost is paid on every request while the tools are registered — deferred tools pay it only after activation, replacing their schema cost with one ToolSearch tool plus per-hit activations. Re-sync replaces rather than accumulates schemas, and the server-qualified name adds tokens to every tool definition and call.
 
 #### KV Cache effect
 
-Prefix-stable while the discovered tool set and schemas are unchanged. A re-sync that adds, removes, renames, or changes a tool replaces definitions and may invalidate reuse from the first changed schema token; a reconnect that recovers an unchanged list reproduces identical definitions and stays prefix-stable.
+Prefix-stable while the discovered tool set and schemas are unchanged. A re-sync that adds, removes, renames, or changes a tool replaces definitions and may invalidate reuse from the first changed schema token; a reconnect that recovers an unchanged list reproduces identical definitions and stays prefix-stable. The first deferred registration also inserts the ToolSearch tool into the model-visible set (one-time prefix change; it stays registered afterward — hysteresis).
 
 ### Tool-call history and results
 
@@ -130,6 +135,11 @@ Arguments and mapped text are retained until compaction. Binary and resource pay
 Append-only; newly visible content follows the reusable request prefix and does not invalidate existing KV-cache entries.
 
 ## Known Limitations and Deferred Work
+
+- **The defer threshold is per-server tool count, not context size** — a percentage-of-context or cross-server aggregate rule (Claude Code's ~10%) would defer more aggressively; three small servers of five tools each all stay eager. The threshold is also not configurable via plugin Config yet (tests pass it into `syncTools` directly).
+- **ToolSearch activation is process-global** — loading a deferred MCP tool makes it visible to every agent whose tool restriction admits the name, and there is no per-conversation discovery history (see the `dsh-tool-search` README).
+- **Programmatic `ctx.tools.execute` on a reserved-but-unactivated MCP name fails as unknown** — the definition does not exist until a ToolSearch hit activates it; no in-repo caller relies on this.
+- **Exact frontmatter MCP names must match the public (possibly hashed) name** — server-prefix wildcards sidestep most of that.
 
 - **Dynamic OAuth client registration is delegated to the MCP SDK** — the SDK owns RFC 9728/8414 metadata discovery, PKCE, dynamic client registration, and token refresh; this package supplies the credentials-backed persistence half of the `OAuthClientProvider` seam and the single 401 retry. An interactive `redirectToAuthorization` logs the URL for a headless host rather than driving a browser; completing the flow still requires an operator.
 - **Startup timeout is inherited from the MCP SDK** — DSH does not yet expose a connection/discovery timeout. Each initialize or paginated `tools/list` request uses the SDK's 60-second default, so an unresponsive server or cursor chain can delay both activation and teardown while the initial synchronization settles.

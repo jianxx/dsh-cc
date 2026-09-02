@@ -51,6 +51,7 @@
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/dsh-agent": "link:../../../../deepseek-harness/packages/core/agent",
     "@deepseek-ai/dsh-invariants": "link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants",
+    "@deepseek-ai/dsh-scope": "link:../../../../deepseek-harness/packages/core/scope",
     "@deepseek-ai/dsh-subagent": "link:../../../../deepseek-harness/packages/subagent/subagent",
     "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt",
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",

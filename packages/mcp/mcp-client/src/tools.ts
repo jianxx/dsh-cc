@@ -21,6 +21,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition, ToolExecution } from '@jianxx/dsh-cc-tools'
 import { assertSupportedJsonSchema } from '@jianxx/dsh-cc-tools'
 import type { JsonSchemaNode, JsonValue } from '@jianxx/dsh-cc-tools'
+import { DEFAULT_DEFER_TOOL_THRESHOLD, publishListedTool, toolSearchSeam } from './defer.ts'
+
+export { DEFAULT_DEFER_TOOL_THRESHOLD } from './defer.ts'
 
 /** Resolved options relevant to tool bridging. */
 export interface ToolBridgeOptions {
@@ -28,6 +31,15 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  /**
+   * Listed-tool count above which this server's deferrable tools register
+   * through `ctx.toolSearch` instead of eagerly. Counts the server's
+   * `tools/list` length including alwaysLoad tools; a tool flagged
+   * `_meta['anthropic/alwaysLoad']` is still eager even on a deferred server.
+   * `0` defers whenever `toolSearch` is present. Default
+   * {@link DEFAULT_DEFER_TOOL_THRESHOLD}.
+   */
+  deferToolThreshold?: number
   /**
    * Called before a single mid-session 401 retry. The SDK auto-refreshes an
    * expired token before a request; a mid-session `UnauthorizedError` means the
@@ -185,12 +197,22 @@ export function publicToolName(serverName: string, rawName: string): string {
  *    generation of `ToolDefinition`s under public names. Any failure here
  *    (network error, duplicate raw name in the server's list) rejects and
  *    leaves the previous generation registered untouched.
- * 2. Swap: dispose the previous generation, register the new one. A registry
+ * 2. Swap: dispose the previous generation, publish the new one. A registry
  *    conflict here can only mean a foreign registration squats on this
  *    server's `mcp__<serverName>__` namespace — the partial generation is
  *    rolled back (zero tools from this server) and logged. Initial strict
  *    synchronization may propagate the conflict so its parent transaction
  *    rejects; ordinary clients and later re-syncs return an empty generation.
+ *    Deferred publishing detects the same squat up front (`ctx.tools.get`)
+ *    because `registerDeferred` only reserves the name.
+ *
+ * When the `ctx.toolSearch` seam is mounted and the server lists at least
+ * `deferToolThreshold` tools (default {@link DEFAULT_DEFER_TOOL_THRESHOLD}),
+ * each deferrable tool registers through `registerDeferred` instead: its
+ * definition stays out of the model-visible schema until a ToolSearch hit
+ * activates it. Tools flagged `_meta['anthropic/alwaysLoad']` register eagerly
+ * even on a deferred server. Without the seam the swap is eager at any
+ * threshold.
  *
  * Between the phases, a fingerprint of the raw payload decides whether the
  * swap is needed at all: when the payload is semantically unchanged (key
@@ -216,7 +238,7 @@ export async function syncTools(
   previous: ToolGeneration,
 ): Promise<ToolGeneration> {
   // Phase 1: fetch and build the next generation without touching the registry.
-  const definitions = new Map<string, ToolDefinition>()
+  const definitions = new Map<string, { definition: ToolDefinition; rawName: string; alwaysLoad: boolean }>()
   const rawTools: unknown[] = []
   let cursor: string | undefined
   do {
@@ -230,11 +252,15 @@ export async function syncTools(
         )
       }
       definitions.set(publicName, {
-        name: publicName,
-        description: tool.description ?? '',
-        parameters: tool.inputSchema,
-        output: createOutput(tool.name, supportedOutputSchema(tool.outputSchema)),
-        execute: createExecutor(client, tool.name, tool.execution?.taskSupport === 'required', opts),
+        rawName: tool.name,
+        alwaysLoad: (tool as { _meta?: Record<string, unknown> })?._meta?.['anthropic/alwaysLoad'] === true,
+        definition: {
+          name: publicName,
+          description: tool.description ?? '',
+          parameters: tool.inputSchema,
+          output: createOutput(tool.name, supportedOutputSchema(tool.outputSchema)),
+          execute: createExecutor(client, tool.name, tool.execution?.taskSupport === 'required', opts),
+        },
       })
     }
     cursor = response.nextCursor
@@ -252,17 +278,23 @@ export async function syncTools(
     return previous
   }
 
+  const seam = toolSearchSeam(ctx)
+  const deferServer = seam !== undefined
+    && rawTools.length >= (opts.deferToolThreshold ?? DEFAULT_DEFER_TOOL_THRESHOLD)
+
   // Phase 2: swap generations.
   for (const dispose of previous.disposers.values()) dispose()
   const disposers: ToolDisposers = new Map()
   try {
-    for (const [publicName, definition] of definitions) {
-      disposers.set(publicName, ctx.tools.register(definition))
+    for (const [publicName, entry] of definitions) {
+      disposers.set(publicName, publishListedTool(ctx, opts, publicName, entry, seam, deferServer))
     }
   } catch (error) {
     // A conflict on an `mcp__<serverName>__`-qualified name means a foreign
     // registration occupies this server's namespace. Roll back so the model
     // sees either the full generation or none of it — never a partial set.
+    // Deferred disposers unwind both the reservation and any activated
+    // registration, so one loop reclaims everything this sync published.
     for (const dispose of disposers.values()) dispose()
     ctx.logger.error(`mcp-client(${opts.serverName}): tool registration failed, no tools registered: ${String(error)}`)
     if (opts.registrationFailure === 'throw') throw error

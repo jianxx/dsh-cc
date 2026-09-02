@@ -4,14 +4,17 @@
  * route resolution, and the toolFilter sanitization that keeps disabled
  * harness rows out of scoped restricts.
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import type { Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@jianxx/dsh-cc-tools'
+import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { AgentRegistry } from '../src/registry.ts'
 import { registerTaskTool, TASK_TOOL } from '../src/tool.ts'
 
@@ -113,6 +116,42 @@ async function call(ctx: Context, args: Record<string, unknown>, agent?: Agent) 
     ...(agent !== undefined ? { agent } : {}),
   })
   return result as ToolCallResult
+}
+
+/** Reserve names on the host tool registry so a scoped `restrict()` accepts them. */
+function reserveNames(ctx: Context, ...names: string[]): void {
+  for (const name of names) ctx.tools.reserve(name)
+}
+
+/** Replace (or install) the context logger's warn with a captured vi.fn. */
+function captureWarn(ctx: Context): ReturnType<typeof vi.fn> {
+  const warn = vi.fn()
+  const existing = (ctx as { logger?: Record<string, unknown> }).logger
+  ;(ctx as { logger: Record<string, unknown> }).logger = { ...existing, warn }
+  return warn
+}
+
+let restrictCounter = 0
+/**
+ * Mint a scoped child context (the same pattern tool-search's `mintAgent`
+ * uses) and apply the filter through a real scoped `restrict()` — it must
+ * NOT throw. Without this, a filter carrying an unrestrictable name would
+ * only fail later at the child's own start.
+ */
+async function assertRestrictable(ctx: Context, filter: ToolRestriction): Promise<void> {
+  // The scope key is opaque to dsh-scope; a plain unique string is a legal
+  // key (SessionId branding is irrelevant to restrict()).
+  const agent = { id: `restrict-${++restrictCounter}` } as Agent
+  let scope!: Scope
+  const fiber = ctx.plugin(Object.assign((inner: Context) => {
+    scope = createScope(inner, agent)
+  }, { inject: ['tools'] }))
+  await fiber.await()
+  try {
+    expect(() => scope.ctx.tools.restrict(filter)).not.toThrow()
+  } finally {
+    await scope.dispose()
+  }
 }
 
 describe('Task tool', () => {
@@ -240,30 +279,153 @@ describe('Task tool', () => {
     expect(result.content[0]!.text).toBe('answer A answer B')
   })
 
-  it('keeps reserved names and strips unknown names from a definition toolFilter', async () => {
+  it('keeps reserved and registered names in a definition toolFilter', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'guarded', '---\nname: guarded\ndescription: With tools\ntools: [Read, Task, Bash]\n---\nGuarded.\n')
     // `Task` translates to ['subagent', 'subagent_fork']; `subagent` is
-    // reserved (not registered) but legal, `subagent_fork` is this tool, and
-    // both `read` and `bash` are registered rows in the cc preset. Nothing is
-    // stripped; the child's own restrict would reject a typo'd name.
+    // reserved by registerTaskTool and `subagent_fork` is the registered Task
+    // tool. `read`/`read_image`/`bash` must be mounted (registered or
+    // reserved) or sanitization drops them — here they are reserved, as the
+    // cc preset registers them.
     const { ctx, runs } = await mount()
+    reserveNames(ctx, 'read', 'read_image', 'bash')
     await call(ctx, { subagent_type: 'guarded', description: 'x', prompt: 't' }, agentAt(ws))
     expect(runs).toHaveLength(1)
     const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toBeDefined()
+    expect(filter?.allow).toContain('read')
+    expect(filter?.allow).toContain('read_image')
     expect(filter?.allow).toContain('subagent')
     expect(filter?.allow).toContain('subagent_fork')
+    expect(filter?.allow).toContain('bash')
+    await assertRestrictable(ctx, filter!)
   })
 
-  it('drops a frontmatter name with no harness translation (typo defence)', async () => {
+  it('drops a frontmatter name that is not mounted (typo defence)', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'typoed', '---\nname: typoed\ndescription: Typo\ntools: [Read, Tas]\n---\nTypo.\n')
     const { ctx, runs } = await mount()
+    reserveNames(ctx, 'read', 'read_image')
     await call(ctx, { subagent_type: 'typoed', description: 'x', prompt: 't' }, agentAt(ws))
     const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
-    expect(filter?.allow).toBeDefined()
-    expect(filter?.allow).not.toContain('Tas')
+    expect(filter?.allow).toEqual(['read', 'read_image'])
+  })
+
+  it('keeps an exact mounted MCP public name and auto-includes mounted ToolSearch', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [Read, mcp__github__create_issue]\n---\nMCP.\n')
+    const { ctx, runs } = await mount()
+    reserveNames(ctx, 'mcp__github__create_issue', 'mcp__github__search', 'read', 'read_image', 'ToolSearch')
+    const warn = captureWarn(ctx)
+    await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, agentAt(ws))
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter?.allow).toContain('read')
+    expect(filter?.allow).toContain('read_image')
+    expect(filter?.allow).toContain('mcp__github__create_issue')
+    expect(filter?.allow).toContain('ToolSearch')
+    expect(filter?.allow).not.toContain('mcp__github__search')
+    expect(warn).not.toHaveBeenCalled()
+    await assertRestrictable(ctx, filter!)
+  })
+
+  it('expands server-level MCP wildcards in both forms and auto-includes mounted ToolSearch', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'wild-a', '---\nname: wild-a\ndescription: A\ntools: [mcp__github]\n---\nA.\n')
+    writeAgent(ws, 'wild-b', '---\nname: wild-b\ndescription: B\ntools: [mcp__github__*]\n---\nB.\n')
+    const { ctx, runs } = await mount()
+    reserveNames(ctx, 'mcp__github__create_issue', 'mcp__github__search', 'ToolSearch')
+    await call(ctx, { subagent_type: 'wild-a', description: 'x', prompt: 't' }, agentAt(ws))
+    await call(ctx, { subagent_type: 'wild-b', description: 'x', prompt: 't' }, agentAt(ws))
+    for (const run of runs) {
+      const filter = run.request['toolFilter'] as { allow?: string[] } | undefined
+      expect(filter?.allow).toContain('mcp__github__create_issue')
+      expect(filter?.allow).toContain('mcp__github__search')
+      expect(filter?.allow).toContain('ToolSearch')
+      await assertRestrictable(ctx, filter as ToolRestriction)
+    }
+  })
+
+  it('sees MCP names reserved on an ancestor standing-scope layer', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [mcp__github__create_issue]\n---\nMCP.\n')
+    const { ctx, runs } = await mount()
+    // Production shape: mcp-client registers on the cc standing-scope layer,
+    // and the calling session agent is a child of that standing key. `view()`
+    // without the calling agent only sees the global layer and would drop
+    // those names.
+    const standingKey = { id: 'standing' } as Agent
+    const caller = agentAt(ws)
+    let standing!: Scope
+    let child!: Scope
+    const fiber = ctx.plugin(Object.assign((inner: Context) => {
+      standing = createScope(inner, standingKey)
+      child = createScope(inner, caller, { parent: standingKey })
+    }, { inject: ['tools'] }))
+    await fiber.await()
+    standing.ctx.tools.reserve('mcp__github__create_issue')
+    standing.ctx.tools.reserve('ToolSearch')
+    await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, caller)
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter?.allow).toContain('mcp__github__create_issue')
+    expect(filter?.allow).toContain('ToolSearch')
+    await child.dispose()
+    await standing.dispose()
+  })
+
+  it('never auto-includes ToolSearch when it is not mounted', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [mcp__github__create_issue]\n---\nMCP.\n')
+    const { ctx, runs } = await mount()
+    reserveNames(ctx, 'mcp__github__create_issue')
+    await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, agentAt(ws))
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter?.allow).toContain('mcp__github__create_issue')
+    expect(filter?.allow).not.toContain('ToolSearch')
+    await assertRestrictable(ctx, filter!)
+  })
+
+  it('emits a deny-all allow list (with a warning) when the allow-list matches no mounted tools', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'missing', '---\nname: missing\ndescription: M\ntools: [mcp__missing__foo]\n---\nM.\n')
+    const { ctx, runs } = await mount()
+    const warn = captureWarn(ctx)
+    await call(ctx, { subagent_type: 'missing', description: 'x', prompt: 't' }, agentAt(ws))
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter).toEqual({ allow: [] })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('mcp__missing__foo'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no mounted tools'))
+    await assertRestrictable(ctx, filter!)
+  })
+
+  it('keeps a mounted MCP name in a disallowedTools deny-list', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'mcp-denied', '---\nname: mcp-denied\ndescription: D\ndisallowedTools: [mcp__github__search]\n---\nD.\n')
+    const { ctx, runs } = await mount()
+    reserveNames(ctx, 'mcp__github__search')
+    await call(ctx, { subagent_type: 'mcp-denied', description: 'x', prompt: 't' }, agentAt(ws))
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter?.deny).toContain('mcp__github__search')
+    await assertRestrictable(ctx, filter!)
+  })
+
+  it('passes no toolFilter when the definition declares no tools key', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'plain', '---\nname: plain\ndescription: P\n---\nP.\n')
+    const { ctx, runs } = await mount()
+    await call(ctx, { subagent_type: 'plain', description: 'x', prompt: 't' }, agentAt(ws))
+    expect(runs[0]!.request['toolFilter']).toBeUndefined()
+  })
+
+  it('rejects a bare mcp__ wildcard with a deny-all allow list', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'bare', '---\nname: bare\ndescription: B\ntools: [mcp__]\n---\nB.\n')
+    const { ctx, runs } = await mount()
+    const warn = captureWarn(ctx)
+    await call(ctx, { subagent_type: 'bare', description: 'x', prompt: 't' }, agentAt(ws))
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(filter).toEqual({ allow: [] })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid MCP wildcard'))
+    await assertRestrictable(ctx, filter!)
   })
 
   it('requires a calling agent', async () => {
