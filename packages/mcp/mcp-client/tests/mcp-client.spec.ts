@@ -7,6 +7,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type JsonValue } from '@jianxx/dsh-cc-tools'
 import { emptyToolGeneration, publicToolName, syncTools, type ToolBridgeOptions } from '@jianxx/dsh-cc-mcp-client/src/tools.ts'
 import { createTransport } from '@jianxx/dsh-cc-mcp-client/src/transport.ts'
+import { stdioStderrTail } from '@jianxx/dsh-cc-mcp-client/src/stdio-stderr.ts'
 import type { Config } from '@jianxx/dsh-cc-mcp-client'
 
 const testToolSignal = new AbortController().signal
@@ -820,10 +821,14 @@ describe('createTransport', () => {
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
     }
-    const transport = createTransport(config)
+    const transport = createTransport(config, { logDir: '/tmp/dsh-mcp-never-written' })
     expect(transport).toBeDefined()
     expect(transport).toHaveProperty('start')
     expect(transport).toHaveProperty('close')
+    // SDK inherit-mode getter is null before start(); a pre-start stream
+    // proves we passed stderr: 'pipe' so the child cannot paint the TUI.
+    expect((transport as { stderr: unknown }).stderr).not.toBeNull()
+    expect(stdioStderrTail(transport)).toBe('')
   })
 
   it('creates StreamableHTTPClientTransport for http config without headers', () => {

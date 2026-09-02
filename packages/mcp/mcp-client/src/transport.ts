@@ -17,6 +17,7 @@ import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import type { Config } from './index.ts'
 import { CredentialsOAuthClientProvider } from './auth.ts'
 import type { OAuthConfig } from './auth.ts'
+import { attachStdioStderrDrain } from './stdio-stderr.ts'
 
 /**
  * The subprocess seam's scrubbed parent env (credential-shaped and stale
@@ -45,25 +46,35 @@ export interface TransportContext {
   ctx?: Context
   /** A pre-built OAuth provider; takes precedence over `ctx` for network configs. */
   authProvider?: CredentialsOAuthClientProvider
+  /**
+   * Directory for captured stdio stderr (`<serverName>.log`). Tests inject a
+   * tmpdir so e2e cannot touch the developer's `$DSH_HOME`. Omission uses
+   * `$DSH_HOME/mcp-logs` (or `~/.dsh/mcp-logs`).
+   */
+  logDir?: string
 }
 
 /**
  * Create an MCP transport from the resolved plugin config.
  *
  * @param config - Resolved plugin config discriminated on `transport`.
- * @param transportCtx - Optional context and pre-built OAuth provider for
- *   network transports; omit both to skip OAuth wiring.
+ * @param transportCtx - Optional context, pre-built OAuth provider, and
+ *   stdio log directory; omit to skip OAuth and use the default log dir.
  * @returns A connected-ready MCP Transport (stdio, Streamable HTTP, or SSE).
  */
 export function createTransport(config: Config, transportCtx?: TransportContext): Transport {
   switch (config.transport) {
-    case 'stdio':
-      return new StdioClientTransport({
+    case 'stdio': {
+      const transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
         env: buildChildEnv(config.env),
         cwd: config.cwd,
+        stderr: 'pipe',
       })
+      attachStdioStderrDrain(transport, config.serverName, transportCtx?.logDir)
+      return transport
+    }
     case 'streamable-http':
       return new StreamableHTTPClientTransport(
         new URL(config.url),
