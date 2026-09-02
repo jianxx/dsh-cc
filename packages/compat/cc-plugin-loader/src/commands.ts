@@ -10,6 +10,8 @@
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { parseCcFrontmatter, parseCcFrontmatterDocument } from '@jianxx/dsh-cc-skill-loader'
 import { basename, join, resolve } from 'node:path'
 import type { CcPluginManifest, CcCommand } from './types.ts'
 import { ComponentTally } from './seams.ts'
@@ -26,16 +28,31 @@ export interface CommandsSeam {
 
 /** The minimal typed command definition this loader emits. */
 export interface CommandDefinition {
-  /** Lowercase kebab command name. */
+  /** `plugin:command` namespaced name, or the bare command name. */
   readonly name: string
-  /** Human-readable description. */
+  /** Human-readable command description. */
   readonly description: string
-  /** Prompts the command's execution (returns content). */
-  readonly handler: () => CommandResult | Promise<CommandResult>
+  /** Argument placeholder hint, surfaced to the user. */
+  readonly input?: { hint: string }
+  /** Dispatches the rendered command body as a user prompt on the invoking agent. */
+  readonly handler: (invocation: CommandInvocationLike) => CommandResult | Promise<CommandResult>
 }
 
 /** Result shape the loader's command handlers return. */
-export type CommandResult = { readonly kind: 'success'; readonly text?: string }
+/**
+ * Minimal structural view of the upstream command invocation. Duck-typed on
+ * purpose: the loader never imports the commands package directly.
+ */
+export interface CommandInvocationLike {
+  /** The agent the command was executed against; the prompt injection target. */
+  readonly agent: { followup(message: unknown): unknown }
+  /** Raw argument text following the command name (empty when none given). */
+  readonly rawInput: string
+}
+
+export type CommandResult =
+  | { readonly kind: 'success'; readonly text?: string }
+  | { readonly kind: 'error'; readonly text: string }
 
 /** Commands live under this directory in a plugin root, when present. */
 export const STANDARD_COMMANDS_DIR = 'commands'
@@ -75,14 +92,34 @@ export function mountCommands(options: MountCommandsOptions): { disposers: (() =
       tally.addFailed(`command "${entry.name}": ${rendered.error}`)
       continue
     }
-    disposers.push(options.commands.register({
+    const hint = entry.argumentHint ?? rendered.argumentHint
+    const definition: CommandDefinition = {
       name: entry.name,
-      description: entry.description ?? '',
-      handler: () => rendered.content === undefined
-        ? { kind: 'success' }
-        : { kind: 'success', text: rendered.content },
-    }))
-    tally.addLoaded()
+      description: entry.description ?? rendered.description ?? '',
+      ...hint === undefined ? {} : { input: { hint } },
+      handler: invocation => dispatchCommandPrompt(invocation, rendered.body ?? ''),
+    }
+    // Claude Code exposes plugin commands as `plugin:command`; register that
+    // namespaced form first (primary), then a bare alias for discoverability.
+    // A rejected alias (name already taken) only skips the alias; a rejected
+    // primary fails this command, never the whole plugin mount.
+    const names = options.manifest.name === entry.name
+      ? [entry.name]
+      : [`${options.manifest.name}:${entry.name}`, entry.name]
+    let loaded = false
+    for (const [index, name] of names.entries()) {
+      try {
+        disposers.push(options.commands.register({ ...definition, name }))
+        if (index === 0) loaded = true
+      } catch (error) {
+        if (index === 0) {
+          tally.addFailed(`command "${entry.name}": ${String(error)}`)
+          break
+        }
+        tally.addSkipped(`bare name "${entry.name}" not registered (namespaced form remains): ${String(error)}`)
+      }
+    }
+    if (loaded) tally.addLoaded()
   }
   return { disposers, tally }
 }
@@ -113,17 +150,50 @@ function defaultCommandEntries(pluginRoot: string, tally: ComponentTally): CcCom
 }
 
 /** Resolve a command entry to consumable content, or a failure reason. */
-function renderCommand(pluginRoot: string, entry: CcCommand): { content?: string; error?: string } {
+function renderCommand(pluginRoot: string, entry: CcCommand): {
+  body?: string
+  description?: string
+  argumentHint?: string
+  error?: string
+} {
   if (entry.content !== undefined) {
-    return { content: entry.content }
+    return { body: entry.content }
   }
   if (entry.source !== undefined) {
     const path = resolve(pluginRoot, entry.source)
     try {
-      return { content: readFileSync(path, 'utf8') }
+      const raw = readFileSync(path, 'utf8')
+      const document = parseCcFrontmatterDocument(raw)
+      const parsed = parseCcFrontmatter(raw)
+      if (document === undefined || parsed === undefined) return { body: raw }
+      return {
+        body: document.body,
+        ...parsed.description === undefined ? {} : { description: parsed.description },
+        ...parsed.argumentHint === undefined ? {} : { argumentHint: parsed.argumentHint },
+      }
     } catch (error) {
       return { error: `could not read command file "${entry.source}": ${String(error)}` }
     }
   }
   return { error: 'has neither "content" nor a readable "source"' }
+}
+
+/**
+ * Substitute `$ARGUMENTS` with the invocation's raw input and steer the
+ * rendered command body into the conversation as a user message — the same
+ * cross-plane seam the upstream `/plan` command uses. Returning success
+ * without `text` keeps the command plane from echoing the body back as a
+ * status row: the injected message itself is the visible artifact.
+ */
+function dispatchCommandPrompt(invocation: CommandInvocationLike, body: string): CommandResult {
+  const text = body.split('$ARGUMENTS').join(invocation.rawInput)
+  try {
+    invocation.agent.followup(createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'user' },
+    }))
+    return { kind: 'success' }
+  } catch (error) {
+    return { kind: 'error', text: `could not dispatch command prompt: ${String(error)}` }
+  }
 }
