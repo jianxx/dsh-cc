@@ -46,7 +46,7 @@ const tagMatch = typeof lastTag === "string" && lastTag.match(/^v(\d+)\.(\d+)\.(
 if (!tagMatch) {
   fail(
     `invalid last tag '${lastTag ?? ""}'. Expected a stable v<major>.<minor>.<patch>; ` +
-      "daily auto-release 只处理 stable 基线 tag（prerelease 基线请走手动 release.mjs）",
+      "daily auto-release only accepts a stable baseline (use release.mjs by hand for prereleases)",
   );
 }
 if (!["auto", "patch", "minor"].includes(bump)) {
@@ -60,7 +60,7 @@ const rootVersion = rootJson.version;
 if (`v${rootVersion}` !== lastTag) {
   fail(
     `lockstep broken: root package.json version (${rootVersion}) != last tag (${lastTag}). ` +
-      `疑似上次 tag 推送/发布未完成。手动恢复：git checkout main && git pull && ` +
+      `Likely a half-finished previous release. Recover with: git checkout main && git pull && ` +
       `git tag v${rootVersion} && git push origin v${rootVersion} && ` +
       `gh workflow run publish.yml -f tag=v${rootVersion}`,
   );

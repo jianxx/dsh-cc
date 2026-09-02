@@ -1,39 +1,42 @@
 # =============================================================================
 # Daily Release (propose) — dsh-cc
 #
-# 北京工作日 08:00(UTC 0:00,中国无夏令时)检查 main 是否有未发布工作:
-# 谓词 = main HEAD 不在最新 v* tag 里(merge-base 祖先判定,不依赖提交时间
-# 戳,漏跑的次日自愈)。命中则由本 workflow 开一张"发布 PR"(分支
-# release/v<next>,内容仅 lockstep 版本位改写);PR 合入后由 release-tag.yml
-# 打 tag 并触发 publish.yml 完成发布。
+# Weekdays at 08:00 Beijing (00:00 UTC; China has no DST). Checks whether
+# main has unreleased work: HEAD is not contained in the latest v* tag
+# (merge-base ancestry, no commit-date window — a missed run self-heals
+# the next day). If so, opens a release PR (branch release/v<next>,
+# lockstep version bump only). After merge, release-tag.yml tags the
+# merge commit and dispatches publish.yml.
 #
-# 为什么两段式:main 受分支保护不可直推,GITHUB_TOKEN 的 push 也不会触发
-# 其他 workflow,故 tag 必须等 PR 合入后由 release-tag.yml 打,发布必须
-# 显式 gh workflow run 触发。本 workflow 不打 tag、不直推 main。
+# Why two stages: main is branch-protected (no direct push), and a
+# GITHUB_TOKEN push does not start other workflows, so the tag must be
+# created after the PR lands and publish.yml must be dispatched
+# explicitly. This workflow never tags and never pushes main.
 #
-# 重跑/并发护栏:PR 分支名去重(同名 release/v* 开放 PR 已存在则跳过)+
-# release.mjs 自带校验(HEAD===origin/main、tag 查重、树净)。
-# 手动触发默认 dry_run=true(只跑 gate + release.mjs --dry-run,不开 PR)。
+# Guards: open-PR dedupe on the release/v* branch name + release.mjs
+# validations (HEAD === origin/main, tag uniqueness, clean tree).
+# Manual dispatch defaults to dry_run=true (gates + release.mjs --dry-run,
+# no PR) so the logic can be exercised without proposing a release.
 # =============================================================================
 
 name: Daily Release (propose)
 
 on:
-  schedule: [{ cron: "0 0 * * 1-5" }]   # 北京工作日 08:00
+  schedule: [{ cron: "0 0 * * 1-5" }]   # 08:00 Beijing, weekdays
   workflow_dispatch:
     inputs:
       bump:
-        description: 版本档位
+        description: Version bump (auto = feat → minor, else patch)
         type: choice
         options: [auto, patch, minor]
         default: auto
       dry_run:
-        description: 只演练不开PR
+        description: Validate only — do not push a branch or open a PR
         type: boolean
         default: true
 
 permissions:
-  contents: write        # 推 release/* 分支
+  contents: write        # push release/* branches
   pull-requests: write   # gh pr create / list
 
 concurrency:
@@ -42,7 +45,8 @@ concurrency:
 
 env:
   BUMP: ${{ inputs.bump || 'auto' }}
-  # schedule 事件下 inputs.dry_run 为空,自然走真发布;仅手动默认演练
+  # schedule events have no inputs.dry_run → false → real proposal;
+  # manual dispatch defaults to dry-run.
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
 
 jobs:
@@ -54,42 +58,44 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0   # merge-base 祖先判定与 tag --merged 需要全历史
+          fetch-depth: 0   # ancestry check + tag --merged need full history
 
-      # checkout@v4 给 detached HEAD;release.mjs 要求分支 == main,必须切回。
-      # --force --tags:祖先判定与 LAST_TAG 选取依赖本地 tag 齐全。
+      # checkout@v4 leaves a detached HEAD; release.mjs requires branch == main.
+      # --force --tags: LAST_TAG selection and ancestry need a complete tag set.
       - name: Sync main (undetach + tags)
         run: |
           set -euo pipefail
           git fetch --force --tags origin
           git checkout -B main origin/main
 
-      # 谓词:HEAD 已包含于最新 tag → 无未发布工作。tag 按版本排序选取,
-      # 免疫乱序打 tag 与非 v* 杂 tag(git describe 是"图上最近",不用)。
+      # Predicate: HEAD already contained in the latest tag → nothing to ship.
+      # Tags are version-sorted so a stray non-v* tag or out-of-order tag
+      # cannot become the baseline (git describe is "nearest on the graph").
       - id: gate
         name: Gate — unreleased work on main?
         run: |
           set -euo pipefail
           LAST_TAG=$(git tag --list 'v*' --merged origin/main --sort=-v:refname | head -n1)
           if [ -z "$LAST_TAG" ]; then
-            echo "::error::仓库中不存在任何已合入 main 的 v* tag,无法确定发布基线"
+            echo "::error::no v* tag reachable from main; cannot establish a release baseline"
             exit 1
           fi
           if git merge-base --is-ancestor origin/main "$LAST_TAG"; then
             should_release=false
-            echo "main HEAD 已包含在 $LAST_TAG 中,无未发布工作" >> "$GITHUB_STEP_SUMMARY"
+            echo "main HEAD is contained in $LAST_TAG; no unreleased work" >> "$GITHUB_STEP_SUMMARY"
           else
             should_release=true
-            echo "main HEAD 领先 $LAST_TAG,存在未发布工作" >> "$GITHUB_STEP_SUMMARY"
+            echo "main HEAD is ahead of $LAST_TAG; unreleased work exists" >> "$GITHUB_STEP_SUMMARY"
           fi
           {
             echo "last_tag=$LAST_TAG"
             echo "should_release=$should_release"
           } >> "$GITHUB_OUTPUT"
 
-      # 恢复缺口:tag 已覆盖 HEAD 但 GitHub Release 缺失 ⇒ 上次 publish 未
-      # 走完(dispatch 失败/审批期出错)。publish 侧幂等(已发布版本自动跳过),
-      # 补点火零代价;若无缺失则只记录 skip。
+      # Recovery: tag covers HEAD but the GitHub Release is missing ⇒ the last
+      # publish never finished (dispatch failed / environment approval died).
+      # publish.yml is idempotent (already-published versions are skipped), so
+      # re-dispatching is cheap; otherwise just record the skip.
       - name: Recover stuck release
         if: steps.gate.outputs.should_release == 'false' && env.DRY_RUN != 'true'
         env:
@@ -98,9 +104,9 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$LAST_TAG" > /dev/null 2>&1; then
-            echo "$LAST_TAG 已发布,跳过恢复" >> "$GITHUB_STEP_SUMMARY"
+            echo "$LAST_TAG already published; recovery skip" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "$LAST_TAG 缺 GitHub Release,补触发 publish.yml" >> "$GITHUB_STEP_SUMMARY"
+            echo "$LAST_TAG has no GitHub Release; re-dispatching publish.yml" >> "$GITHUB_STEP_SUMMARY"
             gh workflow run publish.yml -f tag="$LAST_TAG"
           fi
 
@@ -117,7 +123,7 @@ jobs:
           echo "next version: $NEXT" >> "$GITHUB_STEP_SUMMARY"
           open_prs=$(gh pr list --head "${HEAD_REF}${NEXT}" --state open --json number --jq length)
           if [ "$open_prs" -gt 0 ]; then
-            echo "提案 PR 已存在(release/v$NEXT 有开放 PR),跳过" >> "$GITHUB_STEP_SUMMARY"
+            echo "proposal already open (release/v$NEXT); skipping" >> "$GITHUB_STEP_SUMMARY"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -136,7 +142,7 @@ jobs:
           set -euo pipefail
           NEXT="${{ steps.plan.outputs.next }}"
           node scripts/release.mjs "$NEXT" --dry-run
-          echo "DRY-RUN:校验通过,未建分支/PR(手动触发默认演练;schedule 触发才会真提案)" >> "$GITHUB_STEP_SUMMARY"
+          echo "DRY-RUN: validations passed; no branch/PR created (manual dispatch defaults to dry-run; the schedule path proposes for real)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Propose release PR
         if: >-
@@ -152,22 +158,23 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # release.mjs:改写全部 manifest + FALLBACK_VERSION,commit,本地打 tag
+          # release.mjs: rewrite every manifest + FALLBACK_VERSION, commit, local tag
           node scripts/release.mjs "$NEXT"
-          # tag 留给 release-tag.yml 在 PR 合入后统一打(此处误推会因 publish
-          # 的"tag 须在 main 上"祖先门禁而红)
+          # Tag is created by release-tag.yml after merge. Pushing it here would
+          # fail publish.yml's "tag must be on main" ancestry gate.
           git tag -d "v$NEXT"
-          # -f 覆盖同名已关闭 PR 的残留分支;release/* 不受 main 保护限制
+          # -f overwrites a leftover branch from a previously closed PR;
+          # release/* is not covered by main's branch protection.
           git push -f origin "HEAD:refs/heads/$HEAD_REF"
 
           url=$(gh pr create --base main --head "$HEAD_REF" \
             --title "chore(release): v$NEXT" \
             --body "$(cat <<'EOF'
-          由 [daily-release.yml](.github/workflows/daily-release.yml) 自动创建的发布提案:仅 lockstep 版本位改写(全部 manifest + FALLBACK_VERSION)。
+          Auto-opened by [daily-release.yml](.github/workflows/daily-release.yml): lockstep version bump only (all publishable manifests + FALLBACK_VERSION).
 
-          - 合并本 PR 后 [release-tag.yml](.github/workflows/release-tag.yml) 会自动打 tag 并触发 publish.yml;
-          - publish.yml 跑完门禁链后会在 `npm-publish` environment 等待人工批准,批准后即发布到 npmjs 并创建 GitHub Release;
-          - 发布失败补救:`gh workflow run publish.yml -f tag=<tag>`。
+          - After merge, [release-tag.yml](.github/workflows/release-tag.yml) tags the merge commit and dispatches publish.yml.
+          - publish.yml runs the full gate chain, then waits on the `npm-publish` environment for a human approval before publishing to npmjs and creating the GitHub Release.
+          - If publish fails: `gh workflow run publish.yml -f tag=<tag>`.
           EOF
           )")
-          echo "已提案发布 PR:$url" >> "$GITHUB_STEP_SUMMARY"
+          echo "opened release PR: $url" >> "$GITHUB_STEP_SUMMARY"
