@@ -10,6 +10,9 @@
   "references": [
     {
       "path": "../../core/tools"
+    },
+    {
+      "path": "../../workspace/session-cwd"
     }
   ]
 }

@@ -287,6 +287,19 @@ describe('handleComposerInput', () => {
     expect(answers).toHaveLength(3)
   })
 
+  it('answers an approval overlay with session on 4 or s/S', () => {
+    const answers: string[] = []
+    const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
+    driver.answerApproval = kind => {
+      answers.push(kind)
+    }
+    for (const key of ['4', 's', 'S']) {
+      handleComposerInput(driver, key)
+      expect(answers.at(-1)).toBe('session')
+    }
+    expect(answers).toHaveLength(3)
+  })
+
   it('does not toggle thinking while an approval overlay is open (overlay wins)', () => {
     const driver = sink(setApproval(createInitialState(), { toolName: 'Bash' }))
     handleComposerInput(driver, '\x0f')

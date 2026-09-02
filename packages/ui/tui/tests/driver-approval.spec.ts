@@ -145,6 +145,31 @@ describe('approval modal queue', () => {
     expect(driver.state.approval).toBeUndefined()
   })
 
+  it("the session answer resolves the call and routes the derived rule to the permission engine's session allowlist", async () => {
+    const queue = makeQueueCtx()
+    const driver = await createDriver(queue.ctx as never, {})
+
+    // The 'session' answer grants through the permission engine's session
+    // allowlist (WS4-PR-B) — the settings provider is never consulted.
+    const sessionRules: { agent: unknown; rule: string }[] = []
+    const engine = {
+      addSessionAllow(agent: unknown, rule: string) {
+        sessionRules.push({ agent, rule })
+      },
+    }
+    const prevGet = queue.ctx.get.bind(queue.ctx)
+    queue.ctx.get = (key: string) => (key === 'permissionRules' ? engine : prevGet(key))
+
+    const pending = fireRequests(queue, 1)
+    driver.answerApproval('session')
+    // No preview payload: the derivation falls back to a whole-tool rule
+    // for the requested tool name (`Tool0` from fireRequests).
+    await expect(pending[0]).resolves.toBe('allowed-once')
+    expect(sessionRules).toHaveLength(1)
+    expect(sessionRules[0]!.rule).toBe('Tool0')
+    expect(sessionRules[0]!.agent).toBe(queue.agent)
+  })
+
   it('aborting a queued (non-head) request removes it and updates the count', async () => {
     const queue = makeQueueCtx()
     const driver = await createDriver(queue.ctx as never, {})

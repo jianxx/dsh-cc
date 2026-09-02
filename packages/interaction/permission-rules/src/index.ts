@@ -20,6 +20,7 @@ import { effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-p
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
+import { foldSessionCwd } from '@jianxx/dsh-cc-session-cwd'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 // Side-effect type import: declaration-merges `ctx.shell` (the capability fact
 // `sandboxMode` this plugin reads for the sandboxed-bash exemption). No value
@@ -44,6 +45,21 @@ import {
   setPermissionMode,
 } from './mode.ts'
 import { isBashToolName, ruleMatches, subjectOf } from './matchers.ts'
+import { SessionAllowlist, foldSessionAllows } from './session-allowlist.ts'
+import { createSandboxApprovalListener } from './approval-listener.ts'
+
+export {
+  SESSION_ALLOW_EVENT,
+  SessionAllowlist,
+  appendSessionAllow,
+  foldSessionAllows,
+  type SessionAllowEventData,
+} from './session-allowlist.ts'
+export {
+  createSandboxApprovalListener,
+  isSandboxEscalation,
+  type SandboxApprovalListenerConfig,
+} from './approval-listener.ts'
 
 export {
   foldPermissionMode,
@@ -222,6 +238,10 @@ export class PermissionRulesService extends Service {
   private state: { rules: PermissionRuleSet; defaultMode: PermissionMode }
   /** Disposers for the currently registered monotonic guards. */
   private guardDisposers: (() => void)[] = []
+  /** Session-scoped approval memory (WS4-PR-B): rules granted via the UI's "Allow for this session". */
+  private readonly sessionAllowlist = new SessionAllowlist()
+  /** Session ids already seeded from their log's `permission/session-allow` audit events. */
+  private readonly allowlistSeeded = new Set<string>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'permissionRules')
@@ -253,6 +273,19 @@ export class PermissionRulesService extends Service {
       if (decision.kind === 'ask') return { kind: 'ask', ...decision.reason === undefined ? {} : { reason: decision.reason } }
       return next()
     })
+
+    // WS3 sandbox integration: the approval-seam listener auto-approves
+    // sandbox escalations in `auto` mode when the session has a resolvable
+    // workspace root. Registered ahead of any UI provider so an eligible
+    // escalation never reaches the modal queue; every auto-approval is
+    // audit-logged to the session log (`scope: 'sandbox-auto'`).
+    ctx.on('approval/request', createSandboxApprovalListener({
+      modeOf: (agent) => {
+        if (foldPlanMode(agent.session.events)) return 'plan'
+        return foldPermissionMode(agent.session.events) ?? this.state.defaultMode
+      },
+      workspaceOf: (agent) => this.sessionWorkspaceOf(agent),
+    }))
 
     // Pin sessions created while the deployment default is a sandbox-affecting or
     // plan mode so a fresh session inherits the default durably.
@@ -396,6 +429,11 @@ export class PermissionRulesService extends Service {
     const mode = this.effectiveMode(exec)
     if (risk.level === 'MEDIUM') {
       if (mode === 'bypassPermissions') return { kind: 'allow' }
+      // Session-scoped approval memory (WS4-PR-B): a rule the user granted via
+      // "Allow for this session" overrides the MEDIUM early-return ask. Checked
+      // after the HIGH safety deny, before the MEDIUM ask. `plan` still asks —
+      // read-only confinement outranks a session grant.
+      if (mode !== 'plan' && this.sessionAllowMatches(exec)) return { kind: 'allow' }
       return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
     }
     const subject = subjectOf(exec, this.bashToolName)
@@ -417,6 +455,52 @@ export class PermissionRulesService extends Service {
       return { kind: 'allow' }
     }
     return decision
+  }
+
+  /**
+   * Whether the session-scoped allowlist matches this call. The session's
+   * rules are seeded once from its log's `permission/session-allow` audit
+   * events, so a resumed session keeps its grants. Agent-less calls never
+   * match (there is no session to scope to).
+   */
+  private sessionAllowMatches(exec: ToolExecution): boolean {
+    const agent = exec.agent
+    if (agent === undefined) return false
+    const id = String(agent.session.id)
+    if (!this.allowlistSeeded.has(id)) {
+      this.allowlistSeeded.add(id)
+      this.sessionAllowlist.seed(id, foldSessionAllows(agent.session.events))
+    }
+    return this.sessionAllowlist.matches(id, exec.name, subjectOf(exec, this.bashToolName))
+  }
+
+  /**
+   * The session's workspace root: the durable `worktree/entered` fold
+   * (session-cwd, WS1), falling back to the session header cwd. Undefined
+   * when the session never recorded a cwd — the sandbox listener then cannot
+   * verify an escalation is in-scope and falls through to the normal ask.
+   */
+  private sessionWorkspaceOf(agent: Agent): string | undefined {
+    return foldSessionCwd(agent.session.events) ?? agent.session.header?.cwd
+  }
+
+  /**
+   * Grant a session-scoped allow rule on the agent's session: in-memory match
+   * for the rest of this session plus a `permission/session-allow` audit
+   * event. Never touches the `permissions` settings namespace.
+   * @param agent - the agent whose session is granted the rule.
+   * @param rule - the rule string (e.g. `Bash(npm )` or a whole-tool name).
+   */
+  addSessionAllow(agent: Agent, rule: string): void {
+    this.sessionAllowlist.add(agent.session, rule)
+  }
+
+  /**
+   * Drop every session-scoped rule for the agent's session (audited clear
+   * record in the session log).
+   */
+  clearSessionAllows(agent: Agent): void {
+    this.sessionAllowlist.clear(agent.session)
   }
 
   /**

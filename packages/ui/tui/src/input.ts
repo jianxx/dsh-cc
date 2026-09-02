@@ -77,7 +77,9 @@ function printableOf(data: string): string | undefined {
 /**
  * Route one raw keypress into the open approval overlay: `1`/`y`/`Y` grant
  * once, `2`/`n`/`N`/escape reject, `3`/`a`/`A` grant always (once + persist a
- * derived allow rule). Every other key is consumed and ignored — the overlay
+ * derived allow rule), `4`/`s`/`S` grant for this session (once + a
+ * session-scoped allowlist rule, never persisted to global settings). Every
+ * other key is consumed and ignored — the overlay
  * is modal and the composer editor must never see keystrokes while it is open.
  * Shared by the headless composer path and the mounted root listener so the
  * key map has a single source of truth.
@@ -93,6 +95,10 @@ export function routeApprovalInput(driver: InputSink, data: string): void {
   }
   if (matchesKey(data, '3') || data === 'a' || data === 'A') {
     driver.answerApproval('always')
+    return
+  }
+  if (matchesKey(data, '4') || data === 's' || data === 'S') {
+    driver.answerApproval('session')
     return
   }
   // All other keys consumed and ignored (modal).

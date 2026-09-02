@@ -10,8 +10,11 @@ import type { TuiState } from '../store.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import type { WorktreeExitHooks } from '../harness/worktree-exit.ts'
 
-/** The three approval answers: grant once, grant persistently, reject. */
-export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
+/**
+ * The approval answers: grant once, grant persistently, grant for this
+ * session, reject.
+ */
+export type ApprovalAnswerKind = 'once' | 'always' | 'session' | 'reject'
 
 export interface Driver {
   readonly state: TuiState
@@ -74,6 +77,8 @@ export interface Driver {
    * Answer the open approval prompt: `'once'` grants this call only;
    * `'always'` additionally derives a permission rule from the prompt's
    * preview and persists it into the settings `permissions.allow` list;
+   * `'session'` derives the same rule and grants it for the current session
+   * only (session-scoped allowlist — never persisted to global settings);
    * `'reject'` refuses the call.
    */
   answerApproval(kind: ApprovalAnswerKind): void
