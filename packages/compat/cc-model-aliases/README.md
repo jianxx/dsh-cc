@@ -88,6 +88,8 @@ lowercase at merge and at lookup).
 | configured alias (string form) | `{ model: <target> }` |
 | configured alias (object form) | `{ provider?: <p>, model: <m>, reasoningEffort?: <effort> }` |
 | builtin alias unconfigured (`fable`/`opus`/`sonnet`/`haiku`) | no override — child inherits the parent route ("current model") |
+| dsh-cc lane unconfigured (`sketch`/`draft`/`blueprint`/`masterplan`) | follows the CC peer (`haiku`/`sonnet`/`opus`/`fable`); inherit if that peer is also unconfigured |
+| `architect` unconfigured | no override — inherit the parent (main-thread) route |
 | anything else | passed through **verbatim** as a literal model id; a bare-lowercase-word form (e.g. `turbo`) logs a warning that it looks like an unconfigured alias |
 
 ### `reasoningEffort` on object-form aliases
@@ -140,10 +142,11 @@ never hold `null` (rejected by the config schema).
 ### Builtin fallback
 
 Fresh installs with **zero configuration** still work: `model: sonnet` /
-`model: opus` agents resolve to *inherit the parent's current model* instead of
-erroring. Only the four builtin names get this fallback; a custom alias
-(`turbo`, `gpt`, …) that is unconfigured has **no** fallback and is passed
-through verbatim (with the warning above).
+`model: opus` / `model: draft` agents resolve to *inherit the parent's current
+model* (an unconfigured lane follows a configured CC peer) instead of
+erroring. Builtin names (CC family + dsh-cc lanes) get this fallback; a
+custom alias (`turbo`, `gpt`, …) that is unconfigured has **no** fallback
+and is passed through verbatim (with the warning above).
 
 ## `inherit` fix note
 
@@ -174,7 +177,8 @@ cc-shell (and the routes service), so in CC mode the fix is always active.
   `getAliases` is a thunk evaluated **per invocation** (liveness). Optional
   `warn` replaces the default `console.warn` used for the unconfigured-custom-alias
   warning.
-- `BUILTIN_ALIASES` — `['fable', 'opus', 'sonnet', 'haiku']`.
+- `BUILTIN_ALIASES` — CC family (`fable`/`opus`/`sonnet`/`haiku`) plus dsh-cc lanes (`sketch`/`draft`/`blueprint`/`masterplan`/`architect`).
+- `LANE_PEERS` — unconfigured-lane → CC-family map (`sketch→haiku`, `draft→sonnet`, `blueprint→opus`, `masterplan→fable`; `architect` has no peer).
 - `toAgentOptions(route)` — drop `undefined` fields from a resolved route so
   per-field inheritance survives (never set a field to `undefined` on the child
   request); `undefined` in → `undefined` out, and an all-`undefined` route
@@ -183,6 +187,31 @@ cc-shell (and the routes service), so in CC mode the fix is always active.
 - `ConfigAliasesSchema` / `SettingsAliasesSchema` (and their record forms) —
   schemastery schemas for the config layer (no `null`) and settings layer
   (`null` allowed), plus `AliasTarget` / `ResolvedRoute` types.
+
+## dsh-cc lanes
+
+Five extra builtin names sit alongside the Claude Code family. They are
+configuration, not a second settings namespace. Unconfigured, each lane
+except `architect` follows its CC peer, so a deployment that already maps
+`haiku` does not need a duplicate `sketch` entry:
+
+| Lane | Role | Unconfigured peer |
+|---|---|---|
+| `sketch` | Fast, lightweight execution | `haiku` |
+| `draft` | Balanced everyday coding | `sonnet` |
+| `blueprint` | Deep reasoning | `opus` |
+| `masterplan` | Maximum reasoning | `fable` |
+| `architect` | Planning and orchestration | inherit (main thread) |
+
+A configured string-form target that names another alias is followed **one
+hop** (`sketch: haiku` shares haiku's object route, including
+`reasoningEffort`). Object-form targets are concrete routes and are not
+followed as names. A second hop is not followed, so `sketch: draft` +
+`draft: haiku` stops at the literal `"haiku"` (cycle-safe).
+
+Frontmatter can use either vocabulary (`model: opus` or `model: blueprint`).
+The cheap background classifier lane stays `resolve('haiku')` — hooks and
+recall do not switch to `sketch`.
 
 ## The cheap (small-fast) lane
 

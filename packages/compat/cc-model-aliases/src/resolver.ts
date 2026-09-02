@@ -10,12 +10,13 @@
  * live settings edits take effect on the next spawn without re-registering
  * anything.
  *
- * Only the four builtin alias names have a fallback when they are unconfigured
- * — they resolve to "inherit the parent route" (`undefined`), matching the
- * deployment decision that a zero-config `model: sonnet` agent silently uses
- * the parent's current model. A custom (open-set) alias that is unconfigured
- * has no fallback: it passes through verbatim as a literal model id, with a
- * warning when it looks like an intended alias.
+ * Builtin alias names (Claude Code family plus the dsh-cc lane names) have a
+ * fallback when they are unconfigured — they resolve to "inherit the parent
+ * route" (`undefined`), matching the deployment decision that a zero-config
+ * `model: sonnet` / `model: draft` agent silently uses the parent's current
+ * model. A custom (open-set) alias that is unconfigured has no fallback: it
+ * passes through verbatim as a literal model id, with a warning when it looks
+ * like an intended alias.
  *
  * @module @jianxx/dsh-cc-model-aliases/resolver
  */
@@ -23,11 +24,42 @@
 import type { AliasTarget, ResolvedRoute } from './types.ts'
 
 /**
+ * Claude Code family aliases. Unconfigured → inherit the parent route.
+ * Case-insensitive; a configured value still wins over this fallback.
+ */
+export const CC_ALIASES: readonly string[] = ['fable', 'opus', 'sonnet', 'haiku']
+
+/**
+ * dsh-cc lane aliases. Unconfigured, a lane follows its CC peer
+ * ({@link LANE_PEERS}) so `model: sketch` shares a configured `haiku`
+ * route without a second settings entry. `architect` has no peer and
+ * inherits the parent (main-thread) route. A configured string-form
+ * target that names another alias is followed one hop.
+ *
+ * | lane | role | CC peer when unconfigured |
+ * |---|---|---|
+ * | `sketch` | fast, lightweight execution | haiku |
+ * | `draft` | balanced everyday coding | sonnet |
+ * | `blueprint` | deep reasoning | opus |
+ * | `masterplan` | maximum reasoning | fable |
+ * | `architect` | planning / orchestration | inherit (main thread) |
+ */
+export const LANE_ALIASES: readonly string[] = ['sketch', 'draft', 'blueprint', 'masterplan', 'architect']
+
+/** Unconfigured lane → CC family alias it shares a route with. */
+export const LANE_PEERS: Readonly<Record<string, string>> = {
+  sketch: 'haiku',
+  draft: 'sonnet',
+  blueprint: 'opus',
+  masterplan: 'fable',
+}
+
+/**
  * The builtin alias names that fall back to "inherit the parent route" when
  * unconfigured. Case-insensitive; a configured value still wins over this
  * fallback.
  */
-export const BUILTIN_ALIASES: readonly string[] = ['fable', 'opus', 'sonnet', 'haiku']
+export const BUILTIN_ALIASES: readonly string[] = [...CC_ALIASES, ...LANE_ALIASES]
 
 /** The set of builtin names, lowercased, for O(1) membership checks. */
 const BUILTIN_SET = new Set(BUILTIN_ALIASES)
@@ -88,15 +120,30 @@ export function createModelResolver(
     const aliases = getAliases()
     const hit = aliases.get(folded)
     if (hit !== undefined && hit !== null) {
-      if (typeof hit === 'string') return { model: hit }
+      if (typeof hit === 'string') {
+        const followed = followStringTarget(hit, aliases, folded)
+        if (followed.kind === 'route') return followed.route
+        if (followed.kind === 'inherit') return undefined
+        return { model: hit }
+      }
       // Object form: forward the route fields that are present. `provider` and
       // `reasoningEffort` are optional (absent = inherit / no stamp); `model`
-      // is always set on a schema-valid object entry.
+      // is always set on a schema-valid object entry. Object targets are
+      // concrete routes — they are not followed as alias names.
       return {
         ...(hit.provider === undefined ? {} : { provider: hit.provider }),
         ...(hit.model === undefined ? {} : { model: hit.model }),
         ...(hit.reasoningEffort === undefined ? {} : { reasoningEffort: hit.reasoningEffort }),
       }
+    }
+
+    // Unconfigured lane → follow its CC peer (`sketch` → `haiku`, …).
+    // `architect` has no peer and falls through to inherit.
+    const peer = LANE_PEERS[folded]
+    if (peer !== undefined) {
+      const followed = followStringTarget(peer, aliases, folded)
+      if (followed.kind === 'route') return followed.route
+      return undefined
     }
 
     // Unconfigured builtin alias → inherit the parent route ("current model").
@@ -110,6 +157,46 @@ export function createModelResolver(
     }
     return { model: trimmed }
   }
+}
+
+type FollowedTarget
+  = | { kind: 'route'; route: ResolvedRoute }
+    | { kind: 'inherit' }
+    | { kind: 'literal' }
+
+/**
+ * Follow a string-form target one hop when it names another alias.
+ *
+ * - `sketch: haiku` with haiku configured → haiku's route
+ * - `sketch: haiku` with haiku unconfigured (builtin) → inherit
+ * - `sketch: inherit` → inherit
+ * - `sketch: deepseek-chat` (not an alias) → literal, caller keeps the string
+ *
+ * A second hop is not followed (`sketch: draft` + `draft: haiku` stops at
+ * the literal `"haiku"`), which keeps cycles from looping. Object-form
+ * targets are never followed as names.
+ */
+function followStringTarget(
+  target: string,
+  aliases: ReadonlyMap<string, AliasTarget>,
+  from: string,
+): FollowedTarget {
+  const folded = target.trim().toLowerCase()
+  if (folded.length === 0 || folded === from || folded === 'inherit') return { kind: 'inherit' }
+  const next = aliases.get(folded)
+  if (next !== undefined && next !== null) {
+    if (typeof next === 'string') return { kind: 'route', route: { model: next } }
+    return {
+      kind: 'route',
+      route: {
+        ...(next.provider === undefined ? {} : { provider: next.provider }),
+        ...(next.model === undefined ? {} : { model: next.model }),
+        ...(next.reasoningEffort === undefined ? {} : { reasoningEffort: next.reasoningEffort }),
+      },
+    }
+  }
+  if (BUILTIN_SET.has(folded)) return { kind: 'inherit' }
+  return { kind: 'literal' }
 }
 
 /** Compact-fill a record's own string keys, folding each to lowercase. */

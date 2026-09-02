@@ -13,7 +13,7 @@
  * @module @jianxx/dsh-cc-model-aliases
  */
 
-export { BUILTIN_ALIASES, mergeAliasMaps, createModelResolver } from './resolver.ts'
+export { BUILTIN_ALIASES, CC_ALIASES, LANE_ALIASES, LANE_PEERS, mergeAliasMaps, createModelResolver } from './resolver.ts'
 export { toAgentOptions } from './agentOptions.ts'
 export { overlayStampedEffort, stampedEffortOf } from './effort.ts'
 export {

@@ -120,11 +120,45 @@ describe('createModelResolver inherit / builtin fallback / passthrough', () => {
 
   it('unconfigured builtin alias falls back to inherit (undefined)', () => {
     const { resolve } = resolverFor({}, {})
-    for (const alias of ['fable', 'opus', 'sonnet', 'haiku']) {
+    for (const alias of ['fable', 'opus', 'sonnet', 'haiku', 'architect']) {
       expect(resolve(alias)).toBeUndefined()
     }
     // Case-insensitive builtin match.
     expect(resolve('OPUS')).toBeUndefined()
+  })
+
+  it('unconfigured lane follows its CC peer route', () => {
+    const { resolve } = resolverFor({ haiku: 'flash', sonnet: 'balanced', opus: 'deep', fable: 'max' }, {})
+    expect(resolve('sketch')).toEqual({ model: 'flash' })
+    expect(resolve('draft')).toEqual({ model: 'balanced' })
+    expect(resolve('blueprint')).toEqual({ model: 'deep' })
+    expect(resolve('masterplan')).toEqual({ model: 'max' })
+    expect(resolve('architect')).toBeUndefined()
+  })
+
+  it('unconfigured lane inherits when its CC peer is also unconfigured', () => {
+    const { resolve } = resolverFor({}, {})
+    expect(resolve('sketch')).toBeUndefined()
+    expect(resolve('draft')).toBeUndefined()
+    expect(resolve('blueprint')).toBeUndefined()
+    expect(resolve('masterplan')).toBeUndefined()
+  })
+
+  it('configured string-form lane follows one hop to another alias', () => {
+    const { resolve } = resolverFor({ haiku: { provider: 'p', model: 'flash', reasoningEffort: 'low' }, sketch: 'haiku' }, {})
+    expect(resolve('sketch')).toEqual({ provider: 'p', model: 'flash', reasoningEffort: 'low' })
+  })
+
+  it('configured string-form lane to inherit inherits; to a literal id stays a literal', () => {
+    const { resolve } = resolverFor({ sketch: 'inherit', draft: 'deepseek-chat' }, {})
+    expect(resolve('sketch')).toBeUndefined()
+    expect(resolve('draft')).toEqual({ model: 'deepseek-chat' })
+  })
+
+  it('does not follow a second hop (cycle-safe)', () => {
+    const { resolve } = resolverFor({ sketch: 'draft', draft: 'haiku', haiku: 'flash' }, {})
+    // sketch → draft (string) stops; "haiku" is returned as a literal model id.
+    expect(resolve('sketch')).toEqual({ model: 'haiku' })
   })
 
   it('a null-deleted builtin alias still falls back to inherit (no error state)', () => {
@@ -147,8 +181,10 @@ describe('createModelResolver inherit / builtin fallback / passthrough', () => {
     expect(warns).toEqual([])
   })
 
-  it('BUILTIN_ALIASES lists the four builtin names', () => {
-    expect([...BUILTIN_ALIASES].sort()).toEqual(['fable', 'haiku', 'opus', 'sonnet'])
+  it('BUILTIN_ALIASES lists the CC family plus dsh-cc lanes', () => {
+    expect([...BUILTIN_ALIASES].sort()).toEqual([
+      'architect', 'blueprint', 'draft', 'fable', 'haiku', 'masterplan', 'opus', 'sketch', 'sonnet',
+    ])
   })
 })
 
