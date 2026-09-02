@@ -6,9 +6,10 @@
  * delete an alias — values are a model id or an explicit `{provider, model}`
  * route. The settings overlay (`model-aliases` namespace) may additionally be
  * `null` for a key, which deletes a same-named config-default entry during
- * merge. Object-form targets require a non-empty `provider` and `model` so a
- * half-written route is rejected at schema-validation time rather than
- * surfacing as an empty-field override at spawn.
+ * merge. Object-form targets require a non-empty `model`; `provider` is
+ * optional (inherit the parent provider) but must be non-empty when present.
+ * A half-written route is rejected at the service write-time validate rather
+ * than surfacing as an empty-field override at spawn.
  *
  * The settings overlay is a shallow record keyed by alias name; the 5-cascade
  * layer merge inside settings is recursively deep (existing cascade
@@ -25,10 +26,16 @@ import type { AliasTarget } from './types.ts'
 /** A target that only names a model id (provider inherits the parent route). */
 const MODEL_ONLY = z.string().min(1)
 
-/** A target that pins an explicit `{provider, model}` route. */
+/**
+ * A target that pins an explicit route: `model` is required; `provider` is
+ * optional (inherit the parent provider) but must be non-empty when present;
+ * `reasoningEffort` is an optional opaque non-empty string whose legal
+ * spellings belong to the target model's adapter.
+ */
 const EXPLICIT_ROUTE = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
+  reasoningEffort: z.string().min(1),
 })
 
 /**

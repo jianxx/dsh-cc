@@ -19,14 +19,18 @@ import type { CcPluginManifest } from './types.ts'
 import { ComponentTally } from './seams.ts'
 
 /**
- * Resolve a frontmatter `model` into a dsh `{provider, model}` route at spawn
- * time. Returns `undefined` meaning "no override" (the child inherits the
- * parent's route). When the function is absent, providers keep the historical
- * byte-identical behavior of overlaying the literal model id. The optional
- * fields admit explicit `undefined` (per-field inheritance), matching the
- * `ResolvedRoute` shape from `@jianxx/dsh-cc-model-aliases`.
+ * Resolve a frontmatter `model` into a dsh `{provider, model, reasoningEffort?}`
+ * route at spawn time. Returns `undefined` meaning "no override" (the child
+ * inherits the parent's route). When the function is absent, providers keep the
+ * historical byte-identical behavior of overlaying the literal model id. The
+ * optional fields admit explicit `undefined` (per-field inheritance), matching
+ * the `ResolvedRoute` shape from `@jianxx/dsh-cc-model-aliases`.
  */
-export type ResolveModel = (model: string | undefined) => { readonly provider?: string | undefined; readonly model?: string | undefined } | undefined
+export type ResolveModel = (model: string | undefined) => {
+  readonly provider?: string | undefined
+  readonly model?: string | undefined
+  readonly reasoningEffort?: string | undefined
+} | undefined
 
 /** The subagent seam: a named-provider registry with a backend resolver. */
 export interface SubagentsSeam {
@@ -124,6 +128,7 @@ export class AgentProvider implements SubagentBackend {
     const out: Record<string, string> = {}
     if (route.provider !== undefined) out.provider = route.provider
     if (route.model !== undefined) out.model = route.model
+    if (route.reasoningEffort !== undefined) out.reasoningEffort = route.reasoningEffort
     return out
   }
 }

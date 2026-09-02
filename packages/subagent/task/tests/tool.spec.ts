@@ -157,6 +157,50 @@ describe('Task tool', () => {
     expect(runs[0]!.request['agentOptions']).toBeUndefined()
   })
 
+  it('stamps the alias-resolved reasoningEffort onto agentOptions', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'deep-reasoner', '---\nname: deep-reasoner\ndescription: Review heavy work\nmodel: opus\n---\nYou are a Staff Engineer.\n')
+    const routes = {
+      resolve: (m: string | undefined) => m === 'opus'
+        ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' }
+        : undefined,
+    }
+    const { ctx, runs } = await mount({ routes })
+    await call(ctx, { subagent_type: 'deep-reasoner', description: 'review', prompt: 'audit' }, agentAt(ws))
+    expect(runs[0]!.request['agentOptions']).toEqual({
+      provider: 'orchestrix',
+      model: 'glm-5.3',
+      reasoningEffort: 'max',
+    })
+  })
+
+  it('stamps effort for a provider-less route (provider omitted from agentOptions)', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'fast-worker', '---\nname: fast-worker\ndescription: Mechanical\nmodel: sonnet\n---\nFast.\n')
+    const routes = {
+      resolve: (m: string | undefined) => m === 'sonnet'
+        ? { model: 'glm-5.3-flash', reasoningEffort: 'max' }
+        : undefined,
+    }
+    const { ctx, runs } = await mount({ routes })
+    await call(ctx, { subagent_type: 'fast-worker', description: 'x', prompt: 't' }, agentAt(ws))
+    expect(runs[0]!.request['agentOptions']).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
+  })
+
+  it('inherit still omits agentOptions entirely even when a sibling alias carries effort', async () => {
+    const ws = freshWorkspace()
+    // fast-worker resolves to inherit; the effort-carrying alias is never consulted.
+    writeAgent(ws, 'fast-worker', '---\nname: fast-worker\ndescription: Mechanical\nmodel: sonnet\n---\nFast.\n')
+    const routes = {
+      resolve: (m: string | undefined) => m === 'opus'
+        ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' }
+        : undefined,
+    }
+    const { ctx, runs } = await mount({ routes })
+    await call(ctx, { subagent_type: 'fast-worker', description: 'x', prompt: 't' }, agentAt(ws))
+    expect(runs[0]!.request['agentOptions']).toBeUndefined()
+  })
+
   it('works when no ccModelRoutes service is mounted', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'plain', '---\nname: plain\ndescription: No model\n---\nPlain.\n')

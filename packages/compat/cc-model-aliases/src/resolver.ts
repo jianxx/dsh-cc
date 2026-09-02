@@ -88,7 +88,15 @@ export function createModelResolver(
     const aliases = getAliases()
     const hit = aliases.get(folded)
     if (hit !== undefined && hit !== null) {
-      return typeof hit === 'string' ? { model: hit } : { provider: hit.provider, model: hit.model }
+      if (typeof hit === 'string') return { model: hit }
+      // Object form: forward the route fields that are present. `provider` and
+      // `reasoningEffort` are optional (absent = inherit / no stamp); `model`
+      // is always set on a schema-valid object entry.
+      return {
+        ...(hit.provider === undefined ? {} : { provider: hit.provider }),
+        ...(hit.model === undefined ? {} : { model: hit.model }),
+        ...(hit.reasoningEffort === undefined ? {} : { reasoningEffort: hit.reasoningEffort }),
+      }
     }
 
     // Unconfigured builtin alias → inherit the parent route ("current model").

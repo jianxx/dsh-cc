@@ -88,4 +88,30 @@ describe('AgentProvider model resolution', () => {
     const result = await seam.providers[0]!.start({ agentOptions: { provider: 'parent' } })
     expect(delegationOf(result)['agentOptions']).toEqual({ provider: 'parent' })
   })
+
+  it('resolver returns a route with reasoningEffort: forwards all three fields', async () => {
+    const seam = await mountOne(
+      'opus',
+      (model) => model === 'opus'
+        ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'xhigh' }
+        : undefined,
+    )
+    const result = await seam.providers[0]!.start({ agentOptions: { provider: 'parent' } })
+    expect(delegationOf(result)['agentOptions']).toEqual({
+      provider: 'orchestrix',
+      model: 'glm-5.3',
+      reasoningEffort: 'xhigh',
+    })
+  })
+
+  it('resolver returns inherit: no effort leak even when the resolver carries effort for other aliases', async () => {
+    const seam = await mountOne(
+      'sonnet',
+      (model) => model === 'opus'
+        ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' }
+        : undefined,
+    )
+    const result = await seam.providers[0]!.start({ agentOptions: { provider: 'parent' } })
+    expect(delegationOf(result)['agentOptions']).toEqual({ provider: 'parent' })
+  })
 })

@@ -14,6 +14,7 @@
  */
 
 export { BUILTIN_ALIASES, mergeAliasMaps, createModelResolver } from './resolver.ts'
+export { overlayStampedEffort, stampedEffortOf } from './effort.ts'
 export {
   ConfigAliasSchema,
   ConfigAliasesSchema,

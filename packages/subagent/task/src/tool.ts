@@ -78,7 +78,11 @@ interface SubagentsLike {
 }
 
 interface RoutesLike {
-  resolve(model: string | undefined): { provider?: string; model?: string } | undefined
+  resolve(model: string | undefined): {
+    provider?: string
+    model?: string
+    reasoningEffort?: string
+  } | undefined
 }
 
 interface TaskArgs {
@@ -223,7 +227,16 @@ export function registerTaskTool(
           ? { toolFilter: sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message)) }
           : {}),
         ...(route !== undefined
-          ? { agentOptions: stripUndefined({ provider: route.provider, model: route.model }) }
+          ? {
+              agentOptions: stripUndefined({
+                provider: route.provider,
+                model: route.model,
+                // Undeclared runtime extra key on AgentOptions: survives the
+                // harness's child-options spread and is applied to every child
+                // request by the cc-model-aliases host agent/request overlay.
+                reasoningEffort: route.reasoningEffort,
+              }),
+            }
           : {}),
       })
       return settle(run)
@@ -250,9 +263,10 @@ async function settle(run: { result: Promise<{ stopReason: string; output?: read
 }
 
 /** Drop undefined fields so per-field inheritance survives (never set to undefined). */
-function stripUndefined(route: { provider?: string | undefined; model?: string | undefined }): Record<string, string> {
+function stripUndefined(route: { provider?: string | undefined; model?: string | undefined; reasoningEffort?: string | undefined }): Record<string, string> {
   const out: Record<string, string> = {}
   if (route.provider !== undefined) out['provider'] = route.provider
   if (route.model !== undefined) out['model'] = route.model
+  if (route.reasoningEffort !== undefined) out['reasoningEffort'] = route.reasoningEffort
   return out
 }

@@ -18,15 +18,23 @@
  * When `start()` passes this on as `agentOptions`, only the fields that are
  * present (`provider` and/or `model`) override the delegation; a route omitting
  * `provider` inherits the parent's provider, and one omitting `model` inherits
- * the parent's model. `undefined` means "no override" — the child inherits the
- * parent route wholesale (the `inherit` sentinel and the builtin fallback both
- * resolve to this).
+ * the parent's model. `reasoningEffort`, when present, is stamped onto the
+ * child's options (a runtime extra key) and applied to every child request by
+ * the host `agent/request` listener in the routes service. `undefined` means
+ * "no override" — the child inherits the parent route wholesale (the `inherit`
+ * sentinel and the builtin fallback both resolve to this).
  */
 export interface ResolvedRoute {
   /** The provider to route to; omit to inherit the parent's provider. */
   readonly provider?: string | undefined
   /** The model id (or resolved alias model) to use; omit to inherit. */
   readonly model?: string | undefined
+  /**
+   * Reasoning effort stamped from the alias target (object form only); an
+   * opaque non-empty string whose legal spellings belong to the target model's
+   * adapter (`max`, `xhigh`, `high`, …). Absent → no effort stamp.
+   */
+  readonly reasoningEffort?: string | undefined
 }
 
 /**
@@ -34,9 +42,13 @@ export interface ResolvedRoute {
  *
  * A string form names only a model id (`sonnet: deepseek-chat`); the provider
  * inherits the parent route. An object form additionally pins a provider
- * (`opus: { provider: ..., model: ... }`), breaking the current frontmatter
- * limitation of never being able to override the provider. In the settings
- * layer a configured entry may instead be `null`, which deletes a same-named
- * config-default entry (see {@link mergeAliasMaps}).
+ * (`opus: { provider: ..., model: ... }`) — `provider` is optional so an alias
+ * can inherit the parent provider while still pinning a model and effort — and
+ * may carry a `reasoningEffort` stamped onto spawns of this alias. In the
+ * settings layer a configured entry may instead be `null`, which deletes a
+ * same-named config-default entry (see {@link mergeAliasMaps}).
  */
-export type AliasTarget = string | { readonly provider: string; readonly model: string } | null
+export type AliasTarget
+  = | string
+    | { readonly provider?: string; readonly model: string; readonly reasoningEffort?: string }
+    | null

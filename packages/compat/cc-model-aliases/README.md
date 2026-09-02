@@ -3,8 +3,8 @@
 English | [中文](README.zh.md)
 
 Claude Code-compatible model alias resolution for the DeepSeek Harness. It maps Claude Code
-frontmatter model aliases (`model: opus`, `model: sonnet`) onto dsh `{provider, model}`
-routes. The package now ships in two shapes:
+frontmatter model aliases (`model: opus`, `model: sonnet`) onto dsh
+`{provider, model, reasoningEffort?}` routes. The package now ships in two shapes:
 
 - a **`ccModelRoutes` host service** (the cordis plugin entry) that owns the `model-aliases`
   settings namespace registration and exposes a spawn-time resolver, and
@@ -19,7 +19,7 @@ adapter that does not know the id (e.g. `llm-pi-ai`) threw `UNKNOWN_MODEL`, and
 `model: inherit` — a valid CC sentinel meaning "use my parent's model" — was
 also handed to `prepareCall` as a literal id and errored.
 
-This package adds that layer: an alias resolves to a `{provider, model}` route,
+This package adds that layer: an alias resolves to a `{provider, model, reasoningEffort?}` route,
 the unresolvable cases fall back to *inheriting the parent route* (no override),
 and literal ids like `deepseek-chat` keep passing through untouched.
 
@@ -86,9 +86,34 @@ lowercase at merge and at lookup).
 | `undefined` / blank | no override — child inherits the parent route |
 | `inherit` (any case) | no override — child inherits the parent route (**fixes the old pass-through bug**) |
 | configured alias (string form) | `{ model: <target> }` |
-| configured alias (object form) | `{ provider: <p>, model: <m> }` |
+| configured alias (object form) | `{ provider?: <p>, model: <m>, reasoningEffort?: <effort> }` |
 | builtin alias unconfigured (`fable`/`opus`/`sonnet`/`haiku`) | no override — child inherits the parent route ("current model") |
 | anything else | passed through **verbatim** as a literal model id; a bare-lowercase-word form (e.g. `turbo`) logs a warning that it looks like an unconfigured alias |
+
+### `reasoningEffort` on object-form aliases
+
+An object-form alias may declare an optional `reasoningEffort`: an opaque
+non-empty string whose legal spellings belong to the **target model's adapter**
+(`max`, `xhigh`, `high`, … — not validated against any adapter catalog here).
+When present, the spawn (the Task tool and the plugin-loader's
+`AgentProvider`) stamps it onto the child's options, and the routes service's
+host `agent/request` listener applies it to **every** request of that child,
+overriding any effort restored from a forked parent header. String-form
+aliases cannot carry an effort; `inherit` / unconfigured builtins stamp
+nothing. An effort the target model does not support fails the request with
+`UNSUPPORTED_REASONING_EFFORT` — fail-loud, by design.
+
+```jsonc
+// settings namespace "model-aliases"
+{
+  "opus":   { "provider": "orchestrix", "model": "glm-5.3",       "reasoningEffort": "max" },
+  "sonnet": { "provider": "orchestrix", "model": "glm-5.3-flash", "reasoningEffort": "max" }
+}
+```
+
+Changing the opus target to a model with a different effort vocabulary is a
+single settings edit (`"reasoningEffort": "xhigh"`); the agent markdown is
+untouched.
 
 ### Null deletion
 
@@ -138,7 +163,10 @@ cc-shell (and the routes service), so in CC mode the fix is always active.
   also re-exported as `applyRoutes` / `routesPluginName`). Mounts the service; config shape is
   `{ modelAliases?: Record<string, AliasTarget> }` (deployment defaults).
 - `ModelRoutes` — the value type of `ctx.get('ccModelRoutes')` (`resolve(model):
-  { provider?, model? } | undefined`).
+  { provider?, model?, reasoningEffort? } | undefined`).
+- `overlayStampedEffort(resolved, stamped)` / `stampedEffortOf(options)` — the
+  host-side effort overlay used by the service's `agent/request` listener;
+  exported for tests and host embeddings.
 - `mergeAliasMaps(config, settings)` — entry-shallow merge with `null` deletion
   and case-insensitive key folding; returns an effective `ReadonlyMap` of only
   the configured aliases.
