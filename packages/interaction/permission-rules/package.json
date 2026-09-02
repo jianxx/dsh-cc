@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-permission-rules",
   "description": "Claude Code-compatible permission rule engine for DeepSeek Harness: rule parsing, mode-aware pre-execute evaluation, monotonic bypass-immune guards, and optional settings config",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc.git",
