@@ -52,6 +52,12 @@ export interface TransportContext {
    * `$DSH_HOME/mcp-logs` (or `~/.dsh/mcp-logs`).
    */
   logDir?: string
+  /**
+   * Size cap in bytes for stdio stderr log rotation (one `.log.1` backup).
+   * Tests inject a small cap so rotation is observable; `<= 0` disables
+   * rotation. Omission uses `STDIO_LOG_MAX_BYTES` (4 MiB).
+   */
+  maxBytes?: number
 }
 
 /**
@@ -72,7 +78,7 @@ export function createTransport(config: Config, transportCtx?: TransportContext)
         cwd: config.cwd,
         stderr: 'pipe',
       })
-      attachStdioStderrDrain(transport, config.serverName, transportCtx?.logDir)
+      attachStdioStderrDrain(transport, config.serverName, transportCtx?.logDir, transportCtx?.maxBytes)
       return transport
     }
     case 'streamable-http':
