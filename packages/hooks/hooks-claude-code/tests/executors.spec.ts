@@ -48,16 +48,28 @@ async function harness(
   return ctx
 }
 
-/** A minimal fork-subagent seam whose start records the request and returns a chosen result. */
+/** A minimal fork-subagent seam whose start records the full request and returns a chosen result. */
 function fakeSubagents(hook: { stopReason: string; content: readonly { type: string; text?: string }[] }) {
-  const calls: Array<{ name: string; request: { prompt: readonly { type: 'text'; text: string }[] } }> = []
+  const calls: Array<{ name: string; request: Record<string, unknown> }> = []
   const service = {
-    start(name: string, request: { prompt: readonly { type: 'text'; text: string }[] }) {
+    start(name: string, request: Record<string, unknown>) {
       calls.push({ name, request })
       return { result: Promise.resolve(hook) }
     },
   }
   return { service, calls }
+}
+
+/** Fake ccModelRoutes service resolving only the aliases in the given map. */
+function fakeRoutes(routes: Record<string, { provider?: string; model?: string }>) {
+  return {
+    resolve: (model: string | undefined) => model === undefined ? undefined : routes[model.toLowerCase()],
+  }
+}
+
+/** A harmless always-OK hook result for stamp-focused cases. */
+function okHookResult() {
+  return { stopReason: 'completed' as const, content: [{ type: 'text' as const, text: '{}' }] }
 }
 
 describe('contentToHookOutput (pure)', () => {
@@ -157,6 +169,76 @@ describe('hooks-claude-code bridge — prompt executor', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await agent.whenIdle()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot run (no subagents service or parent agent'))
+  })
+})
+
+describe('hooks-claude-code bridge — model stamping (agentOptions)', () => {
+  /** Fire one UserPromptSubmit prompt hook and return the recorded start calls. */
+  async function firePromptHook(options: {
+    hookModel?: string
+    routes?: Record<string, { provider?: string; model?: string }>
+  }): Promise<Array<{ name: string; request: Record<string, unknown> }>> {
+    const hook = options.hookModel !== undefined ? { type: 'prompt', prompt: 'eval', model: options.hookModel } : { type: 'prompt', prompt: 'eval' }
+    const dir = writeConfig({ UserPromptSubmit: [{ hooks: [hook] }] })
+    const { service, calls } = fakeSubagents(okHookResult())
+    const adapter = new MockAdapter([textResponse('ok')])
+    const ctx = await harness(dir, adapter, { enablePromptHooks: true }, (c) => {
+      c.provide('subagents', service as never)
+      if (options.routes !== undefined) c.provide('ccModelRoutes', fakeRoutes(options.routes) as never)
+    })
+    const stampId = options.hookModel === undefined
+      ? (options.routes === undefined ? 'exec-stamp-omitted-noroutes' : 'exec-stamp-omitted-haiku')
+      : `exec-stamp-${options.hookModel}`
+    const agent = ctx.agentLoop.create(SessionId(stampId), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    return calls
+  }
+
+  it('stamps the haiku route when model is omitted and haiku is configured', async () => {
+    const calls = await firePromptHook({ routes: { haiku: { provider: 'orchestrix', model: 'flash-1' } } })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toEqual({ provider: 'orchestrix', model: 'flash-1' })
+  })
+
+  it('omits agentOptions when model is omitted and no ccModelRoutes is mounted', async () => {
+    const calls = await firePromptHook({})
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toBeUndefined()
+  })
+
+  it('resolves an authored haiku alias through the resolver, never stamping the literal', async () => {
+    const calls = await firePromptHook({ hookModel: 'haiku', routes: { haiku: { provider: 'p', model: 'flash-1' } } })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toEqual({ provider: 'p', model: 'flash-1' })
+  })
+
+  it('omits agentOptions for model: inherit', async () => {
+    const calls = await firePromptHook({ hookModel: 'inherit', routes: { haiku: { provider: 'p', model: 'flash-1' } } })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toBeUndefined()
+  })
+
+  it('resolves model: opus to the opus route', async () => {
+    const calls = await firePromptHook({ hookModel: 'opus', routes: { haiku: { provider: 'p', model: 'h' }, opus: { provider: 'z', model: 'glm' } } })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toEqual({ provider: 'z', model: 'glm' })
+  })
+
+  it('stamps an agent hook identically when model is omitted and haiku is configured', async () => {
+    const dir = writeConfig({ PreToolUse: [{ matcher: 'echo', hooks: [{ type: 'agent', prompt: 'Verify' }] }] })
+    const { service, calls } = fakeSubagents(okHookResult())
+    const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter, { enableAgentHooks: true }, (c) => {
+      c.provide('subagents', service as never)
+      c.provide('ccModelRoutes', fakeRoutes({ haiku: { provider: 'orchestrix', model: 'flash-1' } }) as never)
+    })
+    ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'raw' }] } }))
+    const agent = ctx.agentLoop.create(SessionId('exec-agent-stamp'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.request['agentOptions']).toEqual({ provider: 'orchestrix', model: 'flash-1' })
   })
 })
 

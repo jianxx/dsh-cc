@@ -336,6 +336,10 @@ importers:
         version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/compat/cc-plugin-loader:
+    dependencies:
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../cc-model-aliases
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -531,6 +535,10 @@ importers:
         version: link:../../../../deepseek-harness/packages/shell/shell
 
   packages/hooks/hooks-claude-code:
+    dependencies:
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -1167,6 +1175,9 @@ importers:
 
   packages/memory/memory:
     dependencies:
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools

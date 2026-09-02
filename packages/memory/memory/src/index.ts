@@ -12,9 +12,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import { resolveMemoryHome } from './paths.ts'
 import { MemorySection } from './section.ts'
-import { MemoryRecall } from './recall.ts'
+import { MemoryRecall, SubagentMemorySelector } from './recall.ts'
 import { registerMemorySaveTool } from './save.ts'
 
 export { parseMemoryFile } from './parser.ts'
@@ -73,6 +75,12 @@ export interface Config {
   /** Optional small-model selection passed to the recall subagent. */
   recallAgentOptions?: unknown
   /**
+   * Opt the recall selector into `resolve('haiku')`. Default false so
+   * configuring `haiku` for typed agents does not silently cross-model
+   * every recall fork. Ignored when `recallAgentOptions` is set.
+   */
+  recallUseSmallFast?: boolean
+  /**
    * Whether team memory is enabled (default false). Enables a shared
    * per-workspace team directory (`<workspaceDir>/team`), renders the
    * triple-layer section, and validates all team-memory access. Off by
@@ -89,8 +97,25 @@ export const Config: z<Config> = z.object({
   recallEnabled: z.boolean().default(true),
   recallProviderName: z.string().default('fork'),
   recallAgentOptions: z.any(),
+  recallUseSmallFast: z.boolean().default(false),
   teamEnabled: z.boolean().default(false),
 })
+
+/**
+ * Resolve the recall selector's `agentOptions` stamp.
+ *
+ * Priority: explicit `recallAgentOptions` (raw overlay, NOT alias-resolved) →
+ * `recallUseSmallFast` + the configured `haiku` alias → nothing (inherit).
+ * @param c - the host context (gateway to the optional `ccModelRoutes`).
+ * @param config - the memory plugin config.
+ * @returns the `agentOptions` record, or `undefined` for inherit.
+ */
+function resolveRecallAgentOptions(c: Context, config: Config): unknown {
+  if (config.recallAgentOptions !== undefined) return config.recallAgentOptions
+  if (config.recallUseSmallFast !== true) return undefined
+  const routes = c.get('ccModelRoutes') as ModelRoutes | undefined
+  return toAgentOptions(routes?.resolve('haiku'))
+}
 
 /**
  * Register the `memory` system-prompt section and recall listener.
@@ -122,6 +147,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     new MemoryRecall(ctx, home, {
       providerName: config.recallProviderName ?? 'fork',
       enabled: true,
+      createSelector: (c, agent) => new SubagentMemorySelector(
+        c,
+        agent,
+        config.recallProviderName ?? 'fork',
+        resolveRecallAgentOptions(c, config),
+      ),
     })
   }
 }

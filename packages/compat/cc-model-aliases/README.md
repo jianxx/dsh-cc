@@ -175,9 +175,23 @@ cc-shell (and the routes service), so in CC mode the fix is always active.
   `warn` replaces the default `console.warn` used for the unconfigured-custom-alias
   warning.
 - `BUILTIN_ALIASES` — `['fable', 'opus', 'sonnet', 'haiku']`.
+- `toAgentOptions(route)` — drop `undefined` fields from a resolved route so
+  per-field inheritance survives (never set a field to `undefined` on the child
+  request); `undefined` in → `undefined` out, and an all-`undefined` route
+  collapses to `undefined` ("no override"). Shared by Task, cc-plugin-loader,
+  the hooks bridge, and memory recall.
 - `ConfigAliasesSchema` / `SettingsAliasesSchema` (and their record forms) —
   schemastery schemas for the config layer (no `null`) and settings layer
   (`null` allowed), plus `AliasTarget` / `ResolvedRoute` types.
+
+## The cheap (small-fast) lane
+
+There is no second alias name and no `ANTHROPIC_SMALL_FAST_MODEL`. The cheap
+background lane **is** the configured `haiku` alias: consumers that need a
+small, independent one-shot classifier model call `resolve('haiku')` — the
+configured haiku route when set, inherit-the-parent when unconfigured (the
+builtin fallback). Current consumers: the hooks bridge (`prompt`/`agent` hooks
+without an authored `model:`) and memory recall with `recallUseSmallFast: true`.
 
 ## Non-goals (tracked in the parity matrix)
 

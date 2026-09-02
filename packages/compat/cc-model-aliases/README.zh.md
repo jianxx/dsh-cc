@@ -99,7 +99,12 @@ alias 的查找顺序:**settings overlay → config 默认 → builtin fallback*
 - `mergeAliasMaps(config, settings)` — 带 `null` 删除与大小写不敏感 key 折叠的 entry-shallow merge;返回只含已配置 alias 的有效 `ReadonlyMap`。
 - `createModelResolver(getAliases, { warn })` — 构建 `resolveModel` 闭包。`getAliases` 是**每次调用**求值的 thunk(liveness)。可选 `warn` 替换默认的 `console.warn`(用于未配置自定义 alias 告警)。
 - `BUILTIN_ALIASES` — `['fable', 'opus', 'sonnet', 'haiku']`。
+- `toAgentOptions(route)` — 丢弃 resolved route 中的 `undefined` 字段以保住按字段继承(绝不把 child 请求的字段写成 `undefined`);`undefined` 进 → `undefined` 出,全 `undefined` 的 route 收敛为 `undefined`(「无 override」)。由 Task、cc-plugin-loader、hooks bridge 与 memory recall 共享。
 - `ConfigAliasesSchema` / `SettingsAliasesSchema`(及其 record 形式)— config 层(无 `null`)与 settings 层(允许 `null`)的 schemastery schema,外加 `AliasTarget` / `ResolvedRoute` 类型。
+
+## 低价(small-fast)车道
+
+没有第二个 alias 名,也没有 `ANTHROPIC_SMALL_FAST_MODEL`。低价后台车道**就是**已配置的 `haiku` alias:需要小型独立 one-shot 分类器模型的消费者调用 `resolve('haiku')` —— 配置了 haiku 即其路由,未配置即继承父路由(builtin fallback)。当前消费者:hooks bridge(未写 `model:` 的 `prompt`/`agent` hook)与开启 `recallUseSmallFast: true` 的 memory recall。
 
 ## 非目标(在 parity matrix 中跟踪)
 

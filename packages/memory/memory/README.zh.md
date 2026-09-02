@@ -57,6 +57,8 @@ side-query 进行动态召回。所有文件访问都走可选的 `ctx.fs` 缝�
 | `sectionEnabled` | `true` | 注册 `memory` 系统提示词 section |
 | `recallEnabled` | `true` | 在 pre-step 上运行动态召回 |
 | `recallProviderName` | `fork` | 召回查询的一次性子 agent provider |
+| `recallAgentOptions` | 未设置 | 直接盖到召回 fork 上的原始 `agentOptions`；优先于 `recallUseSmallFast` 且**不做** alias 解析（传已解析路由，别传 `{ model: 'haiku' }`） |
+| `recallUseSmallFast` | `false` | 让召回 fork 走低价车道：盖 `ccModelRoutes` 的 `resolve('haiku')` 路由（未配置则继承父路由）。默认关闭——为 typed agent 配置 `haiku` 不应悄悄把每次召回变成跨模型、继承前缀的 fork |
 | `teamEnabled` | `false` | 启用 per-workspace 团队记忆目录与合并 section |
 
 > **`teamEnabled` 默认关闭。** 开启会改变持久化记忆布局（创建并读取

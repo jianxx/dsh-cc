@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { extractSelectedNames, MemoryRecall, SubagentMemorySelector, type MemorySelector } from '../src/recall.ts'
+import { apply as applyMemory } from '../src/index.ts'
 import { FakeMemoryFs } from './helpers.ts'
 
 describe('extractSelectedNames', () => {
@@ -211,6 +212,106 @@ describe('MemoryRecall recentTools suppression', () => {
     // Give any (should-be-absent) listener a chance to run, then assert none.
     await new Promise(resolve => setTimeout(resolve, 5))
     expect(recorder.recentToolsSeen).toHaveLength(0)
+    await dispose()
+  })
+})
+
+describe('SubagentMemorySelector agentOptions forwarding', () => {
+  const parent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
+  const CANDIDATES = [
+    { path: '/root/a.md', filename: 'a.md', description: 'A' },
+    { path: '/root/b.md', filename: 'b.md', description: 'B' },
+  ]
+
+  it('forwards agentOptions onto the subagents.start request', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const ctx = new Context()
+    ctx.provide('subagents' as never, {
+      start: async (_name: string, request: Record<string, unknown>) => {
+        requests.push(request)
+        return {
+          result: Promise.resolve({
+            stopReason: 'completed',
+            output: [{ type: 'text', text: '{"selected_memories": []}' }],
+          }),
+        }
+      },
+    } as never)
+    const selector = new SubagentMemorySelector(ctx, parent, 'fork', { provider: 'p', model: 'flash-1' })
+    await selector.select('q', CANDIDATES, new AbortController().signal, [])
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!['agentOptions']).toEqual({ provider: 'p', model: 'flash-1' })
+  })
+})
+
+describe('memory apply() recall model stamping', () => {
+  const agent = { session: { header: { cwd: '/work/repo' } } } as unknown as Agent
+
+  /** Boot apply() with a recording subagents service and optional routes/config. */
+  async function mountApply(options: {
+    routes?: Record<string, { provider?: string; model?: string }>
+    config?: Record<string, unknown>
+  }): Promise<{ calls: Array<{ name: string; request: Record<string, unknown> }>; dispose: () => Promise<void> }> {
+    const calls: Array<{ name: string; request: Record<string, unknown> }> = []
+    const ctx = new Context()
+    await ctx.plugin(FakeMemoryFs)
+    const fs = ctx.fs as FakeMemoryFs
+    fs.seed('/root/projects/work-repo/MEMORY.md', '# memory')
+    fs.seed('/root/projects/work-repo/bash.md', topicBody('Bash reference documentation', 'reference'))
+    ctx.provide('systemPrompt' as never, {
+      section: (_def: unknown) => {},
+    } as never)
+    ctx.provide('subagents' as never, {
+      start: async (name: string, request: Record<string, unknown>) => {
+        calls.push({ name, request })
+        return {
+          result: Promise.resolve({
+            stopReason: 'completed',
+            output: [{ type: 'text', text: '{"selected_memories": []}' }],
+          }),
+        }
+      },
+    } as never)
+    if (options.routes !== undefined) {
+      ctx.provide('ccModelRoutes' as never, {
+        resolve: (model: string | undefined) => model === undefined ? undefined : options.routes?.[model.toLowerCase()],
+      } as never)
+    }
+    applyMemory(ctx, { sectionEnabled: false, memoryHome: '/root', ...(options.config ?? {}) })
+    drivePreStep(ctx, agent)
+    await until(() => calls.length > 0, 'recall start')
+    return { calls, dispose: async () => { await ctx.fiber.dispose() } }
+  }
+
+  it('defaults to no agentOptions (inherit) even when haiku is configured', async () => {
+    const { calls, dispose } = await mountApply({
+      routes: { haiku: { provider: 'orchestrix', model: 'flash-1' } },
+    })
+    expect(calls[0]!.request['agentOptions']).toBeUndefined()
+    await dispose()
+  })
+
+  it('stamps resolve(haiku) when recallUseSmallFast is true and haiku is configured', async () => {
+    const { calls, dispose } = await mountApply({
+      routes: { haiku: { provider: 'orchestrix', model: 'flash-1' } },
+      config: { recallUseSmallFast: true },
+    })
+    expect(calls[0]!.request['agentOptions']).toEqual({ provider: 'orchestrix', model: 'flash-1' })
+    await dispose()
+  })
+
+  it('omits agentOptions when recallUseSmallFast is true but no ccModelRoutes is mounted', async () => {
+    const { calls, dispose } = await mountApply({ config: { recallUseSmallFast: true } })
+    expect(calls[0]!.request['agentOptions']).toBeUndefined()
+    await dispose()
+  })
+
+  it('explicit recallAgentOptions wins and haiku is not consulted', async () => {
+    const { calls, dispose } = await mountApply({
+      routes: { haiku: { provider: 'orchestrix', model: 'flash-1' } },
+      config: { recallUseSmallFast: true, recallAgentOptions: { model: 'explicit' } },
+    })
+    expect(calls[0]!.request['agentOptions']).toEqual({ model: 'explicit' })
     await dispose()
   })
 })
