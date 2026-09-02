@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-面向 DeepSeek Harness 的 Claude Code 兼容 model alias 解析。把 CC frontmatter 的 model alias(`model: opus`、`model: sonnet`)映射为 dsh 的 `{provider, model}` 路由。本 package 现在以两种形态提供:
+面向 DeepSeek Harness 的 Claude Code 兼容 model alias 解析。把 CC frontmatter 的 model alias(`model: opus`、`model: sonnet`)映射为 dsh 的 `{provider, model, reasoningEffort?}` 路由。本 package 现在以两种形态提供:
 
 - **`ccModelRoutes` 宿主服务**(cordis 插件入口),拥有 `model-aliases` settings 命名空间的注册,并暴露派发时的解析器;
 - **纯 helper**(`mergeAliasMaps` / `createModelResolver`),在不挂载服务的情况下内嵌同样的解析语义。
@@ -11,7 +11,7 @@
 
 Claude Code 的 agent/CLAUDE.md frontmatter 用 alias 命名模型。没有 alias 层时,`model: opus` 会被原样当作 provider model id 透传,因此不认识该 id 的 adapter(如 `llm-pi-ai`)抛 `UNKNOWN_MODEL`;而 `model: inherit`——CC 中意为「用父模型」的合法哨兵——也会被当作字面 id 交给 `prepareCall` 然后报错。
 
-本 package 补上这层:alias 解析为 `{provider, model}` 路由,不可解析的情形回退为*继承父路由*(不 override),而 `deepseek-chat` 之类的字面 id 原样透传不受影响。
+本 package 补上这层:alias 解析为 `{provider, model, reasoningEffort?}` 路由,不可解析的情形回退为*继承父路由*(不 override),而 `deepseek-chat` 之类的字面 id 原样透传不受影响。
 
 ## `ccModelRoutes` 服务
 
@@ -56,9 +56,23 @@ alias 的查找顺序:**settings overlay → config 默认 → builtin fallback*
 | `undefined` / 空 | 无 override——child 继承父路由 |
 | `inherit`(任意大小写) | 无 override——child 继承父路由(**修复旧的透传 bug**) |
 | 已配置 alias(字符串形式) | `{ model: <target> }` |
-| 已配置 alias(对象形式) | `{ provider: <p>, model: <m> }` |
+| 已配置 alias(对象形式) | `{ provider?: <p>, model: <m>, reasoningEffort?: <effort> }` |
 | 未配置的 builtin alias(`fable`/`opus`/`sonnet`/`haiku`) | 无 override——child 继承父路由(「当前模型」) |
 | 其它 | **原样**作为字面 model id 透传;裸小写单词形式(如 `turbo`)记录一条「看起来像未配置 alias」的告警 |
+
+### 对象形式 alias 的 `reasoningEffort`
+
+对象形式 alias 可声明可选的 `reasoningEffort`:一个不透明的非空字符串,其合法拼写属于**目标模型的适配器**(`max`、`xhigh`、`high`、…——此处不对任何适配器目录做校验)。存在时,spawn 侧(Task 工具与 plugin-loader 的 `AgentProvider`)把它 stamp 到 child 的 options 上,routes 服务的宿主 `agent/request` listener 会把它应用到该 child 的**每一个**请求上,覆盖任何从 fork 父 header 恢复的 effort。字符串形式 alias 无法携带 effort;`inherit` / 未配置 builtin 不 stamp 任何东西。目标模型不支持的 effort 会让请求以 `UNSUPPORTED_REASONING_EFFORT` 失败——有意 fail-loud。
+
+```jsonc
+// settings 命名空间 "model-aliases"
+{
+  "opus":   { "provider": "orchestrix", "model": "glm-5.3",       "reasoningEffort": "max" },
+  "sonnet": { "provider": "orchestrix", "model": "glm-5.3-flash", "reasoningEffort": "max" }
+}
+```
+
+把 opus 的目标换成 effort 词表不同的模型,只需改这一条 settings(`"reasoningEffort": "xhigh"`);agent markdown 无需改动。
 
 ### 空删除
 
@@ -80,7 +94,8 @@ alias 的查找顺序:**settings overlay → config 默认 → builtin fallback*
 ## API
 
 - `apply(ctx, config?)` / `name` — **cordis 插件入口**(插件 id `cc-model-routes`,另以 `applyRoutes` / `routesPluginName` 再导出)。挂载服务;config 形状为 `{ modelAliases?: Record<string, AliasTarget> }`(部署默认)。
-- `ModelRoutes` — `ctx.get('ccModelRoutes')` 的值类型(`resolve(model): { provider?, model? } | undefined`)。
+- `ModelRoutes` — `ctx.get('ccModelRoutes')` 的值类型(`resolve(model): { provider?, model?, reasoningEffort? } | undefined`)。
+- `overlayStampedEffort(resolved, stamped)` / `stampedEffortOf(options)` — 服务 `agent/request` listener 使用的宿主侧 effort overlay;为测试与宿主内嵌而导出。
 - `mergeAliasMaps(config, settings)` — 带 `null` 删除与大小写不敏感 key 折叠的 entry-shallow merge;返回只含已配置 alias 的有效 `ReadonlyMap`。
 - `createModelResolver(getAliases, { warn })` — 构建 `resolveModel` 闭包。`getAliases` 是**每次调用**求值的 thunk(liveness)。可选 `warn` 替换默认的 `console.warn`(用于未配置自定义 alias 告警)。
 - `BUILTIN_ALIASES` — `['fable', 'opus', 'sonnet', 'haiku']`。

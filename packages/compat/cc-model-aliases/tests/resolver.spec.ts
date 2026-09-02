@@ -171,3 +171,63 @@ describe('schema and defensive robustness', () => {
     expect(resolve('opus')).toBeUndefined()
   })
 })
+
+describe('reasoningEffort on object-form aliases', () => {
+  it('object form with effort resolves to all three fields', () => {
+    const { resolve } = resolverFor({}, {
+      opus: { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' },
+    })
+    expect(resolve('opus')).toEqual({ provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' })
+  })
+
+  it('empty reasoningEffort is schema-rejected in both layers', () => {
+    expect(() => ConfigAliasesSchema({ opus: { provider: 'p', model: 'm', reasoningEffort: '' } } as never)).toThrow()
+    expect(() => SettingsAliasesSchema({ opus: { provider: 'p', model: 'm', reasoningEffort: '' } } as never)).toThrow()
+  })
+
+  it('object form without effort resolves without an effort key', () => {
+    const { resolve } = resolverFor({}, { opus: { provider: 'p', model: 'm' } })
+    expect(resolve('opus')).toEqual({ provider: 'p', model: 'm' })
+    expect(resolve('opus')).not.toHaveProperty('reasoningEffort')
+  })
+
+  it('string form never carries effort even when a sibling alias does', () => {
+    const { resolve } = resolverFor({}, {
+      opus: { provider: 'p', model: 'm', reasoningEffort: 'max' },
+      sonnet: 'glm-5.3-flash',
+    })
+    expect(resolve('sonnet')).toEqual({ model: 'glm-5.3-flash' })
+    expect(resolve('sonnet')).not.toHaveProperty('reasoningEffort')
+  })
+
+  it('inherit and unconfigured builtin still resolve to undefined (no stamp)', () => {
+    const { resolve } = resolverFor({ opus: { provider: 'p', model: 'm', reasoningEffort: 'max' } }, {})
+    expect(resolve('inherit')).toBeUndefined()
+    expect(resolve('haiku')).toBeUndefined()
+  })
+
+  it('settings string-form replaces a config object wholesale and drops its effort', () => {
+    const { resolve } = resolverFor(
+      { opus: { provider: 'p', model: 'm', reasoningEffort: 'max' } },
+      { opus: 'glm-x' },
+    )
+    expect(resolve('opus')).toEqual({ model: 'glm-x' })
+    expect(resolve('opus')).not.toHaveProperty('reasoningEffort')
+  })
+
+  it('object form with optional provider omitted stamps effort while inheriting provider', () => {
+    const { resolve } = resolverFor({}, { sonnet: { model: 'glm-5.3-flash', reasoningEffort: 'max' } })
+    expect(resolve('sonnet')).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
+    expect(resolve('sonnet')).not.toHaveProperty('provider')
+  })
+
+  it('object form without model passes the schema but is rejected at the service write-time validate', () => {
+    // schemastery object fields cannot express presence in this version (field
+    // `.required()` throws even when present), so presence is the service
+    // validate's cross-field job — the same place blank provider/model is
+    // already rejected. The resolver stays lenient and forwards what is there.
+    expect(() => ConfigAliasesSchema({ opus: { provider: 'p', reasoningEffort: 'max' } } as never)).not.toThrow()
+    const { resolve } = resolverFor({}, { opus: { provider: 'p', reasoningEffort: 'max' } })
+    expect(resolve('opus')).toEqual({ provider: 'p', reasoningEffort: 'max' })
+  })
+})

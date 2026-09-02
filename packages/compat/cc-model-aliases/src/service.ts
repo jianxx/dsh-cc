@@ -18,9 +18,13 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
+// Type-only: pull in the declaration-merged `agent/request` event so the host
+// overlay listener typechecks. Does not extend AgentOptions.
+import type {} from '@deepseek-ai/dsh-agent'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ConfigAliasesSchema, SettingsAliasesSchema } from './schema.ts'
 import { createModelResolver, mergeAliasMaps } from './resolver.ts'
+import { overlayStampedEffort, stampedEffortOf } from './effort.ts'
 import type { AliasTarget, ResolvedRoute } from './types.ts'
 
 /** Plugin configuration: deployment-default alias map. */
@@ -58,8 +62,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     validate: (value: Record<string, AliasTarget | null>) => {
       for (const [alias, target] of Object.entries(value)) {
         if (target !== null && typeof target === 'object') {
-          if (target.provider.trim().length === 0 || target.model.trim().length === 0) {
-            throw new Error(`cc-model-aliases: model alias "${alias}" must specify a non-empty provider and model`)
+          if (typeof target.model !== 'string' || target.model.trim().length === 0) {
+            throw new Error(`cc-model-aliases: model alias "${alias}" must specify a non-empty model`)
+          }
+          if (target.provider !== undefined && target.provider.trim().length === 0) {
+            throw new Error(`cc-model-aliases: model alias "${alias}" must specify a non-empty provider when present`)
           }
         }
       }
@@ -73,4 +80,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     { warn: message => ctx.logger.warn(message) },
   )
   ctx.provide('ccModelRoutes', { resolve })
+
+  // Host-side effort overlay: a child spawned through an alias whose route
+  // declared `reasoningEffort` carries it on its options as an undeclared
+  // runtime extra key (stamped by the Task tool / plugin-loader). buildRequest
+  // deep-freezes its seed config and may restore an explicit parent /effort
+  // from a fork seed's request/header — the alias contract wins, so overlay
+  // AFTER `next()` with a shallow copy (never in place). Root agents carry no
+  // stamp on options, so this is a no-op for them.
+  ctx.on('agent/request', async ({ agent }, next) => {
+    const resolved = await next()
+    return overlayStampedEffort(resolved, stampedEffortOf(agent.options))
+  })
 }

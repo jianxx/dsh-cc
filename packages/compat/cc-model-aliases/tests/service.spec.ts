@@ -84,4 +84,11 @@ describe('ccModelRoutes service', () => {
     expect(routes.resolve('fable')).toEqual({ model: 'kimi' })
     expect(routes.resolve('haiku')).toBeUndefined()
   })
+
+  it('object form may omit provider and still stamp effort', async () => {
+    const { routes } = await boot({
+      modelAliases: { sonnet: { model: 'glm-5.3-flash', reasoningEffort: 'max' } },
+    })
+    expect(routes.resolve('sonnet')).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
+  })
 })
