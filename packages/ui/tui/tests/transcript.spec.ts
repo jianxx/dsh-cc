@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createInitialState, enqueue } from '@jianxx/dsh-cc-tui/store.ts'
+import { createInitialState, clearRows, enqueue, setSessionTitle } from '@jianxx/dsh-cc-tui/store.ts'
 import { applySessionEvent } from '@jianxx/dsh-cc-tui/transcript.ts'
 import {
   dropRowsInRange,
@@ -783,5 +783,47 @@ describe('compact-fold helpers', () => {
     )).toBe(true)
     expect(shouldEchoCommandResult({ kind: 'error', text: 'boom' }, withCompact as never[])).toBe(true)
     expect(shouldEchoCommandResult(undefined, withCompact as never[])).toBe(false)
+  })
+})
+
+describe('session/title folding', () => {
+  const titleEvent = (title: string, seq = 1) => ({
+    type: 'session/title' as const,
+    seq,
+    data: { title, messageSeqs: [1], source: 'fallback' },
+  })
+
+  it('folds the title into state without adding a transcript row', () => {
+    const state = applySessionEvent(createInitialState(), titleEvent('Fix login bug'), [])
+    expect(state.title).toBe('Fix login bug')
+    expect(state.rows).toEqual([])
+  })
+
+  it('last-wins across successive title events (fallback then provider)', () => {
+    let state = applySessionEvent(createInitialState(), titleEvent('fallback title', 1), [])
+    state = applySessionEvent(state, titleEvent('LLM title', 2), [])
+    expect(state.title).toBe('LLM title')
+  })
+
+  it('ignores missing or empty titles', () => {
+    const initial = createInitialState()
+    expect(applySessionEvent(initial, { type: 'session/title', data: {} }, [])).toBe(initial)
+    expect(applySessionEvent(initial, { type: 'session/title', data: { title: '' } }, [])).toBe(initial)
+    expect(applySessionEvent(initial, { type: 'session/title' }, [])).toBe(initial)
+  })
+
+  it('/clear (clearRows) preserves the session title', () => {
+    const titled = applySessionEvent(createInitialState(), titleEvent('Keep me'), [])
+    const cleared = clearRows(titled)
+    expect(cleared.title).toBe('Keep me')
+    expect(cleared.rows).toEqual([])
+  })
+
+  it('setSessionTitle clears on undefined and is same-reference when unchanged', () => {
+    const titled = applySessionEvent(createInitialState(), titleEvent('T'), [])
+    expect(setSessionTitle(titled, 'T')).toBe(titled)
+    const cleared = setSessionTitle(titled, undefined)
+    expect(cleared.title).toBeUndefined()
+    expect(setSessionTitle(cleared, undefined)).toBe(cleared)
   })
 })

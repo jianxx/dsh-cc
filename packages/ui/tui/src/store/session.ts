@@ -104,6 +104,20 @@ export function setPermissionMode(state: TuiState, permissionMode: string): TuiS
   return { ...state, permissionMode }
 }
 
+/**
+ * Fold the latest `session/title` event into state (last-wins), or clear it
+ * on session switch. Same-reference when the value is unchanged so the
+ * window-title effect in the root subscriber fires only on real transitions.
+ */
+export function setSessionTitle(state: TuiState, title: string | undefined): TuiState {
+  if (state.title === title) return state
+  if (title === undefined) {
+    const { title: _dropped, ...rest } = state
+    return rest
+  }
+  return { ...state, title }
+}
+
 /** Park or clear an approval prompt. */
 export function setApproval(state: TuiState, approval: ApprovalView | undefined): TuiState {
   const { approval: _dropped, ...rest } = state

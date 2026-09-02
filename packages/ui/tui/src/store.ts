@@ -43,6 +43,7 @@ export {
   setHud,
   setNotice,
   setPermissionMode,
+  setSessionTitle,
   setTurnActive,
   toggleGlobalCollapse,
   toggleThinking,

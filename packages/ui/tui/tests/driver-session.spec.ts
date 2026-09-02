@@ -872,3 +872,57 @@ describe('createDriver catalog refresh on session switch', () => {
     expect(names).not.toContain('cmd-for-s-missing')
   })
 })
+
+describe('createDriver session title state', () => {
+  let prevHome: string | undefined
+  let tempHome: string
+
+  beforeEach(() => {
+    prevHome = process.env.DSH_HOME
+    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-title-'))
+    process.env.DSH_HOME = tempHome
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  const titleEvent = (title: string) => ({
+    type: 'session/title',
+    data: { title, messageSeqs: [1], source: 'provider' },
+  })
+
+  it('folds the boot session history title into state', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [titleEvent('Boot title')], status: 'idle' },
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    expect(driver.state.title).toBe('Boot title')
+  })
+
+  it('switchSession clears a stale title when the new session has none', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [titleEvent('Alpha work')], status: 'idle' },
+      resumeSessions: { 's-b': { id: 's-b', events: [], status: 'idle' } },
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    expect(driver.state.title).toBe('Alpha work')
+
+    await driver.switchSession('s-b')
+
+    expect(driver.state.title).toBeUndefined()
+  })
+
+  it('switchSession adopts the new session title from its folded history', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', events: [titleEvent('Alpha work')], status: 'idle' },
+      resumeSessions: { 's-b': { id: 's-b', events: [titleEvent('Beta work')], status: 'idle' } },
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+
+    await driver.switchSession('s-b')
+
+    expect(driver.state.title).toBe('Beta work')
+  })
+})

@@ -29,7 +29,7 @@ import { buildArgCompleters } from './arg-completers.ts'
 import { attachBashMode } from './root-bash.ts'
 import { resetEditorHistory } from './editor-history.ts'
 import { TuiAutocompleteProvider } from './completion.ts'
-import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, truncateActive } from './root-utils.ts'
+import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, sanitizeWindowTitle, truncateActive } from './root-utils.ts'
 import { createEditorTheme, createTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
@@ -330,7 +330,22 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	// turn-anchor tracker — that first call acts, so a boot into an
 	// already-running session (turn set before mount) starts the line.
 	let workingLineLive: boolean | undefined
+	// Window-title tracker for the session/title effect below: the subscribe
+	// fires on every state emit, so only real transitions reach the terminal.
+	let lastWindowTitle: string | undefined
 	const unsubscribe = driver.subscribe((state) => {
+		// Terminal window title mirrors the framework's session/title fold
+		// (fallback 'dsh-cc' before the first title lands or after switching
+		// to an untitled session). One expression covers boot, resume-boot
+		// (history folds before this subscription exists, so the first call
+		// already carries the resumed title), live updates, and switches.
+		// Gated on a real TTY: piped/headless runs must not leak OSC bytes.
+		const windowTitle = sanitizeWindowTitle(state.title ?? 'dsh-cc')
+		if (process.stdout.isTTY && windowTitle !== lastWindowTitle) {
+			lastWindowTitle = windowTitle
+			terminal.setTitle(windowTitle)
+		}
+
 		// /resume rebinds prompt history onto the switched session's project
 		// (a new array identity); reseed the editor's recall stack when it
 		// moves. Submits also replace the array — the reseed is then

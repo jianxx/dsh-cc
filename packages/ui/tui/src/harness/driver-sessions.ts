@@ -29,6 +29,7 @@ import {
   setPermissionMode,
   setQuestion,
   setSessionSwitcher,
+  setSessionTitle,
   setTurnActive,
   upsertRow,
   type SessionEntryView,
@@ -269,7 +270,10 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     rt.setMarkedContent(false)
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.
-    emit(clearRows(rt.state()))
+    // The window title must reset HERE (not inside clearRows — /clear shares
+    // it and keeps the same session's title); foldHistory below re-seeds it
+    // when the switched-to session's log has a session/title event.
+    emit(setSessionTitle(clearRows(rt.state()), undefined))
     const modelLabel = rt.selection.current?.model ?? 'default model'
     emit(upsertRow(rt.state(), {
       kind: 'status',

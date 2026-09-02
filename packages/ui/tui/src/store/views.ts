@@ -371,6 +371,12 @@ export interface TuiState {
   /** Open `/quit` worktree-exit confirmation overlay; absent while closed. */
   worktreeExit?: WorktreeExitView
   /**
+   * Latest `session/title` event text (framework-generated session summary),
+   * folded last-wins. Drives the terminal window title; absent until the
+   * first title lands. Log-only: never produces a transcript row.
+   */
+  title?: string
+  /**
    * Timestamp (`Date.now()`) of the last idle Ctrl+C press — the anchor for
    * the double-press-to-exit window. Never cleared: a stale anchor simply
    * falls outside the window, so the next press starts a new attempt.

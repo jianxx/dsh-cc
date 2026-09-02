@@ -13,6 +13,7 @@ import {
 import {
   setBusy,
   setPermissionMode,
+  setSessionTitle,
   upsertRow,
   type TranscriptRow,
   type TuiState,
@@ -428,6 +429,14 @@ export function applySessionEvent(
         ? (data as { active?: boolean }).active
         : undefined
       return active ? setPermissionMode(state, 'plan') : state
+    }
+    case 'session/title': {
+      // Log-only framework title (fallback or LLM provider): fold last-wins
+      // into state.title for the window-title effect; never a transcript row.
+      const title = data !== null && typeof data === 'object'
+        ? (data as { title?: unknown }).title
+        : undefined
+      return typeof title === 'string' && title.length > 0 ? setSessionTitle(state, title) : state
     }
     default:
       return state
