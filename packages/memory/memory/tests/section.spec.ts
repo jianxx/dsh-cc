@@ -101,7 +101,8 @@ describe('renderMemorySection', () => {
  * other's memories.
  */
 describe('MemorySection (per-agent rendering)', () => {
-  const agentAt = (cwd: string): Agent => ({ session: { header: { cwd } } }) as unknown as Agent
+  const agentAt = (cwd: string, delegationDepth = 0): Agent =>
+    ({ session: { header: { cwd, delegationDepth } }, options: {} }) as unknown as Agent
 
   async function setup() {
     const ctx = new Context()
@@ -143,6 +144,29 @@ describe('MemorySection (per-agent rendering)', () => {
     expect(textB).toContain('- [beta](beta.md) — B')
     expect(textB).toContain('- [shared](shared.md) — G')
     expect(textB).not.toContain('- [alpha](alpha.md) — A')
+    await ctx.fiber.dispose()
+  })
+
+  it('renders an empty string for a delegated child (depth > 0)', async () => {
+    const { ctx, fs, section, text, start } = await setup()
+    fs.seed('/mem/projects/work-repo-a/MEMORY.md', '- [alpha](alpha.md) — A\n')
+    fs.seed('/mem/MEMORY.md', '- [shared](shared.md) — G\n')
+    start()
+    const parent = agentAt('/work/repo-a', 0)
+    const child = agentAt('/work/repo-a', 1)
+    await section.refresh(parent)
+    expect(text(parent)).toContain('- [alpha](alpha.md) — A')
+    expect(text(child)).toBe('')
+    await ctx.fiber.dispose()
+  })
+
+  it('renders an empty string when reading depth throws (fail closed)', async () => {
+    const { ctx, fs, section, text, start } = await setup()
+    fs.seed('/mem/MEMORY.md', '- [shared](shared.md) — G\n')
+    start()
+    await section.refresh()
+    const broken = { session: { header: { cwd: '/work/repo-a' } }, options: { subagentDepth: -1 } } as unknown as Agent
+    expect(text(broken)).toBe('')
     await ctx.fiber.dispose()
   })
 
@@ -206,7 +230,8 @@ describe('MemorySection (per-agent rendering)', () => {
  * `ctx.systemPrompt.assemble`) because the listener lives on that waterfall.
  */
 describe('MemorySection (assemble waterfall readiness)', () => {
-  const agentAt = (cwd: string): Agent => ({ session: { header: { cwd } } }) as unknown as Agent
+  const agentAt = (cwd: string, delegationDepth = 0): Agent =>
+    ({ session: { header: { cwd, delegationDepth } }, options: {} }) as unknown as Agent
 
   async function setupReal() {
     const ctx = new Context()
@@ -241,6 +266,16 @@ describe('MemorySection (assemble waterfall readiness)', () => {
     expect(text).toContain('- [shared](shared.md) — G')
     expect(text).toContain('- [alpha](alpha.md) — A (workspace)')
     expect(text).not.toContain('(no memories yet)')
+    await ctx.fiber.dispose()
+  })
+
+  it('first assembly for a delegated child drops the memory section', async () => {
+    const { ctx, fs, textOf, start } = await setupReal()
+    fs.seed('/mem/MEMORY.md', '- [shared](shared.md) — G\n')
+    fs.seed('/mem/projects/work-repo-a/MEMORY.md', '- [alpha](alpha.md) — A\n')
+    start()
+    const text = await textOf(agentAt('/work/repo-a', 1))
+    expect(text).toBe('')
     await ctx.fiber.dispose()
   })
 

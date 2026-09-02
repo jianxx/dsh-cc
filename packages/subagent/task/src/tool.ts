@@ -8,9 +8,12 @@
  * favour of this definition — see `packages/preset/cc/agent.cordis.yml`.
  *
  * Dispatch rules:
- * - `subagent_type` omitted (or the `general-purpose` sentinel) → a plain fork
- *   of the caller, no definition participation.
- * - A type matching a definition under the session cwd → fork with the
+ * - `subagent_type` omitted (or the `general-purpose` sentinel) → a fresh
+ *   spawn of the caller, no definition participation, no parent history.
+ * - `subagent_type` equal to the `fork` sentinel → a conversation-inheriting
+ *   fork of the caller (CC `subagent_type: "fork"`). The sentinel wins over a
+ *   workspace file of the same name; `.claude/agents/fork.md` is unreachable.
+ * - A type matching a definition under the session cwd → spawn with the
  *   definition's system prompt delivered as the child `persona`, the model's
  *   task text as the first user message, a routes-resolved `agentOptions`
  *   override, and the definition's tool restriction (sanitized of tool names
@@ -18,8 +21,8 @@
  * - Any other type → an error result listing the available types.
  *
  * The seam's capability contract (`assertCapabilities`) is honoured
- * transitively: fork supports persona/toolFilter/depthLimit, so every field
- * this tool forwards is legal.
+ * transitively: spawn and fork both support persona/toolFilter/depthLimit, so
+ * every field this tool forwards is legal.
  *
  * @module @jianxx/dsh-cc-subagent-task/tool
  */
@@ -36,8 +39,14 @@ import type { AgentRegistry } from './registry.ts'
 /** The registered tool name (the CC display mapping surfaces it as `Task`). */
 export const TASK_TOOL = 'subagent_fork'
 
-/** The sentinel a model uses to ask for a plain fork with no definition. */
+/** The sentinel a model uses to ask for a plain spawn with no definition. */
 const GENERAL_PURPOSE = 'general-purpose'
+
+/** The sentinel a model uses to inherit the parent's completed-turn prefix. */
+const FORK_SENTINEL = 'fork'
+
+/** Fresh-child provider: no parent conversation (CC Task default). */
+const PROVIDER_SPAWN = 'spawn'
 
 /** The default delegation-depth cap for a Task child (matches the harness default). */
 const DEFAULT_MAX_DEPTH = 3
@@ -78,7 +87,7 @@ interface SubagentsLike {
 }
 
 interface TaskArgs {
-  /** The CC agent type to dispatch to; omit for a plain fork. */
+  /** The CC agent type to dispatch to; omit for a plain spawn. */
   subagent_type?: string
   /** A short (3-5 word) task label, persisted with the child run. */
   description: string
@@ -217,15 +226,21 @@ export function registerTaskTool(
   return tools.register(defineTool({
     name: TASK_TOOL,
     description:
-      'Delegate a well-scoped task to a subagent. Pass `subagent_type` to run a named agent from '
-      + 'the session workspace (`.claude/agents`) — see the "Available subagents" section of the '
-      + 'system prompt for the current list. Omit `subagent_type` (or use "general-purpose") for a '
-      + 'plain fork that inherits your tools and context. The child runs to completion and returns '
-      + 'its final text. Unknown types fail with the available list.',
+      'Delegate a well-scoped task to a subagent. The child starts with a fresh conversation: '
+      + 'write a self-contained prompt (paths, constraints, what to return). Pass `subagent_type` '
+      + 'to run a named agent from the session workspace (`.claude/agents`) — see the "Available '
+      + 'subagents" section of the system prompt for the current list. Omit `subagent_type` (or '
+      + 'use "general-purpose") for a plain spawn that inherits your tools but not your history. '
+      + 'Pass `subagent_type: "fork"` to inherit completed parent turns (and the prompt cache, '
+      + 'when the child stays on the same model). The child runs to completion and returns its '
+      + 'final text. Unknown types fail with the available list.',
     parameters: {
       subagent_type: {
         type: 'string',
-        description: 'Optional agent type from the workspace `.claude/agents` definitions.',
+        description:
+          'Named agent from `.claude/agents`, or the sentinels "general-purpose" (fresh spawn) '
+          + 'and "fork" (inherit completed parent turns). "fork" is reserved and wins over a '
+          + 'workspace file of the same name.',
       },
       description: {
         type: 'string',
@@ -267,7 +282,12 @@ export function registerTaskTool(
       }
 
       if (type === undefined || type.length === 0 || type === GENERAL_PURPOSE) {
-        const run = await seam.start('fork', base)
+        const run = await seam.start(PROVIDER_SPAWN, base)
+        return settle(run)
+      }
+
+      if (type === FORK_SENTINEL) {
+        const run = await seam.start(FORK_SENTINEL, base)
         return settle(run)
       }
 
@@ -289,7 +309,7 @@ export function registerTaskTool(
       // agent: MCP tools live on the standing-scope layer, which the global
       // view (no scope) does not include.
       const knownNames = tools.view?.(agent).restrictableNames ?? new Set<string>()
-      const run = await seam.start('fork', {
+      const run = await seam.start(PROVIDER_SPAWN, {
         ...base,
         persona: definition.systemPrompt,
         ...(definition.toolRestriction !== undefined

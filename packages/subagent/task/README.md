@@ -33,11 +33,15 @@ turns the internal `subagent_fork` tool into a genuine subagent-type dispatcher.
 
 Given a `Task(subagent_type, description, prompt)` call from a CC preset session:
 
-1. **`subagent_type` omitted, blank, or `general-purpose`** → a **plain fork** of the caller
-   (the pre-existing semantics): the prompt text becomes the child's first user message, no
-   definition participates.
-2. **A type that matches a definition** under the session cwd (`cwdOf` the assembling agent)
-   → a `fork` with:
+1. **`subagent_type` omitted, blank, or `general-purpose`** → a **fresh spawn** of the
+   caller: the prompt text becomes the child's first user message, no definition
+   participates, no parent conversation is copied. Write a self-contained prompt.
+2. **`subagent_type` equal to the reserved sentinel `fork`** → a conversation-inheriting
+   **fork** of the caller (Claude Code's `subagent_type: "fork"`): completed parent turns
+   seed the child; no definition participates. The sentinel is reserved and wins over a
+   workspace file of the same name — `.claude/agents/fork.md` is unreachable.
+3. **A type that matches a definition** under the session cwd (`cwdOf` the assembling agent)
+   → a `spawn` with:
    - `persona` = the definition's `systemPrompt` (delivered as the child's system segment);
    - the task text as the child's **first user message**;
    - `agentOptions` = the alias-resolved `{ provider?, model? }` from
@@ -46,7 +50,7 @@ Given a `Task(subagent_type, description, prompt)` call from a CC preset session
    - `toolFilter` = the definition's `toolRestriction` (allow/deny), **sanitized** of tool
      names this composition no longer registers;
    - `maxDepth` = 3 (matches the harness default; configurable).
-3. **Any other type** (not found in the workspace) → an **error result** listing the
+4. **Any other type** (not found in the workspace) → an **error result** listing the
    available types in this workspace (or noting the workspace defines none).
 
 The run is **foreground one-shot**: the tool awaits the child to completion and returns its
@@ -89,7 +93,9 @@ universe without exposing visible definitions (the CC frontmatter `Task` transla
 spawn row is disabled; `workflow` is reserved for the deferred workflow row). Because
 sanitization checks the live registry rather than a static list, these reserved names and
 every static CC name (`read`, `bash`, …) survive only when they are actually
-reserved/registered — which they are in the cc preset.
+reserved/registered — which they are in the cc preset. A definition that omits both
+`tools` and `disallowedTools` passes no `toolFilter`, so the child inherits the full
+parent tool view (including MCP schemas).
 
 ## Available subagents system-prompt section
 
@@ -137,9 +143,9 @@ supplies the alias resolver. The cc preset **disables** the harness `tool-subage
   dispatched. Seam plugin agents (`AgentProvider`) are not addressed by `subagent_type` in v1
   (their start contract does not carry the task text and their capability flags would reject
   `maxDepth`) — see the parity matrix.
-- **Fork inherits the parent prefix.** This tool uses the harness `fork`, which inherits the
-  parent agent's message prefix; Claude Code's `Task` does not have that inheritance. This is
-  a known parity difference, not fixed in v1.
+- **Reserved type names.** `general-purpose` and `fork` are sentinels, not file types. A
+  workspace file `.claude/agents/fork.md` is unreachable; `subagent_type: "fork"` always
+  means inherit completed parent turns.
 
 ## API
 

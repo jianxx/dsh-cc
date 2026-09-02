@@ -23,9 +23,11 @@ side-query 进行动态召回。所有文件访问都走可选的 `ctx.fs` 缝�
 - **`memory` 系统提示词 section** —— 保存通道指引、各层入口内容（截断）、按
   scope 标注的合并主题索引、以及 grep 搜索指引。section 始终渲染（无记忆的层显示
   占位符），保存指引永不缺席。一次全局注册服务所有 agent：text 回调渲染发起组装
-  的 agent 自己的工作区层（agent 经 assemble scope 传入）。目录扫描经 `ctx.fs`
-  在后台进行；各层渲染片段缓存，仅当片段实际变化时才发出 `system-prompt/change`；
-  轮末监听器会重新扫描，host 侧写入无需重启即可进入提示词。
+  的 agent 自己的工作区层（agent 经 assemble scope 传入）。委派 child
+  （`delegationDepth > 0`）渲染空串，section 从 child 提示词中消失——对齐 Claude
+  Code：自动记忆不与非 fork 子代理共享，父 prompt 必须自行传递 child 需要的事实。
+  目录扫描经 `ctx.fs` 在后台进行；各层渲染片段缓存，仅当片段实际变化时才发出
+  `system-prompt/change`；轮末监听器会重新扫描，host 侧写入无需重启即可进入提示词。
 - **`memory_save` 工具** —— 唯一可用的保存通道。记忆目录在所有会话 workspace
   之外，直接的 `write`/`edit` 调用会被 fs sandbox 拦截、必然失败，section 文案
   对此有明确说明。工具接收结构化字段（`name`、`type`、`description`、`body`、可选
