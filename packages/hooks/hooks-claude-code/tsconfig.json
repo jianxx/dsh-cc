@@ -13,6 +13,9 @@
     },
     {
       "path": "../../core/tools"
+    },
+    {
+      "path": "../../compat/cc-model-aliases"
     }
   ]
 }
