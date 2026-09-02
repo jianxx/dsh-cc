@@ -79,6 +79,9 @@ importers:
       '@jianxx/dsh-cc-plugin-loader':
         specifier: workspace:^
         version: link:../../compat/cc-plugin-loader
+      '@jianxx/dsh-cc-session-title-provider':
+        specifier: workspace:^
+        version: link:../../compat/session-title-provider
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -372,6 +375,33 @@ importers:
         specifier: workspace:^
         version: link:../../core/tools
 
+  packages/compat/session-title-provider:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-title':
+        specifier: link:../../../../deepseek-harness/packages/session/session-title
+        version: link:../../../../deepseek-harness/packages/session/session-title
+      '@deepseek-ai/dsh-session-title-llm':
+        specifier: link:../../../../deepseek-harness/packages/session/session-title-llm
+        version: link:../../../../deepseek-harness/packages/session/session-title-llm
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../cc-model-aliases
+
   packages/core/tool-append-order:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -476,6 +506,36 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-tools':
+        specifier: workspace:^
+        version: link:../tools
+
+  packages/core/tool-web-fetch:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../../deepseek-harness/packages/core/system-prompt
+        version: link:../../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/dsh-tool-web':
+        specifier: link:../../../../deepseek-harness/packages/web/tool-web
+        version: link:../../../../deepseek-harness/packages/web/tool-web
+      '@deepseek-ai/dsh-web':
+        specifier: link:../../../../deepseek-harness/packages/web/web
+        version: link:../../../../deepseek-harness/packages/web/web
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../tools
@@ -923,6 +983,30 @@ importers:
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
 
+  packages/interaction/command-rename:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../../../../deepseek-harness/vendor/loader
+        version: link:../../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../../../../deepseek-harness/packages/interaction/commands
+        version: link:../../../../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-title':
+        specifier: link:../../../../deepseek-harness/packages/session/session-title
+        version: link:../../../../deepseek-harness/packages/session/session-title
+
   packages/interaction/command-resume:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -1297,6 +1381,9 @@ importers:
       '@jianxx/dsh-cc-command-release-notes':
         specifier: workspace:^
         version: link:../../interaction/command-release-notes
+      '@jianxx/dsh-cc-command-rename':
+        specifier: workspace:^
+        version: link:../../interaction/command-rename
       '@jianxx/dsh-cc-command-resume':
         specifier: workspace:^
         version: link:../../interaction/command-resume
@@ -1363,6 +1450,9 @@ importers:
       '@jianxx/dsh-cc-tool-structured-output':
         specifier: workspace:^
         version: link:../../core/tool-structured-output
+      '@jianxx/dsh-cc-tool-web-fetch':
+        specifier: workspace:^
+        version: link:../../core/tool-web-fetch
     devDependencies:
       '@deepseek-ai/cordis-plugin-include':
         specifier: link:../../../../deepseek-harness/vendor/include

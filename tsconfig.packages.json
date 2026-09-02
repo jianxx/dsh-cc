@@ -44,6 +44,9 @@
       "path": "./packages/compat/cc-model-aliases"
     },
     {
+      "path": "./packages/compat/session-title-provider"
+    },
+    {
       "path": "./packages/memory/memory"
     },
     {
@@ -54,6 +57,9 @@
     },
     {
       "path": "./packages/core/tool-sleep"
+    },
+    {
+      "path": "./packages/core/tool-web-fetch"
     },
     {
       "path": "./packages/core/tool-structured-output"
@@ -123,6 +129,9 @@
     },
     {
       "path": "./packages/interaction/command-resume"
+    },
+    {
+      "path": "./packages/interaction/command-rename"
     },
     {
       "path": "./packages/interaction/command-skills"

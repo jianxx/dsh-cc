@@ -1,9 +1,9 @@
 /**
- * Convert a resolved alias route into the `agentOptions` record stamped onto a
- * subagent spawn. Fields that are `undefined` are dropped so per-field
- * inheritance survives (a route omitting `provider` must not override it with
- * `undefined`); a route with no defined fields at all means "no override" and
- * collapses to `undefined`.
+ * Convert a resolved alias route into spawn `agentOptions` (`toAgentOptions`)
+ * or a complete `{provider, model}` pair for an independent one-shot stream
+ * (`toOneShotRoute`). Spawn drops `undefined` fields so per-field inheritance
+ * survives; one-shots fill missing fields from a parent route and return
+ * `undefined` when the pair is still incomplete.
  *
  * @module @jianxx/dsh-cc-model-aliases/agentOptions
  */
@@ -25,4 +25,27 @@ export function toAgentOptions(route: ResolvedRoute | undefined): Record<string,
   if (route.reasoningEffort !== undefined) out['reasoningEffort'] = route.reasoningEffort
   if (Object.keys(out).length === 0) return undefined
   return out
+}
+
+export interface OneShotParentRoute {
+  readonly provider?: string
+  readonly model?: string
+}
+
+/**
+ * Fill a resolved alias into a complete `{provider, model}` pair for an
+ * independent `ctx.llm.stream` one-shot. Alias fields win; missing fields
+ * inherit from `parent`. Returns undefined when the resulting pair is
+ * incomplete (no model after inherit) — callers treat that as "unconfigured".
+ */
+export function toOneShotRoute(
+  route: ResolvedRoute | undefined,
+  parent?: OneShotParentRoute,
+): { provider: string; model: string } | undefined {
+  if (route === undefined) return undefined
+  const provider = route.provider ?? parent?.provider
+  const model = route.model ?? parent?.model
+  if (provider === undefined || model === undefined) return undefined
+  if (provider.length === 0 || model.length === 0) return undefined
+  return { provider, model }
 }

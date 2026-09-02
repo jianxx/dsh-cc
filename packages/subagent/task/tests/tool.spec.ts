@@ -292,7 +292,32 @@ describe('Task tool', () => {
     expect(first.isError).toBe(true)
     expect(first.content[0]!.text).toMatch(/unknown subagent_type "nope"/)
     expect(first.content[0]!.text).toMatch(/deep-reasoner/)
+    expect(first.content[0]!.text).toMatch(/explore/)
     expect(runs).toHaveLength(0)
+  })
+
+  it('dispatches the bundled explore agent on a bare workspace with haiku route stamps', async () => {
+    const ws = freshWorkspace()
+    const routes = { resolve: (m: string | undefined) => m === 'haiku' ? { provider: 'p', model: 'cheap' } : undefined }
+    const { ctx, runs } = await mount({ routes })
+    reserveNames(ctx, 'read', 'read_image', 'glob', 'grep')
+    const result = await call(ctx, { subagent_type: 'explore', description: 'find it', prompt: 'where is X defined?' }, agentAt(ws))
+    expect(result.content[0]!.text).toBe('done')
+    expect(runs[0]!.request['agentOptions']).toEqual({ provider: 'p', model: 'cheap' })
+    expect(runs[0]!.request['persona']).toContain('read-only codebase scout')
+    const filter = runs[0]!.request['toolFilter'] as { allow?: string[] } | undefined
+    expect(filter?.allow).toEqual(expect.arrayContaining(['read', 'read_image', 'glob', 'grep']))
+    expect(filter?.allow?.includes('write')).toBe(false)
+    await assertRestrictable(ctx, filter as ToolRestriction)
+  })
+
+  it('omits agentOptions for a bundled agent when the alias does not resolve', async () => {
+    const ws = freshWorkspace()
+    const routes = { resolve: () => undefined }
+    const { ctx, runs } = await mount({ routes })
+    reserveNames(ctx, 'read', 'read_image', 'glob', 'grep')
+    await call(ctx, { subagent_type: 'explore', description: 'x', prompt: 't' }, agentAt(ws))
+    expect(runs[0]!.request['agentOptions']).toBeUndefined()
   })
 
   it('maps a child failure stopReason to an isError result', async () => {

@@ -50,6 +50,7 @@ export async function loadClaudeCodeAgents(
 }
 
 export * from './types.ts'
+export { discoverBundledAgents } from './bundled/index.ts'
 export { loadAgentsDir, findProjectAgentsDir, discoverAgents, AGENTS_DIR, CLAUDE_DIR } from './discovery.ts'
 export { parseAgentMarkdown, parseAgentJson, splitFrontmatter } from './parse.ts'
 export type { ParsedMarkdown } from './parse.ts'

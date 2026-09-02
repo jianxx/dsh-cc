@@ -112,14 +112,28 @@ describe('AgentCatalog section', () => {
     await ctx.fiber.dispose()
   })
 
-  it('renders nothing for a workspace with no agents', async () => {
+  it('renders the bundled agents for a workspace with no agents of its own', async () => {
     const empty = freshDir('empty')
     const { ctx, textOf } = await mount()
-    // Let the (empty) discovery settle, then assert no content is rendered.
+    // Let discovery settle, then assert the bundled catalog is rendered.
     await vi.waitFor(async () => {
       await ctx.systemPrompt.assemble({ scope: agentAt(empty) })
     })
-    expect(await textOf(agentAt(empty))).toBe('')
+    const text = await textOf(agentAt(empty))
+    expect(text).toContain('## Available subagents')
+    expect(text).toContain('explore')
+    expect(text).toContain('dsh-cc-guide')
+    await ctx.fiber.dispose()
+  })
+
+  it('a project explore.md shadows the bundled explore description', async () => {
+    const ws = freshDir('ws')
+    writeAgent(ws, 'explore', 'Project-local explore override')
+    const { ctx, textOf } = await mount()
+    await vi.waitFor(async () => {
+      expect(await textOf(agentAt(ws))).toContain('Project-local explore override')
+    }, { timeout: 2000 })
+    expect(await textOf(agentAt(ws))).not.toContain('Fast, read-only codebase scout')
     await ctx.fiber.dispose()
   })
 

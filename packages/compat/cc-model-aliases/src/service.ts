@@ -37,7 +37,7 @@ export interface Config {
 export const Config: z<Config> = z.object({ modelAliases: ConfigAliasesSchema })
 
 /** The settings namespace carrying the live `model-aliases` overlay. */
-const MODEL_ALIASES_NAMESPACE = settingsNamespace('model-aliases')
+export const MODEL_ALIASES_NAMESPACE = settingsNamespace('model-aliases')
 
 /** The shape consumers resolve through. */
 export interface ModelRoutes {
@@ -92,4 +92,25 @@ export function apply(ctx: Context, config: Config = {}): void {
     const resolved = await next()
     return overlayStampedEffort(resolved, stampedEffortOf(agent.options))
   })
+}
+
+/**
+ * Host-plane alias read WITHOUT owning the namespace: resolve through the
+ * `ccModelRoutes` service when one is mounted, otherwise read the live
+ * `model-aliases` settings overlay directly. Never re-registers the namespace
+ * — the isolated `cc-model-routes` plugin row already owns that registration,
+ * and `settings.register` throws on a duplicate namespace.
+ * @param ctx - the host context (no plugin instance required).
+ * @param alias - frontmatter model alias, or undefined to inherit.
+ * @returns the resolved route, or undefined to inherit the parent route.
+ */
+export function resolveAlias(ctx: Context, alias: string | undefined): ResolvedRoute | undefined {
+  const routes = ctx.get('ccModelRoutes') as ModelRoutes | undefined
+  if (routes !== undefined) return routes.resolve(alias)
+  const settings = ctx.get('settings') as SettingsProvider | undefined
+  const overlay = settings?.get?.(MODEL_ALIASES_NAMESPACE) as Record<string, AliasTarget | null> | undefined
+  return createModelResolver(
+    () => mergeAliasMaps(undefined, overlay),
+    { warn: message => ctx.logger.warn(message) },
+  )(alias)
 }

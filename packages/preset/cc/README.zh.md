@@ -2,12 +2,13 @@
 
 [English](README.md) | 中文
 
-DeepSeek Harness(dsh)的 **CC 模式** agent preset:除内置 `standard`、`minimal` 等之外的第 5 个 agent preset。它在完整标准 preset 之上组合出 Claude Code 行为面——Claude hooks、磁盘上的 CC 插件目录、斜杠命令、memory、CC 输出样式、WebFetch 全开。本包**纯配置**:无 TS 运行时代码,只有 `agent.cordis.yml`(平铺的 agent 组合 entry list)加 `preset.yml` 元数据。
+DeepSeek Harness(dsh)的 **CC 模式** agent preset:除内置 `standard`、`minimal` 等之外的第 5 个 agent preset。它在完整标准 preset 之上组合出 Claude Code 行为面——Claude hooks、磁盘上的 CC 插件目录、斜杠命令、memory、CC 输出样式、CC 风格 WebFetch。本包**纯配置**:无 TS 运行时代码,只有 `agent.cordis.yml`(平铺的 agent 组合 entry list)加 `preset.yml` 元数据。
 
 ## 作用
 
 - **完整标准基底**。`agent.cordis.yml` 以标准 `standard` preset 的逐字拷贝开头(16 个基座行),CC 模式会话因此具备标准编码 agent 的全部能力。
-- **作用域化的 CC 表面**。`cc rows` 段挂载 Claude Code 对齐插件——hook 桥(30 个 hook 事件中的 18 个)、CC 插件目录 glue、`ToolSearch`、memory 与 consolidation、输出样式、coordinator、19 个斜杠命令,以及 worktree/sleep/notebook/structured-output 与 git 工具。WebFetch(`tool-web`)设为 `fetch: true`,超时沿用历史全局 swap 的 60s。
+- **作用域化的 CC 表面**。`cc rows` 段挂载 Claude Code 对齐插件——hook 桥(30 个 hook 事件中的 18 个)、CC 插件目录 glue、`ToolSearch`、memory 与 consolidation、输出样式、coordinator、21 个斜杠命令,以及 worktree/sleep/notebook/structured-output 与 git 工具。WebFetch:stock `tool-web` 以 `fetch: false` 运行,搜索超时沿用 60s;`web_fetch` 由 cc-services 里的 `tool-web-fetch` 行(`@jianxx/dsh-cc-tool-web-fetch`,可选 `prompt` 在廉价 lane 上摘要)替代。
+- **会话标题与 `/rename`**。cc-shell bundle 用 `@jianxx/dsh-cc-session-title-provider` 替换原生 `session-title-llm` 宿主行——first-prompt 标题提供方,配置了 `haiku` 廉价通道时盖印该路由(否则继承主路由);本 preset 还挂载 `@jianxx/dsh-cc-command-rename`,`/rename <title>` 即可固定用户标题。
 - **隔离的服务 realm**。承载服务的行(工具搜索、microcompactor、插件注册表、MCP 连接)放进 `cc-services` 组并带四个必需的 `isolate` 键,发布到 entry-local realm 而非进程全局 root realm(否则会触发 preset 挂载门禁)。
 - **CC Task 委派(`tool-task` + `cc-model-routes`)**。`cc-services` 组还挂载 `@jianxx/dsh-cc-subagent-task`(CC Task 工具,对按工作区的 `.claude/agents` 定义做 `subagent_type` 派发)与 `@jianxx/dsh-cc-model-aliases`(`cc-model-routes`,拥有 `model-aliases` settings 命名空间与派发时别名解析器)。本 preset 里 harness 的 `tool-subagent` 与 `tool-subagent-fork` 两行被**禁用**,改用这个替代 Task,它是**前台一次性**——不再提供 `tool-subagent-fork` 之前暴露的 durable 后台/`continuable` 流程(`report`/`send_message`)。已知限制见 task 包 README 与 parity matrix。
 

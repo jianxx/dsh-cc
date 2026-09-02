@@ -89,8 +89,14 @@
       "@jianxx/dsh-cc-tool-notebook-edit": [
         "./packages/core/tool-notebook-edit/src/index.ts"
       ],
+      "@jianxx/dsh-cc-tool-web-fetch": [
+        "./packages/core/tool-web-fetch/src/index.ts"
+      ],
       "@jianxx/dsh-cc-output-styles": [
         "./packages/compat/cc-output-styles/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-session-title-provider": [
+        "./packages/compat/session-title-provider/src/index.ts"
       ],
       "@jianxx/dsh-cc-coordinator": [
         "./packages/subagent/coordinator/src/index.ts"
@@ -140,6 +146,9 @@
       "@jianxx/dsh-cc-output-styles/invariant": [
         "./packages/compat/cc-output-styles/src/invariant.ts"
       ],
+      "@jianxx/dsh-cc-session-title-provider/invariant": [
+        "./packages/compat/session-title-provider/src/invariant.ts"
+      ],
       "@jianxx/dsh-cc-hook-protocol/invariant": [
         "./packages/hooks/hook-protocol/src/invariant.ts"
       ],
@@ -187,6 +196,9 @@
       ],
       "@jianxx/dsh-cc-command-resume/resume": [
         "./packages/interaction/command-resume/src/resume.ts"
+      ],
+      "@jianxx/dsh-cc-command-rename": [
+        "./packages/interaction/command-rename/src/index.ts"
       ],
       "@jianxx/dsh-cc-command-branch": [
         "./packages/interaction/command-branch/src/index.ts"

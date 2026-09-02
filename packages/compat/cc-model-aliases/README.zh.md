@@ -103,6 +103,7 @@ alias 的查找顺序:**settings overlay → config 默认 → builtin fallback*
 - `BUILTIN_ALIASES` — CC 家族(`fable`/`opus`/`sonnet`/`haiku`)加上 dsh-cc lane(`sketch`/`draft`/`blueprint`/`masterplan`/`architect`)。
 - `LANE_PEERS` — 未配置 lane → CC 家族映射(`sketch→haiku`、`draft→sonnet`、`blueprint→opus`、`masterplan→fable`;`architect` 无对标)。
 - `toAgentOptions(route)` — 丢弃 resolved route 中的 `undefined` 字段以保住按字段继承(绝不把 child 请求的字段写成 `undefined`);`undefined` 进 → `undefined` 出,全 `undefined` 的 route 收敛为 `undefined`(「无 override」)。由 Task、cc-plugin-loader、hooks bridge 与 memory recall 共享。
+- `toOneShotRoute(route, parent?)` — 把 resolved alias 填成完整的 `{provider, model}` 二元组,供独立的 one-shot `ctx.llm.stream` 调用使用:alias 字段优先,缺失字段从 `parent` 继承;补不完整(继承后仍无 model)返回 `undefined`,调用方视为「未配置」。session-title overlay 与 WebFetch summarizer 使用。
 - `ConfigAliasesSchema` / `SettingsAliasesSchema`(及其 record 形式)— config 层(无 `null`)与 settings 层(允许 `null`)的 schemastery schema,外加 `AliasTarget` / `ResolvedRoute` 类型。
 
 ## dsh-cc lane
@@ -123,7 +124,7 @@ frontmatter 两套词都可以写(`model: opus` 或 `model: blueprint`)。后台
 
 ## 低价(small-fast)车道
 
-没有第二个 alias 名,也没有 `ANTHROPIC_SMALL_FAST_MODEL`。低价后台车道**就是**已配置的 `haiku` alias:需要小型独立 one-shot 分类器模型的消费者调用 `resolve('haiku')` —— 配置了 haiku 即其路由,未配置即继承父路由(builtin fallback)。当前消费者:hooks bridge(未写 `model:` 的 `prompt`/`agent` hook)与开启 `recallUseSmallFast: true` 的 memory recall。
+没有第二个 alias 名,也没有 `ANTHROPIC_SMALL_FAST_MODEL`。低价后台车道**就是**已配置的 `haiku` alias:需要小型独立 one-shot 分类器模型的消费者调用 `resolve('haiku')` —— 配置了 haiku 即其路由,未配置即继承父路由(builtin fallback)。当前消费者:hooks bridge(未写 `model:` 的 `prompt`/`agent` hook)、开启 `recallUseSmallFast: true` 的 memory recall、session-title overlay 与 WebFetch summarizer。
 
 ## 非目标(在 parity matrix 中跟踪)
 

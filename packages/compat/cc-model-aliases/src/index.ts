@@ -14,7 +14,7 @@
  */
 
 export { BUILTIN_ALIASES, CC_ALIASES, LANE_ALIASES, LANE_PEERS, mergeAliasMaps, createModelResolver } from './resolver.ts'
-export { toAgentOptions } from './agentOptions.ts'
+export { toAgentOptions, toOneShotRoute, type OneShotParentRoute } from './agentOptions.ts'
 export { overlayStampedEffort, stampedEffortOf } from './effort.ts'
 export {
   ConfigAliasSchema,
@@ -25,5 +25,5 @@ export {
   type SettingsAliasEntry,
 } from './schema.ts'
 export type { AliasTarget, ResolvedRoute } from './types.ts'
-export { apply as applyRoutes, name as routesPluginName, type ModelRoutes } from './service.ts'
+export { apply as applyRoutes, name as routesPluginName, MODEL_ALIASES_NAMESPACE, resolveAlias, type ModelRoutes } from './service.ts'
 export { apply, name } from './service.ts'

@@ -36,13 +36,15 @@ describe('AgentRegistry', () => {
     writeAgent(root, 'deep-reasoner', { description: 'Review heavy work' })
     const registry = new AgentRegistry()
     const defs = await registry.list(root)
-    expect(defs.map(d => d.agentType)).toEqual(['deep-reasoner'])
+    expect(defs.map(d => d.agentType)).toEqual(expect.arrayContaining(['deep-reasoner']))
+    expect(defs.find(d => d.agentType === 'deep-reasoner')?.source).toBe('project')
   })
 
   it('returns an empty list when no agents dir exists', async () => {
     const root = freshDir('empty')
     const registry = new AgentRegistry()
-    await expect(registry.list(root)).resolves.toEqual([])
+    const defs = await registry.list(root)
+    expect(defs.filter(d => d.source !== 'bundled')).toEqual([])
   })
 
   it('resolves one definition by type', async () => {
@@ -72,6 +74,6 @@ describe('AgentRegistry', () => {
     await registry.list(root)
     writeAgent(root, 'b', { description: 'added later' })
     const defs = await registry.list(root)
-    expect(defs.map(d => d.agentType)).toEqual(['a'])
+    expect(defs.filter(d => d.source !== 'bundled').map(d => d.agentType)).toEqual(['a'])
   })
 })

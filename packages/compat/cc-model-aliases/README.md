@@ -184,6 +184,12 @@ cc-shell (and the routes service), so in CC mode the fix is always active.
   request); `undefined` in → `undefined` out, and an all-`undefined` route
   collapses to `undefined` ("no override"). Shared by Task, cc-plugin-loader,
   the hooks bridge, and memory recall.
+- `toOneShotRoute(route, parent?)` — fill a resolved alias into a complete
+  `{provider, model}` pair for an independent one-shot `ctx.llm.stream` call:
+  alias fields win, missing fields inherit from the parent route, and an
+  incomplete pair (no model after inherit) returns `undefined` so callers
+  treat it as "unconfigured". Used by the session-title overlay and the
+  WebFetch summarizer.
 - `ConfigAliasesSchema` / `SettingsAliasesSchema` (and their record forms) —
   schemastery schemas for the config layer (no `null`) and settings layer
   (`null` allowed), plus `AliasTarget` / `ResolvedRoute` types.
@@ -220,7 +226,8 @@ background lane **is** the configured `haiku` alias: consumers that need a
 small, independent one-shot classifier model call `resolve('haiku')` — the
 configured haiku route when set, inherit-the-parent when unconfigured (the
 builtin fallback). Current consumers: the hooks bridge (`prompt`/`agent` hooks
-without an authored `model:`) and memory recall with `recallUseSmallFast: true`.
+without an authored `model:`), memory recall with `recallUseSmallFast: true`,
+the session-title overlay, and the WebFetch summarizer.
 
 ## Non-goals (tracked in the parity matrix)
 

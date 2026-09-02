@@ -15,8 +15,12 @@
  * @module @jianxx/dsh-cc-claude-code-agents/types
  */
 
-/** The layer an agent definition was discovered under; user shadows project. */
-export type AgentSource = 'user' | 'project'
+/**
+ * The layer an agent definition was discovered under; the precedence is
+ * `bundled` < `user` < `project` — a user-layer agent shadows its bundled
+ * namesake, and a project-layer agent shadows both.
+ */
+export type AgentSource = 'user' | 'project' | 'bundled'
 
 /**
  * The per-scope tool filter the loader computes from `tools` and
