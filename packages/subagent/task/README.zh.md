@@ -6,7 +6,8 @@
 
 - 内部工具名 `subagent_fork`(CC 显示名 `Task`),以 `subagent_type` 对会话工作区的 `.claude/agents` 定义做派发;
 - `Available subagents` 系统提示词 section(**按工作区**渲染);
-- 保留的工具名(`subagent`、`workflow`),使被禁用的 harness 行仍可被 restrict。
+- 保留的工具名(`subagent`、`workflow`),使被禁用的 harness 行仍可被 restrict;
+- 一个 pre-step 剥离监听器,把 harness `agent-instructions` 的工作区基线(CLAUDE.md / AGENTS.md)从被委派的 Task child 中移除。
 
 `ccModelRoutes` 服务(来自 `@jianxx/dsh-cc-model-aliases`)提供派发时的别名解析器;当其缺席时,每个 child 继承父路由(内置 fallback)。
 
@@ -60,6 +61,15 @@ To delegate to one, pass its name as the `subagent_type` argument of the Task to
 
 由于 section 文本是同步组装的而发现是异步的,未知工作区的首次组装会显示空,随后 discovery 落地后触发 `system-prompt/change`,重组即显示目录。当工作区未定义任何 agent(或没有可 scope 的 agent)时,section 渲染空串并从提示词中消失。目录只列**文件定义**——刻意**不**把 seam 后端 provider 名(`fork`/`spawn`/`codex`/`claude-code`)当作可寻址的 agent 类型来枚举。
 
+## Task child 上的工作区指令
+
+harness 的 `agent-instructions` 插件会在**每个**会话(包括 Task child)注入工作区 CLAUDE.md / AGENTS.md 基线,作为一条 `agent-instructions` 来源的 user message。本包挂载一个 `agent/pre-step` 监听器,为被委派的 child(`delegationDepth > 0`)剥离该基线:
+
+- 被委派的 child 收到的 enter 批次与待处理 inbox 消息中不再包含 `agent-instructions` 来源的消息;其 persona 仍是 agent 文件的 `systemPrompt`(`general-purpose` 则是部署 persona)。
+- fork child 仍继承父 seed 中已有的 CLAUDE.md——监听器只跳过*全新* child 的扫描,从不改写父历史。
+- 这是对 Claude Code 的**有意偏离**:CC 的自定义 subagent **会**加载 CLAUDE.md(CC 的 Explore/Plan 则跳过)。dsh-cc 对所有 Task child 施加跳过,因为 dsh-cc 仓库的 CLAUDE.md 是编排者策略,而非 worker 契约。
+- 残余: harness 仍会代 child 从磁盘读取指令文件,只是它们不再进入 child 的模型可见批次。
+
 ## 挂载
 
 由 `cc` preset 的 `tool-task` 行(`@jianxx/dsh-cc-subagent-task`)挂载在 `cc-services` 组内,旁边是提供别名解析器的 `cc-model-routes`(`@jianxx/dsh-cc-model-aliases`)。cc preset **禁用** harness 的 `tool-subagent` 与 `tool-subagent-fork` 两行以改用本工具,避免 `subagent_fork` 名被重复注册。
@@ -70,6 +80,7 @@ To delegate to one, pass its name as the `subagent_type` argument of the Task to
 - **进程级发现缓存。** 注册表按工作区 root 缓存整个进程生命周期,不监听文件系统。编辑 `.claude/agents` 定义:对缓存条目尚未创建的工作区在下次会话生效,否则在进程重启后生效。基于 mtime 的失效刷为 follow-up。
 - **v1 不做插件 agent 派发。** 只派发 `.claude/agents` 下的文件定义。seam 插件 agent(`AgentProvider`)在 v1 不被 `subagent_type` 寻址(其 start 契约不携带任务正文,且 capability 标志会拒绝 `maxDepth`)——见 parity matrix。
 - **保留类型名。** `general-purpose` 与 `fork` 是哨兵,不是文件类型。工作区文件 `.claude/agents/fork.md` 不可达;`subagent_type: "fork"` 永远表示继承父已完成轮次。
+- **指令文件仍会被扫描。** 剥离发生在 harness `agent-instructions` 插件已从磁盘读取工作区 CLAUDE.md / AGENTS.md 并注入之后;本监听器只把它们挡在 child 的模型可见批次之外,不改 harness 就无法阻止磁盘扫描。fork child 的父 seed 从不改写,seed 中已有的 CLAUDE.md 会被继承。
 
 ## API
 
@@ -77,6 +88,7 @@ To delegate to one, pass its name as the `subagent_type` argument of the Task to
 - `AgentRegistry`(`./registry`)— 按工作区的定义缓存(`ensure` / `list` / `resolve`),惰性加载 `loadClaudeCodeAgents(root)`(用户层 + 项目层,项目遮蔽用户)。
 - `registerTaskTool` / `TASK_TOOL`(`./tool`)— 注册 `subagent_fork` Task 工具。
 - `mountAgentCatalog` / `CATALOG_SECTION_NAME` / `CATALOG_SECTION_ORDER`(`./catalog`)— 挂载 `Available subagents` section。
+- `mountStripWorkspaceInstructions` / `isDelegated` / `isAgentInstructions`(`./strip-instructions`)— 挂载(或为测试分类)pre-step 剥离监听器,把 harness `agent-instructions` 工作区基线从被委派的 Task child 中移除。
 
 ## 非目标
 

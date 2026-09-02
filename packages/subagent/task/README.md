@@ -9,7 +9,9 @@ DeepSeek Harness. It mounts:
   session workspace's `.claude/agents` definitions;
 - the `Available subagents` system-prompt section, rendered per workspace;
 - the reserved tool names (`subagent`, `workflow`) that keep disabled harness rows
-  restrictable.
+  restrictable;
+- a pre-step strip listener that removes the harness `agent-instructions` workspace
+  baseline (CLAUDE.md / AGENTS.md) from delegated Task children.
 
 The `ccModelRoutes` service (from `@jianxx/dsh-cc-model-aliases`) supplies the spawn-time
 alias resolver; when it is absent, every child inherits its parent's route (the builtin
@@ -120,6 +122,24 @@ prompt. The catalog lists only file definitions — it deliberately does **not**
 backend provider names (`fork`/`spawn`/`codex`/`claude-code`) as if they were addressable
 agent types.
 
+## Workspace instructions on Task children
+
+The harness `agent-instructions` plugin injects the workspace CLAUDE.md / AGENTS.md
+baseline as an `agent-instructions`-sourced user message on every session — including
+Task children. This package mounts an `agent/pre-step` listener that strips that baseline
+from delegated children (`delegationDepth > 0`):
+
+- A delegated child receives only the enter batch and pending inbox messages that are not
+  `agent-instructions`-sourced; its persona remains the agent-file `systemPrompt` (or the
+  deployment persona for `general-purpose`).
+- Fork children still inherit any CLAUDE.md already in the parent seed — the listener only
+  skips a *fresh* child scan; parent history is never rewritten.
+- This is an intentional deviation from Claude Code, whose custom subagents **do** load
+  CLAUDE.md (Explore/Plan in CC skip it). dsh-cc applies the skip to every Task child
+  because the dsh-cc repo CLAUDE.md is orchestrator policy, not a worker contract.
+- Residual: the harness still reads the instruction files from disk on the child's behalf;
+  they just never enter the child's model-visible batch.
+
 ## Mounting
 
 Mounted by the `cc` preset's `tool-task` row (`@jianxx/dsh-cc-subagent-task`) inside the
@@ -146,6 +166,11 @@ supplies the alias resolver. The cc preset **disables** the harness `tool-subage
 - **Reserved type names.** `general-purpose` and `fork` are sentinels, not file types. A
   workspace file `.claude/agents/fork.md` is unreachable; `subagent_type: "fork"` always
   means inherit completed parent turns.
+- **Instruction files are still scanned.** The strip happens after the harness
+  `agent-instructions` plugin has read the workspace CLAUDE.md / AGENTS.md from disk and
+  injected them; this listener only keeps them out of the child's model-visible batch, so
+  the disk scan itself cannot be prevented without changing the harness. A fork child's
+  parent seed is never rewritten, so CLAUDE.md already in the seed is inherited.
 
 ## API
 
@@ -157,6 +182,9 @@ supplies the alias resolver. The cc preset **disables** the harness `tool-subage
 - `registerTaskTool` / `TASK_TOOL` (`./tool`) — register the `subagent_fork` Task tool.
 - `mountAgentCatalog` / `CATALOG_SECTION_NAME` / `CATALOG_SECTION_ORDER` (`./catalog`) —
   mount the `Available subagents` section.
+- `mountStripWorkspaceInstructions` / `isDelegated` / `isAgentInstructions`
+  (`./strip-instructions`) — mount (or classify for) the pre-step strip of the harness
+  `agent-instructions` workspace baseline on delegated Task children.
 
 ## Non-goals
 
