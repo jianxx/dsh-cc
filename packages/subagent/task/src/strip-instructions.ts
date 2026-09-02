@@ -54,6 +54,16 @@ function drainInbox(agent: Agent): void {
  * `agent-instructions` plugin inject, delegated children lose every
  * `agent-instructions` message both from the enter batch and from the
  * pending inbox; top-level agents pass through untouched.
+ *
+ * Registered with `prepend`: the cordis waterfall dispatches listeners
+ * outermost-first in registration order, and the cc preset mounts
+ * `agent-instructions` rows BEFORE `cc-subagent-task`, so an appended
+ * strip would sit INSIDE the injector — the injector splices the
+ * baseline into the enter batch during unwind, after the inner strip
+ * already ran, and the strip would never see it. Prepending keeps the
+ * strip outermost so its post-`next()` filter sees the injector's
+ * output. (Same mechanism `tool-append-order` documents for
+ * `system-prompt/assemble`.)
  * @param ctx - the plug context.
  * @returns an unmount callback.
  */
@@ -64,5 +74,5 @@ export function mountStripWorkspaceInstructions(ctx: Context): () => void {
     drainInbox(agent)
     if (decision.kind !== 'enter') return decision
     return { kind: 'enter', messages: decision.messages.filter(msg => !isAgentInstructions(msg)) }
-  })
+  }, { prepend: true })
 }
