@@ -35,6 +35,7 @@ import {
 } from './worktree.ts'
 import type { GitCmd, WorktreeSession } from './worktree.ts'
 import { presentEnterCall, presentWorktreeResult, presentExitCall } from './render.ts'
+import { setSessionCwd } from '@jianxx/dsh-cc-session-cwd'
 
 export const name = 'tool-git-worktree'
 export const inject = ['tools', 'shell', 'systemPrompt', 'fs']
@@ -76,6 +77,28 @@ class WorktreeError extends Error {}
  */
 function sessionCwd(exec: ToolRunContext): string | undefined {
   return exec.agent?.session.header.cwd
+}
+
+/**
+ * Propagate a cwd change into the session-cwd plugin (WS1): a durable
+ * `worktree/entered` event plus the live overlay. Tolerant of test fakes and
+ * headless contexts whose session face lacks the append seam — the tool must
+ * not fail because a non-persistent session cannot record the move.
+ * @param exec - the running tool call.
+ * @param path - the new absolute session working directory.
+ */
+function updateSessionCwd(exec: ToolRunContext, path: string): void {
+  const agent = exec.agent
+  if (agent === undefined) return
+  const session = agent.session as unknown as { append?: unknown } | undefined
+  if (session === undefined || typeof session.append !== 'function') return
+  // Fail-soft: a session that cannot persist the event still completes the
+  // worktree operation; the worktree session singleton remains authoritative.
+  try {
+    setSessionCwd(agent, path)
+  } catch {
+    // cwd bookkeeping is best-effort here.
+  }
 }
 
 /**
@@ -248,6 +271,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
 
         setActiveWorktreeSession({ originalCwd: cwd, repoRoot, worktreePath, worktreeBranch: branch, originalHead })
+        updateSessionCwd(exec, worktreePath)
 
         return {
           worktreePath,
@@ -314,6 +338,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 
         if (args.action === 'keep') {
           clearActiveWorktreeSession()
+          updateSessionCwd(exec, session.originalCwd)
           return {
             action: 'keep' as const,
             originalCwd: session.originalCwd,
@@ -356,6 +381,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
 
         clearActiveWorktreeSession()
+        updateSessionCwd(exec, session.originalCwd)
         const discardParts: string[] = []
         if (commits > 0) discardParts.push(`${commits} ${commits === 1 ? 'commit' : 'commits'}`)
         if (changedFiles > 0) discardParts.push(`${changedFiles} uncommitted ${changedFiles === 1 ? 'file' : 'files'}`)

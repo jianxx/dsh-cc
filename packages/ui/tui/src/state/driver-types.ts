@@ -10,8 +10,11 @@ import type { TuiState } from '../store.ts'
 import type { ToolCallView, ToolResultView } from '../tool-card.ts'
 import type { WorktreeExitHooks } from '../harness/worktree-exit.ts'
 
-/** The three approval answers: grant once, grant persistently, reject. */
-export type ApprovalAnswerKind = 'once' | 'always' | 'reject'
+/**
+ * The approval answers: grant once, grant persistently, grant for this
+ * session, reject.
+ */
+export type ApprovalAnswerKind = 'once' | 'always' | 'session' | 'reject'
 
 export interface Driver {
   readonly state: TuiState
@@ -74,6 +77,8 @@ export interface Driver {
    * Answer the open approval prompt: `'once'` grants this call only;
    * `'always'` additionally derives a permission rule from the prompt's
    * preview and persists it into the settings `permissions.allow` list;
+   * `'session'` derives the same rule and grants it for the current session
+   * only (session-scoped allowlist — never persisted to global settings);
    * `'reject'` refuses the call.
    */
   answerApproval(kind: ApprovalAnswerKind): void
@@ -439,47 +444,12 @@ export type SessionProjectionsLike = {
   stateOf(session: unknown, key: string): unknown
 }
 
-/**
- * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
- * field name; `inputTokens` is accepted defensively so a shape drift
- * degrades to "no tokens" instead of NaN. Cache fields are optional —
- * compositions without prompt caching simply omit those lines.
- */
-export type TokenUsageStateLike = {
-  totals?: {
-    uncachedInputTokens?: number
-    inputTokens?: number
-    outputTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  }
-}
-
-/** Normalized token totals shared by the HUD and `/cost`. */
-export interface TokenUsageTotals {
-  input: number
-  output: number
-  cacheRead?: number
-  cacheWrite?: number
-}
-
-/** `contextPressure` projection state (subset the HUD reads). */
-export type ContextPressureStateLike = {
-  contextWindow?: number
-  pressureTokens?: number
-  surfaceTokens?: number
-  sampledSurfaceTokens?: number
-}
-
-/**
- * `contextBreakdown` projection state (subset the usage panel reads): the
- * projected context token count per content role.
- */
-export type ContextBreakdownStateLike = {
-  system?: number
-  tools?: number
-  messages?: number
-}
+export type {
+  ContextBreakdownStateLike,
+  ContextPressureStateLike,
+  TokenUsageStateLike,
+  TokenUsageTotals,
+} from './driver-usage-types.ts'
 
 /**
  * Structural seam for the deployment settings provider: the pieces the

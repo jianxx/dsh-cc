@@ -30,6 +30,7 @@ import {
 import { allowRuleOf, isSettingsConflict, payloadOf } from './approval-preview.ts'
 import { createModalQueue, type ModalEntry } from './driver-modal.ts'
 import type { DriverApprovalsCtx } from './driver-ctx.ts'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 
 /** The approvals-driven slice of the Driver surface, plus queue/dispose teardown. */
 export type ApprovalsSection = {
@@ -79,6 +80,7 @@ export function createApprovalsSection(rt: DriverApprovalsCtx): ApprovalsSection
         kind: 'approval',
         view,
         resolve,
+        agent: req.agent,
         ...req.signal === undefined ? {} : { signal: req.signal },
       }
       modal.push(entry)
@@ -131,6 +133,28 @@ export function createApprovalsSection(rt: DriverApprovalsCtx): ApprovalsSection
         return
       }
     }
+  }
+
+  /**
+   * Grant the derived rule to the requesting session's scoped allowlist
+   * (WS4-PR-B): the same derivation the "always" answer persists, but recorded
+   * on the permission engine's in-memory session allowlist with an audit
+   * event — never into the global `permissions` settings. Degradations (rule
+   * underivable, permission engine absent) leave the call allowed once and
+   * say so in a notice.
+   */
+  function addSessionRule(agent: unknown, toolName: string, preview: ApprovalPreview | undefined): void {
+    const rule = allowRuleOf(toolName, preview)
+    if (rule === undefined) return
+    const engine = rt.ctx.get('permissionRules') as
+      | { addSessionAllow(agent: Agent, rule: string): void }
+      | undefined
+    if (agent === undefined || engine === undefined) {
+      rt.showNotice('Allowed once only — the permission engine is not mounted.')
+      return
+    }
+    engine.addSessionAllow(agent as Agent, rule)
+    rt.showNotice(`Allowed for this session: ${rule}`)
   }
 
   // --- User questions -------------------------------------------------------
@@ -212,7 +236,7 @@ export function createApprovalsSection(rt: DriverApprovalsCtx): ApprovalsSection
 
   return {
     answerApproval(kind: ApprovalAnswerKind) {
-      modal.answerApproval(kind, { writeAllowRule, showNotice: rt.showNotice })
+      modal.answerApproval(kind, { writeAllowRule, addSessionRule, showNotice: rt.showNotice })
     },
     questionMove(delta) {
       rt.emit(moveQuestionFocus(rt.state(), delta))

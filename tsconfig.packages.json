@@ -53,6 +53,9 @@
       "path": "./packages/memory/memory-consolidation"
     },
     {
+      "path": "./packages/workspace/session-cwd"
+    },
+    {
       "path": "./packages/workspace/tool-git-worktree"
     },
     {

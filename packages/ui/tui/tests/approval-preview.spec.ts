@@ -158,6 +158,23 @@ describe('allowRuleOf rule generation', () => {
   it('keeps ruleString escaping symmetric for a plain prefix', () => {
     expect(ruleString('Bash', 'npm ')).toBe('Bash(npm )')
   })
+
+  it('strips environment variable prefixes when deriving rules', () => {
+    // FOO=bar npm install → should derive rule for npm, not FOO=bar
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'FOO=bar npm install' })).toBe('Bash(npm )')
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'FOO=bar BAZ=qux npm install' })).toBe('Bash(npm )')
+    // With sudo
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'sudo npm install' })).toBe('Bash(npm )')
+    // With npx
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'npx npm install' })).toBe('Bash(npm )')
+  })
+
+  it('handles compound commands by deriving from the first segment', () => {
+    // git add . && git commit → should derive from git add
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'git add . && git commit' })).toBe('Bash(git )')
+    // With env prefix in first segment
+    expect(allowRuleOf('Bash', { kind: 'command', command: 'FOO=bar git add . && git commit' })).toBe('Bash(git )')
+  })
 })
 
 /** Minimal approval request the driver's approval/request handler accepts. */

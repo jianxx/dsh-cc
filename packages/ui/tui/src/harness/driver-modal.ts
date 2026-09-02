@@ -22,6 +22,8 @@ export type ApprovalEntry = {
   kind: 'approval'
   view: ApprovalView
   resolve: (outcome: ApprovalOutcome) => void
+  /** The requesting agent — carries the session a 'session' grant scopes to. */
+  agent?: unknown
   signal?: AbortSignal
 }
 export type QuestionEntry = {
@@ -37,6 +39,12 @@ export type ModalEntry = ApprovalEntry | QuestionEntry
 /** Deps `answerApproval` threads through to createDriver's persistence layer. */
 export interface ModalAnswerDeps {
   writeAllowRule(toolName: string, preview: ApprovalPreview | undefined): Promise<void>
+  /** Grant the derived rule to the requesting session's allowlist (WS4-PR-B). */
+  addSessionRule(
+    agent: unknown,
+    toolName: string,
+    preview: ApprovalPreview | undefined,
+  ): void
   showNotice(text: string): void
 }
 
@@ -53,7 +61,7 @@ export function createModalQueue(rt: DriverModalCtx): {
   shiftHead(): ModalEntry | undefined
   peekHead(): ModalEntry | undefined
   spliceAll(): ModalEntry[]
-  answerApproval(kind: 'once' | 'always' | 'reject', deps: ModalAnswerDeps): void
+  answerApproval(kind: 'once' | 'always' | 'session' | 'reject', deps: ModalAnswerDeps): void
 } {
   const modalQueue: ModalEntry[] = []
 
@@ -85,7 +93,7 @@ export function createModalQueue(rt: DriverModalCtx): {
 
   const spliceAll = (): ModalEntry[] => modalQueue.splice(0)
 
-  const answerApproval = (kind: 'once' | 'always' | 'reject', deps: ModalAnswerDeps): void => {
+  const answerApproval = (kind: 'once' | 'always' | 'session' | 'reject', deps: ModalAnswerDeps): void => {
     const head = modalQueue[0]
     if (head === undefined || head.kind !== 'approval') return
     // Advance the queue BEFORE resolving: a resolution can immediately fire
@@ -100,6 +108,17 @@ export function createModalQueue(rt: DriverModalCtx): {
         const message = error instanceof Error ? error.message : String(error)
         deps.showNotice(`Allowed once only — saving the allow rule failed: ${message}`)
       })
+    }
+    if (kind === 'session') {
+      // Fire-and-forget like 'always': the call proceeds while the derived
+      // rule is granted to the requesting session's allowlist (WS4-PR-B,
+      // never global settings); a failure surfaces as a notice.
+      try {
+        deps.addSessionRule(head.agent, head.view.toolName, head.view.preview)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        deps.showNotice(`Allowed once only — adding the session rule failed: ${message}`)
+      }
     }
   }
 

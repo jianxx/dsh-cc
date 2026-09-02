@@ -109,15 +109,45 @@ function diffsOf(name: string, args: Record<string, unknown>): readonly { path: 
  * call. Shell commands get a trailing-space first-word prefix rule
  * (`Bash(npm )` matches `npm install …` but not `npmx …` — the deliberate
  * trailing space replaces the colon-carrying `:*` legacy form, which would
- * otherwise embed the colon in the prefix and never match). Every other tool
- * gets a whole-tool rule. Undefined (stay once-only) when nothing usable
- * remains, e.g. a blank command.
+ * otherwise embed the colon in the prefix and never match). Environment
+ * variable prefixes (e.g., `FOO=bar`) are stripped before extracting the
+ * first word, so `FOO=bar npm install` derives a rule for `npm`, not `FOO=bar`.
+ * Every other tool gets a whole-tool rule. Undefined (stay once-only) when
+ * nothing usable remains, e.g. a blank command.
  */
 export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
   const name = toolName.trim()
   if (name === '') return undefined
   if (preview?.kind === 'command') {
-    const firstWord = preview.command.trim().split(/\s+/)[0] ?? ''
+    const command = preview.command.trim()
+    if (command === '') return undefined
+    
+    // Strip environment variable prefixes (FOO=bar, FOO=bar BAZ=qux, etc.)
+    // These are assignments that appear before the actual command.
+    let remaining = command
+    while (true) {
+      const match = remaining.match(/^[A-Z_][A-Z0-9_]*=\S*\s+/)
+      if (!match) break
+      remaining = remaining.slice(match[0].length)
+    }
+    
+    // Handle common command prefixes that should be stripped
+    // sudo: run as root, but rule should match the actual command
+    // npx/yarn: package runners, but rule should match the underlying tool
+    const prefixesToStrip = ['sudo ', 'npx ', 'yarn ']
+    for (const prefix of prefixesToStrip) {
+      if (remaining.startsWith(prefix)) {
+        remaining = remaining.slice(prefix.length)
+        break // Only strip one prefix
+      }
+    }
+    
+    // For compound commands (&&, ||, ;), only consider the first segment
+    // This is a simplification - the rule will match any command starting
+    // with the first segment's command, which is the desired behavior.
+    const firstSegment = remaining.split(/&&|\|\||;/)[0]?.trim() ?? ''
+    
+    const firstWord = firstSegment.split(/\s+/)[0] ?? ''
     if (firstWord === '') return undefined
     // ruleString escapes parens/backslashes so a subshell-opening first word
     // round-trips through parseRuleString.

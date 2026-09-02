@@ -18,21 +18,19 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
+import { foldSessionCwd } from '@jianxx/dsh-cc-session-cwd'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 // Side-effect type import: declaration-merges `ctx.shell` (the capability fact
 // `sandboxMode` this plugin reads for the sandboxed-bash exemption). No value
 // dependency on the seam.
 import type {} from '@deepseek-ai/dsh-shell'
 import { parseRule, ruleString } from './parser.ts'
-import { evaluatePermission, mergeRuleSets } from './evaluate.ts'
-import { assessBashCommand, assessFilePath, type RiskAssessment } from './classifier.ts'
+import { mergeRuleSets } from './evaluate.ts'
+import { decideCall, type DecideDeps } from './decide.ts'
 import {
   PERMISSION_MODES,
   SOURCE_PRIORITY,
-  SWITCHABLE_PERMISSION_MODES,
-  type PermissionDecision,
   type PermissionMode,
   type PermissionRule,
   type PermissionRuleSet,
@@ -40,10 +38,25 @@ import {
 } from './types.ts'
 import {
   foldPermissionMode,
-  foldResumeSandbox,
   setPermissionMode,
+  switchSessionPermissionMode,
 } from './mode.ts'
-import { isBashToolName, ruleMatches, subjectOf } from './matchers.ts'
+import { ruleMatches, subjectOf } from './matchers.ts'
+import { SessionAllowlist, foldSessionAllows } from './session-allowlist.ts'
+import { createSandboxApprovalListener } from './approval-listener.ts'
+
+export {
+  SESSION_ALLOW_EVENT,
+  SessionAllowlist,
+  appendSessionAllow,
+  foldSessionAllows,
+  type SessionAllowEventData,
+} from './session-allowlist.ts'
+export {
+  createSandboxApprovalListener,
+  isSandboxEscalation,
+  type SandboxApprovalListenerConfig,
+} from './approval-listener.ts'
 
 export {
   foldPermissionMode,
@@ -222,6 +235,10 @@ export class PermissionRulesService extends Service {
   private state: { rules: PermissionRuleSet; defaultMode: PermissionMode }
   /** Disposers for the currently registered monotonic guards. */
   private guardDisposers: (() => void)[] = []
+  /** Session-scoped approval memory (WS4-PR-B): rules granted via the UI's "Allow for this session". */
+  private readonly sessionAllowlist = new SessionAllowlist()
+  /** Session ids already seeded from their log's `permission/session-allow` audit events. */
+  private readonly allowlistSeeded = new Set<string>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'permissionRules')
@@ -246,13 +263,43 @@ export class PermissionRulesService extends Service {
       validate: value => this.validateSettings(value),
     })
 
+    // The decision waterfall lives in ./decide.ts as pure functions over this
+    // structural dependency face; the closures read live fields so a settings
+    // reload is observed on the next call.
+    const decideDeps: DecideDeps = {
+      classifierEnabled: config.classifierEnabled !== false,
+      exemptSandboxedBashFromToolAsk: config.exemptSandboxedBashFromToolAsk === true,
+      bashToolName: this.bashToolName,
+      fileEditTools: this.fileEditTools,
+      readOnlyTools: this.readOnlyTools,
+      settings: () => this.settingsSection(),
+      defaultMode: () => this.state.defaultMode,
+      rules: () => this.state.rules,
+      bypassDisabled: () => this.bypassDisabled(),
+      sessionAllowMatches: (exec) => this.sessionAllowMatches(exec),
+      shellMode: () => this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined,
+    }
+
     ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      const decision = this.decide(exec)
+      const decision = decideCall(decideDeps, exec)
       if (decision.kind === 'allow') return { kind: 'allow' }
       if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }
       if (decision.kind === 'ask') return { kind: 'ask', ...decision.reason === undefined ? {} : { reason: decision.reason } }
       return next()
     })
+
+    // WS3 sandbox integration: the approval-seam listener auto-approves
+    // sandbox escalations in `auto` mode when the session has a resolvable
+    // workspace root. Registered ahead of any UI provider so an eligible
+    // escalation never reaches the modal queue; every auto-approval is
+    // audit-logged to the session log (`scope: 'sandbox-auto'`).
+    ctx.on('approval/request', createSandboxApprovalListener({
+      modeOf: (agent) => {
+        if (foldPlanMode(agent.session.events)) return 'plan'
+        return foldPermissionMode(agent.session.events) ?? this.state.defaultMode
+      },
+      workspaceOf: (agent) => this.sessionWorkspaceOf(agent),
+    }))
 
     // Pin sessions created while the deployment default is a sandbox-affecting or
     // plan mode so a fresh session inherits the default durably.
@@ -341,82 +388,50 @@ export class PermissionRulesService extends Service {
     )
   }
 
-  /** The effective mode for one call: plan overlays, else the session override. */
-  private effectiveMode(exec: ToolExecution): PermissionMode {
+  /**
+   * Whether the session-scoped allowlist matches this call. The session's
+   * rules are seeded once from its log's `permission/session-allow` audit
+   * events, so a resumed session keeps its grants. Agent-less calls never
+   * match (there is no session to scope to).
+   */
+  private sessionAllowMatches(exec: ToolExecution): boolean {
     const agent = exec.agent
-    if (agent !== undefined && foldPlanMode(agent.session.events)) return 'plan'
-    const recorded = agent === undefined ? undefined : foldPermissionMode(agent.session.events)
-    return recorded ?? this.state.defaultMode
-  }
-
-  /** Whether a call is sandboxed bash for the whole-tool-ask exemption. */
-  private sandboxedBash(exec: ToolExecution): boolean {
-    if (!this.config.exemptSandboxedBashFromToolAsk) return false
-    if (!isBashToolName(exec.name, this.bashToolName)) return false
-    const mode = this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined
-    return mode !== undefined && mode !== 'danger-full-access'
+    if (agent === undefined) return false
+    const id = String(agent.session.id)
+    if (!this.allowlistSeeded.has(id)) {
+      this.allowlistSeeded.add(id)
+      this.sessionAllowlist.seed(id, foldSessionAllows(agent.session.events))
+    }
+    return this.sessionAllowlist.matches(id, exec.name, subjectOf(exec, this.bashToolName))
   }
 
   /**
-   * Classify the risk of one call for the escalation stage. Bash-like tools
-   * classify their command; file-edit tools classify their target path; other
-   * tools are LOW. Skipped entirely when `classifierEnabled` is false.
+   * The session's workspace root: the durable `worktree/entered` fold
+   * (session-cwd, WS1), falling back to the session header cwd. Undefined
+   * when the session never recorded a cwd — the sandbox listener then cannot
+   * verify an escalation is in-scope and falls through to the normal ask.
    */
-  private classify(exec: ToolExecution): RiskAssessment {
-    if (this.config.classifierEnabled === false) return { level: 'LOW', reasons: [] }
-    const args = exec.arguments as Record<string, unknown>
-    const session = exec.agent?.session
-    if (isBashToolName(exec.name, this.bashToolName) && typeof args.command === 'string') {
-      return assessBashCommand(args.command, this.settingsSection().dangerousPatterns)
-    }
-    if (this.fileEditTools.has(exec.name) && typeof args.file_path === 'string') {
-      const settings = this.settingsSection()
-      return assessFilePath(args.file_path, {
-        cwd: session?.header?.cwd ?? '',
-        ...settings.additionalDirectories === undefined ? {} : { additionalDirectories: settings.additionalDirectories },
-        ...settings.protectedFiles === undefined ? {} : { protectedFiles: settings.protectedFiles },
-      })
-    }
-    return { level: 'LOW', reasons: [] }
+  private sessionWorkspaceOf(agent: Agent): string | undefined {
+    return foldSessionCwd(agent.session.events) ?? agent.session.header?.cwd
   }
 
   /**
-   * Fold the engine decision for one call. Bypass-immune matches fall to the
-   * guard layer, not here. The risk-classifier escalation runs first (a
-   * hard-deny HIGH in every mode; an ask MEDIUM outside bypassPermissions),
-   * then the normal waterfall proceeds unchanged. Under `auto`, a classifier-LOW
-   * call whose waterfall decision is `ask` is auto-allowed (the classifier
-   * proxies the prompt); MEDIUM/HIGH already returned above.
+   * Grant a session-scoped allow rule on the agent's session: in-memory match
+   * for the rest of this session plus a `permission/session-allow` audit
+   * event. Never touches the `permissions` settings namespace.
+   * @param agent - the agent whose session is granted the rule.
+   * @param rule - the rule string (e.g. `Bash(npm )` or a whole-tool name).
    */
-  private decide(exec: ToolExecution): PermissionDecision {
-    const risk = this.classify(exec)
-    if (risk.level === 'HIGH') {
-      return { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` }
-    }
-    const mode = this.effectiveMode(exec)
-    if (risk.level === 'MEDIUM') {
-      if (mode === 'bypassPermissions') return { kind: 'allow' }
-      return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
-    }
-    const subject = subjectOf(exec, this.bashToolName)
-    const decision = evaluatePermission({
-      toolName: exec.name,
-      ...subject === undefined ? {} : { subject },
-      // Bypass-immune rules are enforced by the monotonic guard layer, not the
-      // waterfall — pass an empty bypassImmune so the guard is authoritative.
-      rules: { ...this.state.rules, bypassImmune: [] },
-      mode,
-      ...this.bypassDisabled() ? { bypassDisabled: true } : {},
-      isFileEdit: this.fileEditTools.has(exec.name),
-      isReadOnly: this.readOnlyTools.has(exec.name),
-      sandboxedBashExempt: this.sandboxedBash(exec),
-    })
-    // auto proxies every ask: at this point the call is classifier-LOW (MEDIUM
-    // and HIGH returned above), so low-risk asks auto-allow.
-    if (mode === 'auto' && decision.kind === 'ask') {
-      return { kind: 'allow' }
-    }
-    return decision
+  addSessionAllow(agent: Agent, rule: string): void {
+    this.sessionAllowlist.add(agent.session, rule)
+  }
+
+  /**
+   * Drop every session-scoped rule for the agent's session (audited clear
+   * record in the session log).
+   */
+  clearSessionAllows(agent: Agent): void {
+    this.sessionAllowlist.clear(agent.session)
   }
 
   /**
@@ -429,57 +444,22 @@ export class PermissionRulesService extends Service {
   }
 
   /**
-   * Switch a session's permission mode durably. `plan` is owned by plan-mode and
-   * throws here (enter on the same session via plan-mode's `/plan`). Entering
-   * `bypassPermissions` pins the session sandbox to `danger-full-access` and
-   * records the prior mode for restore; leaving restores the recorded (or
-   * fallback `workspace-write`) confinement. Unknown or disabled modes throw.
+   * Switch a session's permission mode durably. Semantics live in
+   * `switchSessionPermissionMode` (./mode.ts): `plan` is owned by plan-mode
+   * and throws; entering `bypassPermissions` pins the session sandbox to
+   * `danger-full-access` and records the prior mode for restore; unknown or
+   * disabled modes throw.
    * @param agent - the live agent whose session mode is changing.
    * @param mode - the new permission mode.
    */
   setMode(agent: Agent, mode: PermissionMode): void {
-    if (mode === 'plan') {
-      throw new TypeError('permission mode "plan" is owned by plan-mode; use /plan or /permissions plan')
-    }
-    if (!SWITCHABLE_PERMISSION_MODES.includes(mode)) {
-      throw new TypeError(`permission mode must be one of ${[...SWITCHABLE_PERMISSION_MODES, 'plan'].join(', ')}`)
-    }
-    if (mode === 'bypassPermissions' && this.bypassDisabled()) {
-      throw new Error('bypassPermissions is disabled by disableBypassPermissionsMode')
-    }
-    const session = agent.session
-    const current = foldPermissionMode(session.events) ?? this.state.defaultMode
-    if (current === mode) return
-
-    const wasBypass = current === 'bypassPermissions'
-    const enteringBypass = mode === 'bypassPermissions'
-
-    if (enteringBypass) {
-      const resume = effectiveSandboxMode(session.events)
-        ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)
-      const alreadyFull = (effectiveSandboxMode(session.events) ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)) === 'danger-full-access'
-      setPermissionMode(session, mode, resume)
-      if (!alreadyFull) setSandboxMode(session, 'danger-full-access')
-    } else {
-      setPermissionMode(session, mode)
-      if (wasBypass) {
-        const restore = foldResumeSandbox(session.events)
-          ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)
-          ?? 'workspace-write'
-        if ((effectiveSandboxMode(session.events) ?? (this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined)) !== restore) {
-          setSandboxMode(session, restore)
-        }
-      }
-    }
-
-    try {
-      agent.inject(createUserMessage({
-        content: [{ type: 'text', text: `The permission mode changed to "${mode}" (changed by the user).` }],
-        source: { kind: 'plugin', plugin: 'permission-rules' },
-      }))
-    } catch {
-      // Tests and headless agents may omit inject; mode is already durable.
-    }
+    switchSessionPermissionMode({
+      agent,
+      mode,
+      defaultMode: this.state.defaultMode,
+      bypassDisabled: this.bypassDisabled(),
+      shellMode: this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined,
+    })
   }
 
   /** The currently merged rule set (for introspection and host preview). */

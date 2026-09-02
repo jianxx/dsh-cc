@@ -65,7 +65,7 @@ export function createApprovalBox(approval: ApprovalView, theme: Theme = default
       box.addChild(new Text(theme.muted(line), 0, 0))
     }
   }
-  box.addChild(new Text(theme.muted('1 once · 2 no · 3 always'), 0, 0))
+  box.addChild(new Text(theme.muted('1 once · 2 no · 3 always · s session'), 0, 0))
   return box
 }
 

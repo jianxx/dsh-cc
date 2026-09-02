@@ -45,6 +45,21 @@ export interface DriverBashCtx {
 }
 
 /**
+ * Structural face of the permission-rules service the mode section reads:
+ * the merged rule set (for rule preview/derivation) and the durable mode
+ * write. Mirrors the service's public surface without importing its package.
+ */
+export type PermissionRulesLike = {
+  readonly ruleSet: {
+    readonly allow: readonly unknown[]
+    readonly deny: readonly unknown[]
+    readonly ask: readonly unknown[]
+    readonly bypassImmune: readonly unknown[]
+  }
+  setMode(agent: Agent, mode: string): void
+}
+
+/**
  * The slice of createDriver's closed-over state that the modal pipeline
  * (approvals + questions sharing one FIFO) needs. `state()` returns the CURRENT
  * view-model value — createDriver rebinds `state` on every emit, so the modal
