@@ -55,13 +55,25 @@ function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[
   return { seam, runs }
 }
 
-/** A fork provider with all four capabilities and a captured result. */
-function forkProvider(result: { stopReason: string; output?: readonly { type: string; text?: string }[] }): FakeProvider {
+/** A capable in-process provider with a captured result. */
+function capableProvider(
+  name: string,
+  result: { stopReason: string; output?: readonly { type: string; text?: string }[] },
+): FakeProvider {
   return {
-    name: 'fork',
+    name,
     capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
     start: async () => ({ result: Promise.resolve(result) }),
   }
+}
+
+const COMPLETED = { stopReason: 'completed', output: [{ type: 'text', text: 'done' }] } as const
+
+/** The two in-process providers a Task dispatch can legally name. */
+function defaultProviders(
+  result: { stopReason: string; output?: readonly { type: string; text?: string }[] } = COMPLETED,
+): FakeProvider[] {
+  return [capableProvider('spawn', result), capableProvider('fork', result)]
 }
 
 const tmpRoots: string[] = []
@@ -98,7 +110,7 @@ async function mount(opts: {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  const { seam, runs } = makeSeam(opts.seamProviders ?? [forkProvider({ stopReason: 'completed', output: [{ type: 'text', text: 'done' }] })])
+  const { seam, runs } = makeSeam(opts.seamProviders ?? defaultProviders())
   ctx.provide('subagents', seam)
   if (opts.routes !== undefined) ctx.provide('ccModelRoutes', opts.routes)
   const registry = new AgentRegistry()
@@ -155,22 +167,44 @@ async function assertRestrictable(ctx: Context, filter: ToolRestriction): Promis
 }
 
 describe('Task tool', () => {
-  it('forks plainly when subagent_type is omitted', async () => {
+  it('spawns a fresh child when subagent_type is omitted', async () => {
     const { ctx, runs } = await mount()
     const result = await call(ctx, { description: 'do thing', prompt: 'task body' }, agentAt('/any'))
     expect(result.content[0]!.text).toBe('done')
     expect(runs).toHaveLength(1)
-    expect(runs[0]!.provider).toBe('fork')
+    expect(runs[0]!.provider).toBe('spawn')
     expect(runs[0]!.request['persona']).toBeUndefined()
     expect(runs[0]!.request['agentOptions']).toBeUndefined()
+    expect(runs[0]!.request['toolFilter']).toBeUndefined()
     expect(runs[0]!.request['prompt']).toEqual([{ type: 'text', text: 'task body' }])
   })
 
-  it('forks plainly for the general-purpose sentinel', async () => {
+  it('spawns a fresh child for the general-purpose sentinel', async () => {
     const { ctx, runs } = await mount()
     await call(ctx, { subagent_type: 'general-purpose', description: 'x', prompt: 'task' }, agentAt('/any'))
+    expect(runs[0]!.provider).toBe('spawn')
+    expect(runs[0]!.request['persona']).toBeUndefined()
+    expect(runs[0]!.request['toolFilter']).toBeUndefined()
+  })
+
+  it('spawns a fresh child for a blank subagent_type', async () => {
+    const { ctx, runs } = await mount()
+    await call(ctx, { subagent_type: '   ', description: 'x', prompt: 'task' }, agentAt('/any'))
+    expect(runs[0]!.provider).toBe('spawn')
+    expect(runs[0]!.request['persona']).toBeUndefined()
+  })
+
+  it('the fork sentinel inherits completed parent turns and never consults the registry', async () => {
+    const ws = freshWorkspace()
+    writeAgent(ws, 'fork', '---\nname: fork\ndescription: A file named fork\n---\nUnreachable.\n')
+    const { ctx, runs, registry } = await mount()
+    const resolve = vi.spyOn(registry, 'resolve')
+    await call(ctx, { subagent_type: 'fork', description: 'x', prompt: 'task' }, agentAt(ws))
     expect(runs[0]!.provider).toBe('fork')
     expect(runs[0]!.request['persona']).toBeUndefined()
+    expect(runs[0]!.request['toolFilter']).toBeUndefined()
+    expect(runs[0]!.request['prompt']).toEqual([{ type: 'text', text: 'task' }])
+    expect(resolve).not.toHaveBeenCalled()
   })
 
   it('dispatches a workspace definition via persona + resolved route', async () => {
@@ -180,6 +214,7 @@ describe('Task tool', () => {
     const { ctx, runs } = await mount({ routes })
     const result = await call(ctx, { subagent_type: 'deep-reasoner', description: 'review', prompt: 'audit the doc' }, agentAt(ws))
     expect(result.content[0]!.text).toBe('done')
+    expect(runs[0]!.provider).toBe('spawn')
     const req = runs[0]!.request
     expect(req['persona']).toBe('You are a Staff Engineer.')
     expect(req['prompt']).toEqual([{ type: 'text', text: 'audit the doc' }])
@@ -261,7 +296,7 @@ describe('Task tool', () => {
   })
 
   it('maps a child failure stopReason to an isError result', async () => {
-    const seamProviders = [forkProvider({ stopReason: 'error' })]
+    const seamProviders = defaultProviders({ stopReason: 'error' })
     const { ctx } = await mount({ seamProviders })
     const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
     expect(result.isError).toBe(true)
@@ -269,11 +304,11 @@ describe('Task tool', () => {
   })
 
   it('extracts only text blocks from the child output', async () => {
-    const seamProviders = [forkProvider({ stopReason: 'completed', output: [
+    const seamProviders = defaultProviders({ stopReason: 'completed', output: [
       { type: 'reasoning', text: 'thinking' },
       { type: 'text', text: 'answer A' },
       { type: 'text', text: ' answer B' },
-    ] })]
+    ] })
     const { ctx } = await mount({ seamProviders })
     const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
     expect(result.content[0]!.text).toBe('answer A answer B')

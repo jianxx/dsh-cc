@@ -31,10 +31,13 @@ providerless host mounts memory read-only).
   layer shows a placeholder) so the save guidance never disappears. One global
   registration serves every agent: the text callback renders the assembling
   agent's own workspace layer (the agent arrives via the assemble scope).
-  Directory scans run in the background through `ctx.fs`; rendered per-layer
-  fragments are cached and `system-prompt/change` fires only when a fragment
-  actually changed; a turn-end listener re-scans so host-side writes surface
-  without a restart.
+  Delegated children (`delegationDepth > 0`) render an empty string so the
+  section drops out of the child prompt — matching Claude Code, auto-memory is
+  not shared with non-fork subagents; the parent prompt must pass any facts the
+  child needs. Directory scans run in the background through `ctx.fs`; rendered
+  per-layer fragments are cached and `system-prompt/change` fires only when a
+  fragment actually changed; a turn-end listener re-scans so host-side writes
+  surface without a restart.
 - **`memory_save` tool** — the ONLY working save channel. Memory directories
   live outside every session workspace, so direct `write`/`edit` calls
   against them are fenced by the fs sandbox and always fail; the section says

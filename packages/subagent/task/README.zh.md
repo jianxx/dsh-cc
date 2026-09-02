@@ -20,14 +20,15 @@ Claude Code 的 `Task` 工具允许主代理按 `subagent_type`(如 `deep-reason
 
 给定 CC preset 会话中的一次 `Task(subagent_type, description, prompt)` 调用:
 
-1. **`subagent_type` 省略、空白或为 `general-purpose`** → **普通 fork**(既有语义):prompt 文本成为 child 的首条 user message,无定义参与。
-2. **命中会话 cwd(`cwdOf` 组装 agent)下的定义** → 以 `fork` 启动并携带:
+1. **`subagent_type` 省略、空白或为 `general-purpose`** → **全新 spawn**:prompt 文本成为 child 的首条 user message,无定义参与,不拷贝父对话。prompt 必须自包含。
+2. **`subagent_type` 等于保留哨兵 `fork`** → 继承对话的 **fork**(Claude Code 的 `subagent_type: "fork"`):父已完成轮次作为 seed,无定义参与。哨兵优先于同名文件,`.claude/agents/fork.md` 不可达。
+3. **命中会话 cwd(`cwdOf` 组装 agent)下的定义** → 以 `spawn` 启动并携带:
    - `persona` = 定义的 `systemPrompt`(作为 child 的系统段下发);
    - 任务文本作为 child 的**首条 user message**;
    - `agentOptions` = 来自 `ctx.get('ccModelRoutes').resolve(def.model)` 的别名解析结果 `{ provider?, model? }`(只透传解析到值的 provider/model 字段,绝不破坏按字段继承);
    - `toolFilter` = 定义的 `toolRestriction`(allow/deny),**消毒**掉本组合已不再注册的工具名;
    - `maxDepth` = 3(与 harness 默认一致;可配置)。
-3. **其它类型**(工作区内找不到)→ **报错结果**,附带本工作区可用类型清单(或说明本工作区未定义任何 agent)。
+4. **其它类型**(工作区内找不到)→ **报错结果**,附带本工作区可用类型清单(或说明本工作区未定义任何 agent)。
 
 运行是**前台一次性**:工具等待 child 跑完并返回其最终文本。非 `completed` 的 stop reason 以错误浮出,child 输出只拼接 `text` 块。
 
@@ -42,7 +43,7 @@ Claude Code 的 `Task` 工具允许主代理按 `subagent_type`(如 `deep-reason
 - **未挂载的名被丢弃**,给出标准 `dropping unknown tool name …` 告警——包括未挂载 server 的 MCP 名。
 - **匹配不到任何工具的 allow 清单 = 醒目的 deny-all。** 若过滤器带有 `allow` 清单而消毒后一个名都不剩,产出的过滤器是 `{ allow: [] }`(child 以零工具运行)并告警列出被丢弃的原始名——省略 `allow` 反而会把 child 放宽到全部工具。被清空的 `deny` 清单则直接省略。
 
-本包注册内部工具名 `subagent_fork`,并经 `ctx.tools.reserve('subagent')` / `reserve('workflow')` 把这些名放进可限制 universe 而不暴露可见定义(CC frontmatter `Task` 的翻译是 `['subagent', 'subagent_fork']`,故即使 harness spawn 行被禁,`subagent` 也必须保持合法;`workflow` 为延后的 workflow 行保留)。由于消毒对照的是实时注册表而非静态清单,这些保留名和每个静态 CC 名(`read`、`bash` 等)只有在真正被保留/注册时才会存活——在 cc preset 中它们正是如此。
+本包注册内部工具名 `subagent_fork`,并经 `ctx.tools.reserve('subagent')` / `reserve('workflow')` 把这些名放进可限制 universe 而不暴露可见定义(CC frontmatter `Task` 的翻译是 `['subagent', 'subagent_fork']`,故即使 harness spawn 行被禁,`subagent` 也必须保持合法;`workflow` 为延后的 workflow 行保留)。由于消毒对照的是实时注册表而非静态清单,这些保留名和每个静态 CC 名(`read`、`bash` 等)只有在真正被保留/注册时才会存活——在 cc preset 中它们正是如此。定义同时省略 `tools` 与 `disallowedTools` 时不传 `toolFilter`,child 继承父的完整工具面(含 MCP schema)。
 
 ## Available subagents 系统提示词 section
 
@@ -68,7 +69,7 @@ To delegate to one, pass its name as the `subagent_type` argument of the Task to
 - **仅前台。** 本工具取代的 harness `tool-subagent-fork` 行原本是 `backgroundMode: continuable`(durable id + 挂在 host-plane 单例上的 `report`/`send_message`)。v1 将 CC Task 前台化、一次性;**durable 后台/continuable 流程为 follow-up**——这是对既有 preset 行为的可见回退,已在 parity matrix 中如实记录。
 - **进程级发现缓存。** 注册表按工作区 root 缓存整个进程生命周期,不监听文件系统。编辑 `.claude/agents` 定义:对缓存条目尚未创建的工作区在下次会话生效,否则在进程重启后生效。基于 mtime 的失效刷为 follow-up。
 - **v1 不做插件 agent 派发。** 只派发 `.claude/agents` 下的文件定义。seam 插件 agent(`AgentProvider`)在 v1 不被 `subagent_type` 寻址(其 start 契约不携带任务正文,且 capability 标志会拒绝 `maxDepth`)——见 parity matrix。
-- **fork 继承父 prefix。** 本工具用 harness 的 `fork`,它继承父 agent 的消息 prefix;Claude Code 的 `Task` 无此继承。这是已知 parity 差异,v1 不修。
+- **保留类型名。** `general-purpose` 与 `fork` 是哨兵,不是文件类型。工作区文件 `.claude/agents/fork.md` 不可达;`subagent_type: "fork"` 永远表示继承父已完成轮次。
 
 ## API
 

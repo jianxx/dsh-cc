@@ -5,15 +5,18 @@
  * on the root context, so a single global section serves every agent: the
  * text callback receives the assembling agent through `AssembleContext.scope`
  * (the agent loop passes `scope: agent`) and renders that agent's workspace
- * layer. Directory scans run in the background through `ctx.fs`; rendered
- * per-layer fragments are cached and `system-prompt/change` fires only when a
- * fragment actually changed. The section always renders (a memoryless layer
- * shows a placeholder) so the save guidance never disappears.
+ * layer. Delegated children (`delegationDepth > 0`) render an empty string so
+ * the section drops out of the child prompt. Directory scans run in the
+ * background through `ctx.fs`; rendered per-layer fragments are cached and
+ * `system-prompt/change` fires only when a fragment actually changed. The
+ * section always renders for a top-level agent (a memoryless layer shows a
+ * placeholder) so the save guidance never disappears.
  * @module @jianxx/dsh-cc-memory/section
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { delegationDepthOf } from '@deepseek-ai/dsh-subagent'
 import { ENTRYPOINT_NAME, truncateEntrypointContent } from './truncate.ts'
 import { scanMemoryDirectory } from './scan.ts'
 import type { MemoryDirectoryState } from './scan.ts'
@@ -124,6 +127,7 @@ export class MemorySection {
       const result = await next()
       const agent = agentFromScope(context.scope)
       if (agent === undefined) return result
+      if (!isTopLevel(agent)) return result
       if (!this.layersFor(agent).some(layer => layer.state === undefined)) return result
       try {
         await withinBudget(this.refresh(agent), READINESS_BUDGET_MS)
@@ -179,6 +183,11 @@ export class MemorySection {
   /** Compose the section text for the agent behind an assemble scope. */
   private render(scope: unknown): string {
     const agent = agentFromScope(scope)
+    // Delegated children start fresh (CC Task isolation). The parent prompt
+    // must pass any facts the child needs; dumping MEMORY.md into every
+    // subagent is the token cost this mute removes. Fail closed: a throw
+    // from reading depth treats the agent as a child.
+    if (agent !== undefined && !isTopLevel(agent)) return ''
     if (agent !== undefined) {
       // First assembly for this workspace: render placeholders now and scan
       // its directories in the background so the next step sees real content.
@@ -374,4 +383,17 @@ function renderSearch(layers: readonly MemoryLayer[]): string[] {
 
 function escapeLinkText(name: string): string {
   return name.replace(/[\\[\]]/g, '\\$&')
+}
+
+/**
+ * Whether an assembling agent is top-level (not a delegated subagent).
+ * Fail closed: any throw from reading depth treats the agent as a child so
+ * the section never dumps MEMORY.md into a mis-stamped child.
+ */
+function isTopLevel(agent: Agent): boolean {
+  try {
+    return delegationDepthOf(agent) === 0
+  } catch {
+    return false
+  }
 }
