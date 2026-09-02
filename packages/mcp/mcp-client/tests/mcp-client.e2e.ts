@@ -9,6 +9,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,6 +28,21 @@ import { publicToolName } from '@jianxx/dsh-cc-mcp-client/src/tools.ts'
 import type { Config } from '@jianxx/dsh-cc-mcp-client'
 
 const testToolSignal = new AbortController().signal
+
+let isolatedHome = ''
+let previousDshHome: string | undefined
+
+beforeAll(() => {
+  isolatedHome = mkdtempSync(join(tmpdir(), 'dsh-mcp-e2e-home-'))
+  previousDshHome = process.env.DSH_HOME
+  process.env.DSH_HOME = isolatedHome
+})
+
+afterAll(() => {
+  if (previousDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousDshHome
+  rmSync(isolatedHome, { recursive: true, force: true })
+})
 
 const fixtureServerPath = fileURLToPath(new URL('./fixture-server.ts', import.meta.url))
 

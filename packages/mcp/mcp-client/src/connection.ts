@@ -32,6 +32,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport, buildAuthProvider } from './transport.ts'
 import type { TransportContext } from './transport.ts'
+import { formatStdioStderrForWarn, stdioStderrTail } from './stdio-stderr.ts'
 import { emptyToolGeneration, syncTools } from './tools.ts'
 import type { ToolBridgeOptions, ToolGeneration } from './tools.ts'
 import { syncResources } from './resources.ts'
@@ -187,6 +188,15 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   let connectedAt: number | undefined
   /** The real error from the first connection attempt, for startup-await diagnostics. */
   let firstAttemptError: unknown
+  /** Most recent stdio transport; snapshotted at warn time after stdio has flushed. */
+  let lastTransport: ReturnType<typeof createTransport> | undefined
+
+  /** One-line `; stderr: …` suffix, omitted when the ring is empty. */
+  function stderrWarnSuffix(): string {
+    if (lastTransport === undefined) return ''
+    const formatted = formatStdioStderrForWarn(stdioStderrTail(lastTransport))
+    return formatted === undefined ? '' : `; stderr: ${formatted}`
+  }
 
   /** A generation may act only while it is the current one on a live plugin. */
   const isCurrent = (generation: Client): boolean => !disposed && client === generation
@@ -261,7 +271,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       const message = lostEstablishedConnection
         ? 'connection lost and reconnect is disabled — registered tools will fail until an HMR reload or Host restart'
         : 'connection failed and reconnect is disabled — no tools were registered; reload the plugin or restart the Host to connect'
-      ctx.logger.error(`${label}: ${message}`)
+      ctx.logger.error(`${label}: ${message}${stderrWarnSuffix()}`)
       return
     }
     // A connection that stayed up past the stability window (= maxDelayMs, the
@@ -284,7 +294,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     }
     const delayMs = Math.min(policy.maxDelayMs, policy.initialDelayMs * 2 ** (failedAttempts - 1))
     const action = lostEstablishedConnection ? 'connection lost; reconnecting' : 'connection failed; retrying'
-    ctx.logger.warn(`${label}: ${action} in ${delayMs}ms (attempt ${failedAttempts}/${policy.maxAttempts})`)
+    ctx.logger.warn(`${label}: ${action} in ${delayMs}ms (attempt ${failedAttempts}/${policy.maxAttempts})${stderrWarnSuffix()}`)
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined
       settling = connectGeneration(false)
@@ -355,7 +365,9 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       },
     )
     try {
-      await generation.connect(createTransport(config, transportCtx))
+      const transport = createTransport(config, transportCtx)
+      lastTransport = transport
+      await generation.connect(transport)
       if (hasClosed()) {
         attemptSettled = true
         generationDown(generation)
@@ -373,7 +385,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       if (firstAttemptError === undefined) firstAttemptError = error
       // Disposal clears current ownership before it closes the generation, so
       // only a live supervisor reports an attempt failure.
-      if (isCurrent(generation)) ctx.logger.warn(`${label}: connection attempt failed: ${String(error)}`)
+      if (isCurrent(generation)) ctx.logger.warn(`${label}: connection attempt failed: ${String(error)}${stderrWarnSuffix()}`)
       try { await generation.close() } catch { /* transport already gone */ }
       const quiesced = hasClosed() || await waitForClose(closed.promise)
       attemptSettled = true

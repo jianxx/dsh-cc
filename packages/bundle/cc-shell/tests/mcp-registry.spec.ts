@@ -62,12 +62,17 @@ function writeFixtureServer(): string {
 }
 
 let tmp: string
+let previousDshHome: string | undefined
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'cc-shell-mcp-registry-'))
+  previousDshHome = process.env.DSH_HOME
+  process.env.DSH_HOME = tmp
 })
 
 afterEach(() => {
+  if (previousDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousDshHome
   rmSync(tmp, { recursive: true, force: true })
 })
 
