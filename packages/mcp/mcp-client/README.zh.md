@@ -79,7 +79,7 @@ MCP 客户端桥接插件：连接外部 [Model Context Protocol](https://modelc
 - 断开／崩溃时：supervisor 以指数退避（`reconnect.initialDelayMs` 逐次翻倍，上限 `reconnect.maxDelayMs`）重启原始服务器配置，成功后重新执行发现——恢复的世代会替换前一个，因此工具既不会重复也不会泄漏。中断期间最后一个正常世代保持注册；针对它的调用在恢复前会失败。
 - 重连按中断预算控制：连续失败达到 `reconnect.maxAttempts` 次后，该服务器的工具会被注销，重连停止，直到 HMR 重载或重启 Host。连接存活超过 `maxDelayMs` 会重置预算，因此偶尔崩溃的服务器可以无限恢复，而崩溃循环的服务器——即使短暂连接成功——仍会耗尽上限而非永远重启。
 - 重连状态在日志中对用户可见：reconnecting（warn，含尝试次数和延迟）、recovered（info）、最终失败和 disabled-loss（error）。dispose（资源释放）会取消任何待执行的重连。设置 `reconnect.enabled: false` 时，连接丢失后工具保持注册但调用失败，直到重载——即手动恢复行为。
-- stdio 服务器的 stderr 会被管道捕获、不再继承父进程，因此不会刷到 TUI。内容追加到 `$DSH_HOME/mcp-logs/<serverName>.log`（用 `rm` 轮转），截断后的尾部会附在连接失败 / 连接丢失的 warn 上。无界面运行时终端上也不再出现服务器的实时 stderr。
+- stdio 服务器的 stderr 会被管道捕获、不再继承父进程，因此不会刷到 TUI。内容追加到 `$DSH_HOME/mcp-logs/<serverName>.log`，达到 4 MiB 时轮转并保留一份 `.log.1` 备份，截断后的尾部会附在连接失败 / 连接丢失的 warn 上。无界面运行时终端上也不再出现服务器的实时 stderr。
 
 ## 消费的服务
 
