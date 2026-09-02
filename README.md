@@ -162,10 +162,12 @@ model: sonnet
 Conceptually:
 
 ```text
-sonnet  -> <provider>/<general coding model>
-opus    -> <provider>/<reasoning model>
-haiku   -> <provider>/<fast model>
-inherit -> parent agent route
+sonnet / draft      -> <provider>/<general coding model>
+opus / blueprint    -> <provider>/<reasoning model>
+haiku / sketch      -> <provider>/<fast model>
+fable / masterplan  -> <provider>/<maximum-reasoning model>
+architect           -> parent agent route (planning / orchestration)
+inherit             -> parent agent route
 ```
 
 Aliases are configuration, not hard-coded vendor bindings. This lets you preserve familiar agent definitions while choosing the models that fit your own environment.
@@ -176,10 +178,11 @@ Aliases are configuration, not hard-coded vendor bindings. This lets you preserv
 
 | Alias | Model |
 | --- | --- |
-| `fable` | `kimi-k3` |
-| `opus` | `glm-5.3` |
-| `sonnet` | `glm-5.3-flash` |
-| `haiku` | `deepseek-v4-flash-0731` |
+| `fable` / `masterplan` | `kimi-k3` |
+| `opus` / `blueprint` | `glm-5.3` |
+| `sonnet` / `draft` | `glm-5.3-flash` |
+| `haiku` / `sketch` | `deepseek-v4-flash-0731` |
+| `architect` | inherit (main thread) |
 
 This is a real project configuration rather than a required default: users can map the aliases to any provider/model combination supported by their DeepSeek Harness deployment.
 

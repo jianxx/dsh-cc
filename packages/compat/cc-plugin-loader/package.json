@@ -27,6 +27,9 @@
     "lib"
   ],
   "license": "Apache-2.0",
+  "dependencies": {
+    "@jianxx/dsh-cc-model-aliases": "workspace:^"
+  },
   "peerDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@deepseek-ai/dsh-commands": ">=0.1.1-rc.2",
@@ -41,6 +44,7 @@
   },
   "devDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
+    "@jianxx/dsh-cc-model-aliases": "workspace:^",
     "@deepseek-ai/dsh-commands": "link:../../../../deepseek-harness/packages/interaction/commands",
     "@jianxx/dsh-cc-hook-protocol": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",

@@ -152,7 +152,7 @@ describe('agent.cordis.yml composition', () => {
     }
   })
 
-  it('isolates exactly the five cc-services services, hosting the two commands', () => {
+  it('isolates exactly the five cc-services services, hosting the commands and the two ccModelRoutes consumers', () => {
     const group = doc.find((r) => r.id === 'cc-services')!
     expect(group.name).toBe('cordis:group')
     expect(group.isolate).toEqual({
@@ -169,12 +169,27 @@ describe('agent.cordis.yml composition', () => {
     // The two commands live inside the group, not duplicated at top level.
     expect(topIds).not.toContain('command-plugin')
     expect(topIds).not.toContain('command-mcp')
+    // memory + hooks-claude-code consume ctx.get('ccModelRoutes') and must
+    // share the group realm; memory-consolidation stays outside (inherit).
+    expect(configIds).toContain('memory')
+    expect(configIds).toContain('hooks-claude-code')
+    expect(topIds).not.toContain('memory')
+    expect(topIds).not.toContain('hooks-claude-code')
+    expect(topIds).toContain('memory-consolidation')
   })
 
-  it('declares every @jianxx row name as a dependency', () => {
+  it('declares every @jianxx row name as a dependency (top level and group-nested)', () => {
     const deps = Object.keys(pkgJson.dependencies ?? {})
-    const rows = doc.filter((r) => r.name && r.name.startsWith('@jianxx/'))
-    for (const row of rows) {
+    const rows: any[] = []
+    for (const row of doc) {
+      if (row.name === 'cordis:group' && Array.isArray(row.config)) {
+        rows.push(...row.config)
+      } else {
+        rows.push(row)
+      }
+    }
+    const jianxxRows = rows.filter((r) => r.name && r.name.startsWith('@jianxx/'))
+    for (const row of jianxxRows) {
       expect(deps, `${row.id} -> ${row.name}`).toContain(row.name)
     }
   })

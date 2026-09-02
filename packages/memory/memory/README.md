@@ -75,6 +75,8 @@ Load the plugin with `@jianxx/dsh-cc-memory`. Configuration knobs:
 | `sectionEnabled` | `true` | register the `memory` system-prompt section |
 | `recallEnabled` | `true` | run dynamic recall on pre-step |
 | `recallProviderName` | `fork` | one-shot subagent provider for the recall query |
+| `recallAgentOptions` | unset | raw `agentOptions` stamped onto the recall fork; wins over `recallUseSmallFast` and is NOT alias-resolved (pass a resolved route, not `{ model: 'haiku' }`) |
+| `recallUseSmallFast` | `false` | opt the recall fork into the cheap lane: stamp `resolve('haiku')` from `ccModelRoutes` (inherit when unconfigured). Opt-in so configuring `haiku` for typed agents doesn't silently flip every recall onto a cross-model, prefix-inheriting fork |
 | `teamEnabled` | `false` | enable the per-workspace team memory directory + combined section |
 
 > **`teamEnabled` is off by default.** Enabling it changes the persisted

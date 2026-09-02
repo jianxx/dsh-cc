@@ -297,9 +297,10 @@
 # required — the glue dynamically attaches mcp-client as a sub-fiber, and
 # `Context.extend` inherits the group's isolate map down the prototype chain, so
 # without `mcpConnections` isolated here it would publish into the root realm
-# and break the preset. The two command rows must live INSIDE the group: they
-# `ctx.get('ccPlugins')` / `ctx.get('mcpConnections')`, which resolve to nothing
-# outside the isolated realm.
+# and break the preset. The command rows and the `memory` / `hooks-claude-code`
+# consumers must live INSIDE the group: they `ctx.get('ccModelRoutes')`
+# (and `ctx.get('ccPlugins')` / `ctx.get('mcpConnections')`), which resolve to
+# nothing outside the isolated realm.
 - id: cc-services
   name: cordis:group
   group: true
@@ -338,14 +339,22 @@
     - id: tool-task
       name: '@jianxx/dsh-cc-subagent-task'
 
+    # Memory and the hook bridge consume `ctx.get('ccModelRoutes')` at spawn
+    # time (recall small-fast lane / hook model resolution), so they share this
+    # realm. memory-consolidation stays OUTSIDE: its forks must keep inheriting
+    # the parent route. Both rows publish no cordis Service, so group
+    # membership stays mount-legal under the leakedServices gate.
+    - id: memory
+      name: '@jianxx/dsh-cc-memory'
+
+    - id: hooks-claude-code
+      name: '@jianxx/dsh-cc-hooks-claude-code'
+
 # ── parallel rows ──────────────────────────────────────────────────────────
 
 # Claude Code skills from user/project/additional roots.
 - id: skill-claude-code
   name: '@jianxx/dsh-cc-skill-loader'
-
-- id: memory
-  name: '@jianxx/dsh-cc-memory'
 
 - id: memory-consolidation
   name: '@jianxx/dsh-cc-memory-consolidation'
@@ -376,13 +385,6 @@
 # only when the deployment declares a schema (CC's SyntheticOutputTool).
 - id: tool-structured-output
   name: '@jianxx/dsh-cc-tool-structured-output'
-
-# Claude Code hook bridge: 18 of 30 hook events (see hooks-claude-code README
-# for the supported set). PreToolUse/PostToolUse et al., command hooks +
-# http executors over the vendored hook protocol. Zero config here — the
-# plugin defaults its configPath to $DSH_HOME/hooks.json itself.
-- id: hooks-claude-code
-  name: '@jianxx/dsh-cc-hooks-claude-code'
 
 # ── CC parity slash commands ───────────────────────────────────────────────
 

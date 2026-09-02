@@ -15,6 +15,7 @@
 import { join, resolve } from 'node:path'
 import { loadAgentsDir } from '@jianxx/dsh-cc-claude-code-agents'
 import type { AgentDefinition } from '@jianxx/dsh-cc-claude-code-agents'
+import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { CcPluginManifest } from './types.ts'
 import { ComponentTally } from './seams.ts'
 
@@ -123,13 +124,7 @@ export class AgentProvider implements SubagentBackend {
       return model !== undefined ? { model } : undefined
     }
     if (model === undefined) return undefined
-    const route = resolver(model)
-    if (route === undefined) return undefined
-    const out: Record<string, string> = {}
-    if (route.provider !== undefined) out.provider = route.provider
-    if (route.model !== undefined) out.model = route.model
-    if (route.reasoningEffort !== undefined) out.reasoningEffort = route.reasoningEffort
-    return out
+    return toAgentOptions(resolver(model))
   }
 }
 

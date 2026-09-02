@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/compat/cc-model-aliases/README.md
-README.md: f44cab3bf4cf661a5dde9d684d12a8b3e24f5161
-README.zh.md: 9fa86adb9b745a026e139e5c967602c63da2d715
+README.md: 282a1cfbed8630fc15c525dfb95b48ef38f911dc
+README.zh.md: 8471c4e71f9f1a004d79240a0355a35b49eb24f8

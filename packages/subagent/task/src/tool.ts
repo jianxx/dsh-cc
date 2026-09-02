@@ -30,6 +30,7 @@ import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { defineTool } from '@jianxx/dsh-cc-tools'
 import { cwdOf } from '@jianxx/dsh-cc-memory'
 import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
 
 /** The registered tool name (the CC display mapping surfaces it as `Task`). */
@@ -74,14 +75,6 @@ interface SubagentsLike {
   }>
   getProvider(name: string): unknown
   list(): string[]
-}
-
-interface RoutesLike {
-  resolve(model: string | undefined): {
-    provider?: string
-    model?: string
-    reasoningEffort?: string
-  } | undefined
 }
 
 interface TaskArgs {
@@ -288,8 +281,8 @@ export function registerTaskTool(
         )
       }
 
-      const routes = ctx.get('ccModelRoutes') as ModelRoutes | RoutesLike | undefined
-      const route = routes?.resolve(definition.model)
+      const routes = ctx.get('ccModelRoutes') as ModelRoutes | undefined
+      const agentOptions = toAgentOptions(routes?.resolve(definition.model))
       // LIVE known set, read at execute time so MCP tools mounted or deferred
       // after this plugin's apply (including hash-suffixed public names) are
       // all restrictable candidates for the child's filter. Pass the calling
@@ -302,18 +295,7 @@ export function registerTaskTool(
         ...(definition.toolRestriction !== undefined
           ? { toolFilter: sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message), knownNames) }
           : {}),
-        ...(route !== undefined
-          ? {
-              agentOptions: stripUndefined({
-                provider: route.provider,
-                model: route.model,
-                // Undeclared runtime extra key on AgentOptions: survives the
-                // harness's child-options spread and is applied to every child
-                // request by the cc-model-aliases host agent/request overlay.
-                reasoningEffort: route.reasoningEffort,
-              }),
-            }
-          : {}),
+        ...(agentOptions !== undefined ? { agentOptions } : {}),
       })
       return settle(run)
     },
@@ -338,11 +320,3 @@ async function settle(run: { result: Promise<{ stopReason: string; output?: read
   return { text }
 }
 
-/** Drop undefined fields so per-field inheritance survives (never set to undefined). */
-function stripUndefined(route: { provider?: string | undefined; model?: string | undefined; reasoningEffort?: string | undefined }): Record<string, string> {
-  const out: Record<string, string> = {}
-  if (route.provider !== undefined) out['provider'] = route.provider
-  if (route.model !== undefined) out['model'] = route.model
-  if (route.reasoningEffort !== undefined) out['reasoningEffort'] = route.reasoningEffort
-  return out
-}

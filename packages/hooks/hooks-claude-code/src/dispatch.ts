@@ -13,6 +13,8 @@ import {
   type HookCommand,
   type HookOutput,
 } from '@jianxx/dsh-cc-hook-protocol'
+import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import { contentToHookOutput, emptyHookOutput, interpolatePrompt } from './hook-output.ts'
 
 /** Everything {@link dispatchHook} needs beyond the hook itself. */
@@ -91,6 +93,14 @@ export async function dispatchHook(ctx: Context, hook: HookCommand, opts: Dispat
       return { output: emptyHookOutput(), durationMs: now() - started }
     }
     const prompt = interpolatePrompt(hook.prompt, opts.payload)
+    // Model stamping goes through the ccModelRoutes alias service: an authored
+    // `model:` resolves as an alias (never a literal id), and an omitted model
+    // defaults to the cheap lane (`resolve('haiku')` — the configured haiku
+    // alias; unconfigured → inherit). Missing service → no stamp (inherit).
+    const routes = ctx.get('ccModelRoutes') as ModelRoutes | undefined
+    const agentOptions = toAgentOptions(
+      hook.model !== undefined ? routes?.resolve(hook.model) : routes?.resolve('haiku'),
+    )
     let run
     try {
       run = await subagents.start('fork', {
@@ -98,7 +108,7 @@ export async function dispatchHook(ctx: Context, hook: HookCommand, opts: Dispat
         signal: opts.signal,
         prompt: [{ type: 'text', text: prompt }],
         parent: opts.agent,
-        ...(hook.model !== undefined ? { agentOptions: { model: hook.model } } : {}),
+        ...(agentOptions !== undefined ? { agentOptions } : {}),
       })
     } catch (error: unknown) {
       ctx.logger.warn(`hooks-claude-code: ${opts.expectedEventName} ${hook.type} hook could not fork a subagent: ${String(error)}`)

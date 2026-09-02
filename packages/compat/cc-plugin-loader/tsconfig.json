@@ -22,6 +22,9 @@
     },
     {
       "path": "../../mcp/mcp-client"
+    },
+    {
+      "path": "../cc-model-aliases"
     }
   ]
 }
