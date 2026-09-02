@@ -27,7 +27,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
-import { defineTool, CC_TO_HARNESS_TOOLS } from '@jianxx/dsh-cc-tools'
+import { defineTool } from '@jianxx/dsh-cc-tools'
 import { cwdOf } from '@jianxx/dsh-cc-memory'
 import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
@@ -50,12 +50,11 @@ const DEFAULT_MAX_DEPTH = 3
  * registered — one visible Task is enough). `workflow` is the deferred row's
  * name for the same reason.
  *
- * Reserved names are LEGAL for `restrict()`; they are NOT dropped by
- * sanitization. Sanitization only strips names that are neither registered
- * nor reserved (a genuinely unknown name — a typo or a tool the composition
- * removed entirely). At this package's apply time nothing else has registered
- * yet, so the only known set we can assert is this reservation list; every
- * other name passes through and is validated at the child's own restrict().
+ * `subagent_fork` itself needs no reservation: `registerTaskTool` registers
+ * the visible definition below, and `restrict()` accepts registered names.
+ * Filter sanitization reads the live `ctx.tools.view().restrictableNames` set,
+ * so these reservations (plus every registered row and every mounted MCP tool)
+ * are exactly the names a subagent toolFilter may carry.
  */
 const RESERVED_TOOL_NAMES = ['subagent', 'workflow'] as const
 
@@ -95,36 +94,97 @@ interface TaskArgs {
 }
 
 /**
- * The names a subagent toolFilter may legally carry: every name the CC
- * frontmatter translation can produce (`CC_TO_HARNESS_TOOLS` values), plus
- * this tool's own name (registered later in the same apply chain), plus the
- * reserved names. Names outside this set are dropped with a warning — at
- * load time `resolveToolRestriction` already ran the strict translation, so
- * anything not in this set is a typo'd CC name or a removed row.
+ * The MCP public-name prefix every bridged MCP tool carries on `ctx.tools`.
  */
-const LEGAL_FILTER_NAMES: ReadonlySet<string> = new Set([
-  'subagent_fork',
-  'subagent',
-  'workflow',
-  ...Object.values(CC_TO_HARNESS_TOOLS).flat(),
-])
+const MCP_PUBLIC_PREFIX = 'mcp__'
 
 /**
- * Drop names outside the legal filter set so the child's scoped `restrict()`
- * never sees a name that was already invalid at load time (a typo'd CC name
- * passes through strict translation verbatim and would fail the child start).
+ * Expand one raw filter entry into the concrete names it asks for.
+ *
+ * - Anything not MCP-qualified passes through untouched (it is then gated by
+ *   the `knownNames` check).
+ * - A bare `mcp__` (no server segment) is dropped with a loud warning — it
+ *   can never name a mounted tool.
+ * - `mcp__<server>` (no third segment) and `mcp__<server>__*` expand to every
+ *   known MCP tool of that server (`mcp__<server>__` prefix), so frontmatter
+ *   survives servers publishing new tools without a hash-suffix dance.
+ * - An exact `mcp__<server>__<tool>` passes through as written (the caller
+ *   must use the public name, including any identity-hash suffix).
  */
-function sanitizeToolFilter(filter: ToolRestriction, warn: (m: string) => void): ToolRestriction {
-  const clean = (names: readonly string[] | undefined) =>
-    names?.filter(name => {
-      if (LEGAL_FILTER_NAMES.has(name)) return true
-      warn(`cc-task: dropping unknown tool name "${name}" from a subagent toolFilter`)
-      return false
-    })
-  const allow = clean(filter.allow)
-  const deny = clean(filter.deny)
+function expandFilterName(
+  rawName: string,
+  knownNames: ReadonlySet<string>,
+  warn: (m: string) => void,
+): readonly string[] {
+  if (!rawName.startsWith(MCP_PUBLIC_PREFIX)) return [rawName]
+  const rest = rawName.slice(MCP_PUBLIC_PREFIX.length)
+  if (rest.length === 0) {
+    warn('cc-task: invalid MCP wildcard "mcp__" in a subagent toolFilter — expected mcp__<server> or mcp__<server>__<tool>')
+    return []
+  }
+  const server = rest.endsWith('__*')
+    ? rest.slice(0, -'__*'.length)
+    : rest.includes('__')
+      ? undefined
+      : rest
+  if (server === undefined) return [rawName]
+  if (server.length === 0) {
+    warn(`cc-task: invalid MCP wildcard "${rawName}" in a subagent toolFilter — expected mcp__<server> or mcp__<server>__<tool>`)
+    return []
+  }
+  return [...knownNames].filter(name => name.startsWith(`${MCP_PUBLIC_PREFIX}${server}__`))
+}
+
+/**
+ * Sanitize a definition's tool restriction against the LIVE set of names the
+ * tools registry knows (registered or reserved — `ctx.tools.view(callingAgent)
+ * .restrictableNames`, read at execute time so deferred MCP reservations on
+ * the standing-scope layer are included).
+ *
+ * Rules:
+ * - A name survives only when the registry knows it. Everything else is
+ *   dropped with a warning; there is no static legal-names set, so mounted
+ *   MCP tools and any future registered row are accepted without code churn.
+ * - If the filter carried an `allow` list and any kept allow name is an MCP
+ *   tool while `ToolSearch` is itself restrictable, `ToolSearch` is appended
+ *   (deduped): the child otherwise holds MCP names with no load path.
+ * - If the filter carried an `allow` list and sanitization left nothing, the
+ *   result is `{ allow: [] }` — omitting `allow` would WIDEN the child to
+ *   every tool, so an emptied allow-list is pinned as deny-all, loudly.
+ */
+function sanitizeToolFilter(
+  filter: ToolRestriction,
+  warn: (m: string) => void,
+  knownNames: ReadonlySet<string>,
+): ToolRestriction {
+  const clean = (names: readonly string[]): string[] => {
+    const out: string[] = []
+    for (const rawName of names) {
+      for (const expanded of expandFilterName(rawName, knownNames, warn)) {
+        if (knownNames.has(expanded)) {
+          if (!out.includes(expanded)) out.push(expanded)
+        } else {
+          warn(`cc-task: dropping unknown tool name "${expanded}" from a subagent toolFilter`)
+        }
+      }
+    }
+    return out
+  }
+  const hadAllow = filter.allow !== undefined
+  const allow = filter.allow !== undefined ? clean(filter.allow) : undefined
+  const deny = filter.deny !== undefined ? clean(filter.deny) : undefined
+  if (hadAllow && allow !== undefined && allow.length > 0 && allow.some(name => name.startsWith(MCP_PUBLIC_PREFIX))
+    && knownNames.has('ToolSearch') && !allow.includes('ToolSearch')) {
+    allow.push('ToolSearch')
+  }
+  if (hadAllow && (allow === undefined || allow.length === 0)) {
+    warn(
+      'cc-task: a subagent toolFilter allow-list matched no mounted tools '
+      + `(originals: ${(filter.allow ?? []).join(', ')}); the child will run with zero tools`,
+    )
+  }
   return {
-    ...(allow !== undefined && allow.length > 0 ? { allow } : {}),
+    ...(hadAllow ? { allow: allow ?? [] } : {}),
     ...(deny !== undefined && deny.length > 0 ? { deny } : {}),
   }
 }
@@ -143,6 +203,16 @@ export function registerTaskTool(
     register(def: unknown): () => void
     reserve(name: string): () => void
     get(name: string): unknown
+    /**
+     * Duck-typed `view()`: the only API that lists reserved+registered names
+     * in one set (deferred MCP tools are reserved, not in `schemas()`).
+     * `@internal` on ToolRuntime, so it is structural here and optional —
+     * a seam without it degrades to an empty known set.
+     *
+     * Pass the calling agent: MCP tools register on the standing-scope layer
+     * of the cc preset, which `view()` without a scope does not see.
+     */
+    view?(scope?: unknown): { restrictableNames: ReadonlySet<string> }
   } | undefined
   if (tools === undefined) return undefined
 
@@ -220,11 +290,17 @@ export function registerTaskTool(
 
       const routes = ctx.get('ccModelRoutes') as ModelRoutes | RoutesLike | undefined
       const route = routes?.resolve(definition.model)
+      // LIVE known set, read at execute time so MCP tools mounted or deferred
+      // after this plugin's apply (including hash-suffixed public names) are
+      // all restrictable candidates for the child's filter. Pass the calling
+      // agent: MCP tools live on the standing-scope layer, which the global
+      // view (no scope) does not include.
+      const knownNames = tools.view?.(agent).restrictableNames ?? new Set<string>()
       const run = await seam.start('fork', {
         ...base,
         persona: definition.systemPrompt,
         ...(definition.toolRestriction !== undefined
-          ? { toolFilter: sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message)) }
+          ? { toolFilter: sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message), knownNames) }
           : {}),
         ...(route !== undefined
           ? {

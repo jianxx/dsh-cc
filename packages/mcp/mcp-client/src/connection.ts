@@ -33,7 +33,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport, buildAuthProvider } from './transport.ts'
 import type { TransportContext } from './transport.ts'
 import { formatStdioStderrForWarn, stdioStderrTail } from './stdio-stderr.ts'
-import { emptyToolGeneration, syncTools } from './tools.ts'
+import { DEFAULT_DEFER_TOOL_THRESHOLD, emptyToolGeneration, syncTools } from './tools.ts'
 import type { ToolBridgeOptions, ToolGeneration } from './tools.ts'
 import { syncResources } from './resources.ts'
 import type { ResourceDisposers } from './resources.ts'
@@ -126,6 +126,13 @@ export interface ConnectionHandle {
    * resource bridge, and prompt skill this server still owns.
    */
   dispose(): Promise<void>
+  /**
+   * How many capabilities this server currently publishes to the tool
+   * registries: bridged MCP tools (deferred reservations included — they are
+   * invisible in the model-facing schema but this server owns them) plus the
+   * resource-bridge tools. Prompts are skills and do not count.
+   */
+  toolCount(): number
 }
 
 /** All registrations owned by one server generation, keyed by swap target. */
@@ -165,6 +172,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     registrationFailure: 'contain',
     serverName: config.serverName,
     toolCallTimeoutMs: config.toolCallTimeoutMs,
+    deferToolThreshold: DEFAULT_DEFER_TOOL_THRESHOLD,
     ...authProvider !== undefined ? { onUnauthorized: () => authProvider.invalidateCredentials('tokens') } : {},
   }
   // The initial sync uses 'throw' when failOnStartupError is configured, so
@@ -426,6 +434,9 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
 
   return {
     ready,
+    toolCount(): number {
+      return registrations.tools.disposers.size + registrations.resources.size
+    },
     async dispose(): Promise<void> {
       disposed = true
       if (reconnectTimer !== undefined) {

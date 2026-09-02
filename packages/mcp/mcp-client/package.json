@@ -53,7 +53,8 @@
     "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
     "@deepseek-ai/cordis-plugin-loader": "link:../../../../deepseek-harness/vendor/loader",
-    "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt"
+    "@deepseek-ai/dsh-system-prompt": "link:../../../../deepseek-harness/packages/core/system-prompt",
+    "@jianxx/dsh-cc-tool-search": "workspace:^"
   },
   "publishConfig": {
     "access": "public"

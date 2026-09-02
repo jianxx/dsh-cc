@@ -56,15 +56,40 @@ the child output are concatenated.
 ### Tool-restriction sanitization and reserved names
 
 When a definition's frontmatter narrows tools (e.g. `tools: Read, Task`), the allow/deny
-lists are forced through the CC→harness translation. Names that are neither registered nor
-reserved are dropped with a warning — otherwise the child's scoped `restrict()` would see a
-name that was already invalid at load time. The internal tool name `subagent_fork` is
-registered by this package, and `ctx.tools.reserve('subagent')` / `reserve('workflow')` keep
-those names in the restrictable universe without exposing visible definitions (the CC
-frontmatter `Task` translation is `['subagent', 'subagent_fork']`, so `subagent` must remain
-legal even though the harness spawn row is disabled; `workflow` is reserved for the deferred
-workflow row). This is why a `Task` frontmatter restriction works: both names survive
-sanitization.
+lists are forced through the CC→harness translation and then checked against the **live**
+set of names the tools registry knows (`ctx.tools.view(callingAgent).restrictableNames` —
+registered and reserved names, read at execute time against the calling agent's scope so
+standing-scope MCP reservations are visible). A name the registry does not know is dropped
+with a warning; there is no static legal-names set, so mounted MCP tools and any future
+registered row are accepted without code churn:
+
+- **MCP public names.** An exact `mcp__<server>__<tool>` entry is kept as written — it must
+  be the tool's public name, including the deterministic 12-hex identity-hash suffix when
+  normalization truncated or replaced the name.
+- **Server-level MCP wildcards.** `mcp__<server>` and `mcp__<server>__*` both expand to
+  every mounted tool of that server (`mcp__<server>__` prefix), so frontmatter survives
+  servers publishing new tools without naming hashed entries.
+- **A bare `mcp__`** (no server segment) is dropped with an invalid-wildcard warning.
+- **Auto-`ToolSearch`.** If the filter carried an `allow` list, any kept allow name is an
+  MCP tool, and the `ToolSearch` tool is itself mounted (restrictable), `ToolSearch` is
+  appended (deduped) — otherwise the child would hold MCP names with no load path. When
+  `ToolSearch` is not mounted it is never injected.
+- **Unmounted names are dropped** with the standard `dropping unknown tool name …`
+  warning — including MCP names of servers that are not mounted.
+- **An allow-list that matches nothing is deny-all, loudly.** If the filter carried an
+  `allow` list and sanitization left zero names, the emitted filter is `{ allow: [] }`
+  (the child runs with zero tools) with a warning naming the dropped originals — omitting
+  `allow` would instead widen the child to every tool. An emptied `deny` list is simply
+  omitted.
+
+The internal tool name `subagent_fork` is registered by this package, and
+`ctx.tools.reserve('subagent')` / `reserve('workflow')` keep those names in the restrictable
+universe without exposing visible definitions (the CC frontmatter `Task` translation is
+`['subagent', 'subagent_fork']`, so `subagent` must remain legal even though the harness
+spawn row is disabled; `workflow` is reserved for the deferred workflow row). Because
+sanitization checks the live registry rather than a static list, these reserved names and
+every static CC name (`read`, `bash`, …) survive only when they are actually
+reserved/registered — which they are in the cc preset.
 
 ## Available subagents system-prompt section
 

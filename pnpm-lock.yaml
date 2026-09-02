@@ -1136,6 +1136,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-tool-search':
+        specifier: workspace:^
+        version: link:../../core/tool-search
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -1593,6 +1596,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
         version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-scope':
+        specifier: link:../../../../deepseek-harness/packages/core/scope
+        version: link:../../../../deepseek-harness/packages/core/scope
       '@deepseek-ai/dsh-subagent':
         specifier: link:../../../../deepseek-harness/packages/subagent/subagent
         version: link:../../../../deepseek-harness/packages/subagent/subagent

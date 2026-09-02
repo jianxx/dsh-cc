@@ -244,7 +244,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       registry!.report(config.serverName, 'error', { error: String(outcome.error) })
     } else {
       registry!.report(config.serverName, 'ready')
-      registry!.setToolCount(config.serverName, countServerTools(ctx, config.serverName))
+      registry!.setToolCount(config.serverName, handle.toolCount())
     }
     return outcome
   }
@@ -277,10 +277,4 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (outcome.error !== undefined && config.failOnStartupError) {
     throw new Error(`mcp-client(${config.serverName}): initial connection or tool synchronization failed`, { cause: outcome.error })
   }
-}
-
-/** Count the tools a server currently exposes under its qualified namespace. */
-function countServerTools(ctx: Context, serverName: string): number {
-  const prefix = `mcp__${serverName}__`
-  return ctx.tools.schemas().filter(schema => schema.name.startsWith(prefix)).length
 }

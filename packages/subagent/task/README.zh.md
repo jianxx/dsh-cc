@@ -33,7 +33,16 @@ Claude Code 的 `Task` 工具允许主代理按 `subagent_type`(如 `deep-reason
 
 ### 工具限制消毒与保留名
 
-当定义 frontmatter 收窄工具(如 `tools: Read, Task`)时,allow/deny 清单会强制经过 CC→harness 翻译。既未注册也未保留的名会被丢弃并告警——否则 child 的 scoped `restrict()` 会看到一个在加载期已非法的名字。本包注册内部工具名 `subagent_fork`,并经 `ctx.tools.reserve('subagent')` / `reserve('workflow')` 把这些名放进可限制 universe 而不暴露可见定义(CC frontmatter `Task` 的翻译是 `['subagent', 'subagent_fork']`,故即使 harness spawn 行被禁,`subagent` 也必须保持合法;`workflow` 为延后的 workflow 行保留)。这就是 `Task` frontmatter 限制能生效的原因:两个名都逃过了消毒。
+当定义 frontmatter 收窄工具(如 `tools: Read, Task`)时,allow/deny 清单会强制经过 CC→harness 翻译,再对照工具注册表**实时**已知的名集合(`ctx.tools.view(callingAgent).restrictableNames`——已注册与已保留名的并集,在 execute 时按调用 agent 的 scope 读取,因此 standing-scope 上的 MCP 保留名可见)做校验。注册表不认识的名会被丢弃并告警;这里没有静态合法名集合,因此已挂载的 MCP 工具和未来新增的注册行都无需改代码即可通过:
+
+- **MCP 公开名。** 精确的 `mcp__<server>__<tool>` 原样保留——必须用该工具的公开名,包括名字被规范化截断/替换时追加的 12 位十六进制确定性 hash 后缀。
+- **server 级 MCP 通配。** `mcp__<server>` 与 `mcp__<server>__*` 都会展开为该 server 已挂载的全部工具(`mcp__<server>__` 前缀),frontmatter 因此不必逐个点名带 hash 的条目也能在 server 发布新工具后继续生效。
+- **裸 `mcp__`**(无 server 段)被丢弃并给出 invalid-wildcard 告警。
+- **自动带上 `ToolSearch`。** 若过滤器带有 `allow` 清单、保留下来的 allow 名中有 MCP 工具、且 `ToolSearch` 工具本身已挂载(可限制),则追加 `ToolSearch`(去重)——否则 child 手握 MCP 名却没有任何加载路径。`ToolSearch` 未挂载时绝不注入。
+- **未挂载的名被丢弃**,给出标准 `dropping unknown tool name …` 告警——包括未挂载 server 的 MCP 名。
+- **匹配不到任何工具的 allow 清单 = 醒目的 deny-all。** 若过滤器带有 `allow` 清单而消毒后一个名都不剩,产出的过滤器是 `{ allow: [] }`(child 以零工具运行)并告警列出被丢弃的原始名——省略 `allow` 反而会把 child 放宽到全部工具。被清空的 `deny` 清单则直接省略。
+
+本包注册内部工具名 `subagent_fork`,并经 `ctx.tools.reserve('subagent')` / `reserve('workflow')` 把这些名放进可限制 universe 而不暴露可见定义(CC frontmatter `Task` 的翻译是 `['subagent', 'subagent_fork']`,故即使 harness spawn 行被禁,`subagent` 也必须保持合法;`workflow` 为延后的 workflow 行保留)。由于消毒对照的是实时注册表而非静态清单,这些保留名和每个静态 CC 名(`read`、`bash` 等)只有在真正被保留/注册时才会存活——在 cc preset 中它们正是如此。
 
 ## Available subagents 系统提示词 section
 
