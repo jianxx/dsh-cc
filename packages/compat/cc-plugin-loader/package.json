@@ -33,6 +33,7 @@
   "peerDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@deepseek-ai/dsh-commands": ">=0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": ">=0.1.1-rc.2",
     "@jianxx/dsh-cc-hook-protocol": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",
     "@deepseek-ai/dsh-settings": ">=0.1.1-rc.2",
@@ -46,6 +47,7 @@
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@jianxx/dsh-cc-model-aliases": "workspace:^",
     "@deepseek-ai/dsh-commands": "link:../../../../deepseek-harness/packages/interaction/commands",
+    "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
     "@jianxx/dsh-cc-hook-protocol": "workspace:^",
     "@jianxx/dsh-cc-mcp-client": "workspace:^",
     "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",

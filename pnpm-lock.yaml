@@ -347,6 +347,9 @@ importers:
       '@deepseek-ai/dsh-commands':
         specifier: link:../../../../deepseek-harness/packages/interaction/commands
         version: link:../../../../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
       '@deepseek-ai/dsh-settings':
         specifier: link:../../../../deepseek-harness/packages/settings/settings
         version: link:../../../../deepseek-harness/packages/settings/settings
