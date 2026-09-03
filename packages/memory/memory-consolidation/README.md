@@ -42,7 +42,7 @@ So the forks hold no write tools at all. They report their file set through
 `outputSchema` (the driver-injected `structured_output` tool), and the plugin
 — trusted host code — performs the writes itself. Writes land in the TURNING
 agent's own workspace directory — `<memoryHome>/projects/<slug>/`, resolved
-from the agent's session cwd with `resolveWorkspaceMemoryDir` — never the
+from the agent's canonical git root with `resolveWorkspaceMemoryDir` — never the
 shared home root (that root is the explicitly-global layer owned by
 `dsh-memory`'s `memory_save` with `scope: "global"`):
 
@@ -66,7 +66,7 @@ Load the plugin with `@jianxx/dsh-cc-memory-consolidation`. Configuration:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `memoryHome` | harness home `memory/` | memory home root; extraction/dream write into the turning agent's `projects/<slug>/` under it |
+| `memoryHome` | harness home `memory/` | memory home root; extraction/dream write into the turning agent's repository `projects/<slug>/` under it |
 | `extractEnabled` | `true` | run turn-end extraction |
 | `dreamEnabled` | `true` | run the three-gate dream |
 | `minHours` | `24` | minimum hours between consolidations |

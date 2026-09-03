@@ -27,7 +27,19 @@ export { MEMORY_TYPES, parseMemoryType } from './types.ts'
 export type { MemoryType, MemoryFrontmatter, MemoryIndexEntry } from './types.ts'
 export { scanMemoryDirectory } from './scan.ts'
 export type { MemoryDirectoryState } from './scan.ts'
-export { resolveMemoryHome, resolveProjectMemoryRoot, resolveWorkspaceMemoryDir, projectSlug, cwdOf, PROJECT_MEMORY_DIR, PROJECTS_DIR } from './paths.ts'
+export {
+  resolveMemoryHome,
+  resolveProjectMemoryRoot,
+  resolveWorkspaceMemoryDir,
+  canonicalMemoryRoot,
+  projectSlug,
+  cwdOf,
+  gitExecSync,
+  PROJECT_MEMORY_DIR,
+  PROJECTS_DIR,
+  GIT_PROBE_TIMEOUT_MS,
+} from './paths.ts'
+export type { MemoryGitExec, MemoryGitExecResult } from './paths.ts'
 export { MemorySection, renderMemorySection, renderTeamMemorySection, renderLayers, saveGuidance, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './section.ts'
 export type { MemoryLayer } from './section.ts'
 export { MemoryRecall, SubagentMemorySelector, extractSelectedNames, MAX_RECALL_MEMORIES } from './recall.ts'
@@ -62,8 +74,8 @@ export const inject = ['systemPrompt']
 export interface Config {
   /**
    * Memory home root. Defaults to the harness home `memory/`. The home IS the
-   * global layer; each workspace's private layer lives at
-   * `<home>/projects/<slug>` (slug encodes the session cwd).
+   * global layer; each repository's private layer lives at
+   * `<home>/projects/<slug>` (slug encodes the canonical git root).
    */
   memoryHome?: string
   /** Whether the `memory` system-prompt section is registered (default true). */

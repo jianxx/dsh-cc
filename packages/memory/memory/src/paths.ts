@@ -5,7 +5,9 @@
  * @module @jianxx/dsh-cc-memory/paths
  */
 
-import { dirname, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { realpathSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
@@ -16,6 +18,36 @@ export const PROJECT_MEMORY_DIR = '.claude/memory'
 
 /** Directory label grouping the per-workspace memory directories. */
 export const PROJECTS_DIR = 'projects'
+
+/**
+ * Git probe timeout for {@link canonicalMemoryRoot}. Bounded so a hung git
+ * (network FS, broken env) cannot stall the synchronous system-prompt
+ * `text` callback past the section's first-assembly budget.
+ */
+export const GIT_PROBE_TIMEOUT_MS = 500
+
+/** A successful synchronous git invocation. */
+export interface MemoryGitExecResult {
+  stdout: string
+}
+
+/**
+ * Run one git argv in `cwd`, synchronously. Returns undefined on spawn
+ * failure, non-zero exit, or timeout — the caller treats that as "not a git
+ * repository". Injectable so tests script the git conversation.
+ */
+export type MemoryGitExec = (argv: readonly string[], cwd: string) => MemoryGitExecResult | undefined
+
+/** The default exec: real `git` via spawnSync with a bounded timeout. */
+export function gitExecSync(argv: readonly string[], cwd: string): MemoryGitExecResult | undefined {
+  const result = spawnSync('git', [...argv], {
+    cwd,
+    encoding: 'utf8',
+    timeout: GIT_PROBE_TIMEOUT_MS,
+  })
+  if (result.error !== undefined || result.status !== 0) return undefined
+  return { stdout: result.stdout }
+}
 
 /**
  * Resolve the default (harness-home) memory root. A configured root wins;
@@ -32,10 +64,11 @@ export function resolveMemoryHome(configured?: string): string {
 /**
  * Encode a workspace path as a single filesystem-safe directory name. Ported
  * from upstream `projectKey` (`session-persistence-jsonl/src/format.ts`),
- * minus the `--` wrapper, so a workspace's memory directory matches the slug
- * used in `~/.dsh/sessions/--<slug>--`: separators and drive colons collapse
- * to `-`, unsafe code units escape as `~XXXX`, leading dashes strip, and the
- * result truncates to 251 chars (fallback `root`).
+ * minus the `--` wrapper: separators and drive colons collapse to `-`, unsafe
+ * code units escape as `~XXXX`, leading dashes strip, and the result
+ * truncates to 251 chars (fallback `root`). The input is the canonical git
+ * root from {@link canonicalMemoryRoot}, so worktrees of one repo share a
+ * slug even though session transcripts still group by raw cwd.
  * @param cwd - the workspace path to encode.
  * @returns the workspace slug.
  */
@@ -62,19 +95,111 @@ export function projectSlug(cwd: string): string {
 }
 
 /**
+ * True when `commonDir` marks a *linked* worktree whose project root is its
+ * directory's parent. The common dir of a standard layout is `<root>/.git`;
+ * a linked worktree reports its main checkout's `/.git`, which differs from
+ * its own `top/.git`. Anything else (main checkout, a submodule's
+ * `<super>/.git/modules/<name>`, bare, exotic GIT_DIR) is not a linked
+ * worktree and keeps `resolve(top)` as its project root — so submodules do
+ * not collapse onto their superproject.
+ */
+function isLinkedWorktree(commonDir: string, top: string): boolean {
+  if (!commonDir.endsWith(`${sep}.git`)) return false
+  return resolve(commonDir) !== resolve(join(top, '.git'))
+}
+
+/**
+ * Canonicalise a path: `resolve()` then dereference symlinks via realpath so
+ * a repo reached through a symlinked ancestor (e.g. macOS `/var` →
+ * `/private/var`) yields the SAME string whether it came from `resolve(cwd)`,
+ * git's toplevel, or git's common-dir — git may mix realpath'd and non-
+ * realpath'd output for the same directory, which would otherwise split one
+ * memory bucket into two. Falls back to `resolve()` if realpath fails (e.g.
+ * the path no longer exists).
+ */
+function canonical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/** Module-level memo keyed by `resolve(cwd)` (see {@link canonicalMemoryRoot}). */
+const memoryRootCache = new Map<string, string>()
+
+/** Test hook: drop the module-level memo (also safe as a no-op cleanup). */
+export function __clearMemoryRootCache(): void {
+  memoryRootCache.clear()
+}
+
+/**
+ * The canonical git-repo root a cwd's workspace memories belong to.
+ *
+ * Matches Claude Code auto-memory identity: derived from the git repository
+ * so worktrees and subdirectories share one store. A linked worktree
+ * collapses onto the main checkout (`dirname(git-common-dir)`); a submodule
+ * keeps its own toplevel. Non-git / git failure / timeout degrades to
+ * `resolve(cwd)` — today's pre-collapse behavior.
+ *
+ * Results are memoised per resolved `cwd` so the synchronous system-prompt
+ * section probes git at most once per working directory. Only default-exec
+ * calls participate: an injected `exec` bypasses the cache entirely.
+ * @param cwd - the session working directory.
+ * @param exec - git probe; defaults to {@link gitExecSync}.
+ * @returns the absolute canonical root to slug.
+ */
+export function canonicalMemoryRoot(cwd: string, exec: MemoryGitExec = gitExecSync): string {
+  const key = resolve(cwd)
+  if (exec === gitExecSync) {
+    const cached = memoryRootCache.get(key)
+    if (cached !== undefined) return cached
+  }
+  const root = probeMemoryRoot(cwd, exec)
+  if (exec === gitExecSync) memoryRootCache.set(key, root)
+  return root
+}
+
+/**
+ * One spawn: `git rev-parse --show-toplevel --git-common-dir` prints the
+ * toplevel then the common dir, one per line. A relative common-dir is
+ * resolved against the probe cwd.
+ */
+function probeMemoryRoot(cwd: string, exec: MemoryGitExec): string {
+  const parsed = exec(['rev-parse', '--show-toplevel', '--git-common-dir'], cwd)?.stdout
+  if (parsed === undefined) return resolve(cwd)
+  const lines = parsed.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+  const top = lines[0]
+  const commonRaw = lines[1]
+  if (top === undefined || top.length === 0 || commonRaw === undefined || commonRaw.length === 0) {
+    return resolve(cwd)
+  }
+  const topAbs = canonical(top)
+  const commonDir = canonical(resolve(cwd, commonRaw))
+  return isLinkedWorktree(commonDir, topAbs) ? dirname(commonDir) : topAbs
+}
+
+/**
  * Resolve the per-workspace private memory directory under a memory home:
- * `<home>/projects/<slug>` where the slug encodes the workspace cwd.
+ * `<home>/projects/<slug>` where the slug encodes the canonical git root
+ * of `cwd` (worktrees and subdirectories of one repo share a directory).
  * @param home - the resolved memory home (the global layer's directory).
- * @param cwd - the workspace path this directory is private to.
+ * @param cwd - the session working directory; collapsed via {@link canonicalMemoryRoot}.
+ * @param exec - optional git probe (tests); omitted uses the default exec.
  * @returns the workspace memory directory.
  */
-export function resolveWorkspaceMemoryDir(home: string, cwd: string): string {
-  return join(home, PROJECTS_DIR, projectSlug(cwd))
+export function resolveWorkspaceMemoryDir(home: string, cwd: string, exec?: MemoryGitExec): string {
+  const root = exec === undefined ? canonicalMemoryRoot(cwd) : canonicalMemoryRoot(cwd, exec)
+  return join(home, PROJECTS_DIR, projectSlug(root))
 }
 
 /**
  * The workspace path an agent's memories belong to: the session's bound cwd,
  * falling back to the process cwd when the header carries none.
+ *
+ * This is the *live working copy*, not the memory-bucket identity. Task uses
+ * it to find `.claude/agents` inside a worktree; {@link resolveWorkspaceMemoryDir}
+ * collapses it onto the git root before slugging.
  * @param agent - the agent whose workspace is needed.
  * @returns the workspace cwd.
  */
