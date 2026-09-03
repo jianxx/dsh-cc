@@ -22,7 +22,16 @@ import { registerTaskTool, TASK_TOOL } from '../src/tool.ts'
 interface FakeProvider {
   name: string
   capabilities: { outputSchema: boolean; depthLimit: boolean; toolFilter: boolean; persona: boolean }
+  /** Present only on providers implementing the continuable-creation capability. */
+  prepareContinuable?: () => Promise<unknown>
   start(request: Record<string, unknown>): Promise<{ result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }> }>
+}
+
+/** One recorded `startContinuable` call (the background dispatch path). */
+interface RecordedContinuable {
+  provider: string
+  label: string
+  request: Record<string, unknown>
 }
 
 interface StartedRun {
@@ -34,10 +43,11 @@ interface FakeRun {
   result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }>
 }
 
-function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[] } {
+function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[]; continuableStarts: RecordedContinuable[] } {
   const runs: StartedRun[] = []
+  const continuableStarts: RecordedContinuable[] = []
   const byName = new Map(providers.map(p => [p.name, p]))
-  const seam = {
+  const seam: Record<string, unknown> = {
     async start(name: string, request: Record<string, unknown>): Promise<FakeRun> {
       const provider = byName.get(name)
       if (provider === undefined) throw new Error(`unknown provider "${name}"`)
@@ -49,20 +59,40 @@ function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[
       runs.push({ provider: name, request })
       return provider.start(request)
     },
+    async startContinuable(spec: Record<string, unknown>): Promise<{ childId: string; messageId: string }> {
+      const providerName = spec['provider'] as string
+      const provider = byName.get(providerName)
+      if (provider === undefined) throw new Error(`unknown provider "${providerName}"`)
+      if (provider.prepareContinuable === undefined) {
+        const error = new Error(
+          `subagent provider "${providerName}" does not support continuable children (no prepareContinuable capability)`,
+        ) as Error & { code?: string }
+        error.code = 'UNSUPPORTED_CAPABILITY'
+        throw error
+      }
+      continuableStarts.push({
+        provider: providerName,
+        label: spec['label'] as string,
+        request: spec['request'] as Record<string, unknown>,
+      })
+      return { childId: 'child-1', messageId: 'm-1' }
+    },
     getProvider(name: string) { return byName.get(name) },
     list() { return [...byName.keys()] },
   }
-  return { seam, runs }
+  return { seam, runs, continuableStarts }
 }
 
 /** A capable in-process provider with a captured result. */
 function capableProvider(
   name: string,
   result: { stopReason: string; output?: readonly { type: string; text?: string }[] },
+  continuable = false,
 ): FakeProvider {
   return {
     name,
     capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+    ...(continuable ? { prepareContinuable: async () => ({}) } : {}),
     start: async () => ({ result: Promise.resolve(result) }),
   }
 }
@@ -73,7 +103,7 @@ const COMPLETED = { stopReason: 'completed', output: [{ type: 'text', text: 'don
 function defaultProviders(
   result: { stopReason: string; output?: readonly { type: string; text?: string }[] } = COMPLETED,
 ): FakeProvider[] {
-  return [capableProvider('spawn', result), capableProvider('fork', result)]
+  return [capableProvider('spawn', result, true), capableProvider('fork', result)]
 }
 
 const tmpRoots: string[] = []
@@ -106,16 +136,18 @@ interface ToolCallResult {
 async function mount(opts: {
   routes?: { resolve(model: string | undefined): { provider?: string; model?: string } | undefined }
   seamProviders?: FakeProvider[]
+  omitStartContinuable?: boolean
 } = {}) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  const { seam, runs } = makeSeam(opts.seamProviders ?? defaultProviders())
+  const { seam, runs, continuableStarts } = makeSeam(opts.seamProviders ?? defaultProviders())
+  if (opts.omitStartContinuable === true) delete (seam as Record<string, unknown>)['startContinuable']
   ctx.provide('subagents', seam)
   if (opts.routes !== undefined) ctx.provide('ccModelRoutes', opts.routes)
   const registry = new AgentRegistry()
   registerTaskTool(ctx, registry)
-  return { ctx, runs, registry }
+  return { ctx, runs, continuableStarts, registry }
 }
 
 let callCounter = 0
@@ -493,5 +525,156 @@ describe('Task tool', () => {
     const result = await call(ctx, { description: 'x', prompt: 't' })
     expect(result.isError).toBe(true)
     expect(result.content[0]!.text).toMatch(/agent/)
+  })
+
+  describe('run_in_background', () => {
+    it('starts a continuable child on spawn and returns the durable id without awaiting a result', async () => {
+      const { ctx, runs, continuableStarts } = await mount()
+      const result = await call(ctx, {
+        description: 'long work',
+        prompt: 'grind in the background',
+        run_in_background: true,
+      }, agentAt('/any'))
+      expect(result.isError).toBe(false)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      const start = continuableStarts[0]!
+      expect(start.provider).toBe('spawn')
+      expect(start.label).toBe('long work')
+      expect(start.request['prompt']).toEqual([{ type: 'text', text: 'grind in the background' }])
+      expect(start.request['maxDepth']).toBe(3)
+      expect(start.request['persona']).toBeUndefined()
+      expect(start.request['agentOptions']).toBeUndefined()
+      expect(start.request['toolFilter']).toBeUndefined()
+      expect(result.content[0]!.text).toContain('child-1')
+      expect(result.content[0]!.text).toContain('list_agents')
+      expect(result.content[0]!.text).toContain('send_message')
+      expect(result.content[0]!.text).toContain('interrupt_agent')
+      expect(JSON.stringify(result)).not.toContain('outputFile')
+    })
+
+    it('folds a named definition exactly like the foreground path into the continuable request', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'deep-reasoner', '---\nname: deep-reasoner\ndescription: Review heavy work\nmodel: opus\ntools: [Read, Bash]\n---\nYou are a Staff Engineer.\n')
+      const routes = { resolve: (m: string | undefined) => m === 'opus' ? { provider: 'orchestrix', model: 'glm-5.2' } : undefined }
+      const { ctx, runs, continuableStarts } = await mount({ routes })
+      reserveNames(ctx, 'read', 'bash')
+      await call(ctx, {
+        subagent_type: 'deep-reasoner',
+        description: 'review',
+        prompt: 'audit the doc',
+        run_in_background: true,
+      }, agentAt(ws))
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
+      const req = continuableStarts[0]!.request
+      expect(req['persona']).toBe('You are a Staff Engineer.')
+      expect(req['prompt']).toEqual([{ type: 'text', text: 'audit the doc' }])
+      expect(req['agentOptions']).toEqual({ provider: 'orchestrix', model: 'glm-5.2' })
+      expect(req['maxDepth']).toBe(3)
+      const filter = req['toolFilter'] as { allow?: string[] }
+      expect(filter.allow).toEqual(expect.arrayContaining(['read', 'bash']))
+      await assertRestrictable(ctx, filter as ToolRestriction)
+    })
+
+    it('rejects fork + background before touching the seam, naming issue #2124 and the workaround', async () => {
+      const { ctx, runs, continuableStarts } = await mount()
+      const result = await call(ctx, {
+        subagent_type: 'fork',
+        description: 'x',
+        prompt: 't',
+        run_in_background: true,
+      }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/2124/)
+      expect(result.content[0]!.text).toMatch(/run_in_background|background/)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('errors with the available type list for an unknown background type', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'deep-reasoner', '---\nname: deep-reasoner\ndescription: Review\n---\nBody.\n')
+      const { ctx, runs, continuableStarts } = await mount()
+      const result = await call(ctx, {
+        subagent_type: 'nope',
+        description: 'x',
+        prompt: 't',
+        run_in_background: true,
+      }, agentAt(ws))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/unknown subagent_type "nope"/)
+      expect(result.content[0]!.text).toMatch(/deep-reasoner/)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('maps a provider without prepareContinuable to an actionable capability error', async () => {
+      const seamProviders = defaultProviders().map(p =>
+        p.name === 'spawn' ? { ...p, prepareContinuable: undefined } : p,
+      )
+      const { ctx, runs, continuableStarts } = await mount({ seamProviders })
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/UNSUPPORTED_CAPABILITY/)
+      expect(result.content[0]!.text).toMatch(/background subagent/i)
+      expect(result.content[0]!.text).toMatch(/prepareContinuable|capability/i)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('maps a seam without startContinuable to an actionable capability error', async () => {
+      const { ctx, runs } = await mount({ omitStartContinuable: true })
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/background subagent/i)
+      expect(result.content[0]!.text).toMatch(/capabilit|continuable/i)
+      expect(runs).toHaveLength(0)
+    })
+
+    it('keeps the foreground path byte-identical when run_in_background is absent or false', async () => {
+      const { ctx, runs, continuableStarts } = await mount()
+      const omitted = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
+      const explicitFalse = await call(ctx, { description: 'x', prompt: 't', run_in_background: false }, agentAt('/any'))
+      expect(omitted.content[0]!.text).toBe('done')
+      expect(explicitFalse.content[0]!.text).toBe('done')
+      expect(runs).toHaveLength(2)
+      expect(runs.every(r => r.provider === 'spawn')).toBe(true)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('renders the background contract text naming the durable id and the control loop', async () => {
+      const { ctx } = await mount()
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      const text = result.content[0]!.text
+      expect(text).toContain('child-1')
+      expect(text).toMatch(/wak(e|ing)|finish/)
+      expect(text).toMatch(/list_agents/)
+      expect(text).toMatch(/send_message/)
+      expect(text).toMatch(/interrupt_agent/)
+      expect(text.toLowerCase()).not.toContain('outputfile')
+    })
+
+    it('starts the bundled explore agent in the background with its persona and read-only allow-list', async () => {
+      const ws = freshWorkspace()
+      const routes = { resolve: (m: string | undefined) => m === 'haiku' ? { provider: 'p', model: 'cheap' } : undefined }
+      const { ctx, runs, continuableStarts } = await mount({ routes })
+      reserveNames(ctx, 'read', 'read_image', 'glob', 'grep')
+      await call(ctx, {
+        subagent_type: 'explore',
+        description: 'find it',
+        prompt: 'where is X?',
+        run_in_background: true,
+      }, agentAt(ws))
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
+      const req = continuableStarts[0]!.request
+      expect(req['persona']).toContain('read-only codebase scout')
+      expect(req['agentOptions']).toEqual({ provider: 'p', model: 'cheap' })
+      const filter = req['toolFilter'] as { allow?: string[] }
+      expect(filter.allow).toEqual(expect.arrayContaining(['read', 'read_image', 'glob', 'grep']))
+      expect(filter.allow?.includes('write')).toBe(false)
+      await assertRestrictable(ctx, filter as ToolRestriction)
+    })
   })
 })
