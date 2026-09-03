@@ -135,6 +135,48 @@ describe('strip workspace instructions on delegated children', () => {
     expect(inbox.nextStep).toEqual([claudeMd, otherPending])
   })
 
+  it('strips instructions injected by an earlier-registered outer listener', async () => {
+    // Production mount order (preset/cc/agent.cordis.yml): `agent-instructions`
+    // is rowed far above `cc-subagent-task`, and the cordis waterfall is
+    // outermost-first in registration order — an appended injector therefore
+    // wraps the strip and would splice the baseline into the enter batch
+    // during unwind, AFTER an inner strip already ran. The strip registers
+    // with `prepend` to stay outermost and see the injector's output.
+    const ctx = new Context()
+    ctx.on('agent/pre-step', async (_payload: unknown, next: () => Promise<PreStepDecision>) => {
+      const decision = await next()
+      if (decision.kind !== 'enter') return decision
+      return { kind: 'enter', messages: [...decision.messages, claudeMd] }
+    })
+    mountStripWorkspaceInstructions(ctx)
+    const inbox = fakeInbox()
+    const decision = await ctx.waterfall(
+      ctx as never,
+      'agent/pre-step',
+      { agent: agentAt(1, inbox), messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve<PreStepDecision>({ kind: 'enter', messages: [taskPrompt] }),
+    )
+    expect(decision).toEqual({ kind: 'enter', messages: [taskPrompt] })
+  })
+
+  it('keeps an outer listener injection for a top-level agent', async () => {
+    const ctx = new Context()
+    ctx.on('agent/pre-step', async (_payload: unknown, next: () => Promise<PreStepDecision>) => {
+      const decision = await next()
+      if (decision.kind !== 'enter') return decision
+      return { kind: 'enter', messages: [...decision.messages, claudeMd] }
+    })
+    mountStripWorkspaceInstructions(ctx)
+    const inbox = fakeInbox()
+    const decision = await ctx.waterfall(
+      ctx as never,
+      'agent/pre-step',
+      { agent: agentAt(0, inbox), messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve<PreStepDecision>({ kind: 'enter', messages: [taskPrompt] }),
+    )
+    expect(decision).toEqual({ kind: 'enter', messages: [taskPrompt, claudeMd] })
+  })
+
   it('registers the listener through apply()', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
