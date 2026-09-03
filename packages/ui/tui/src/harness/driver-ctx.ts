@@ -21,6 +21,7 @@ import type {
   ModelSelectionRef,
 } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { ModalEntry } from './driver-modal.ts'
 import type { SessionEventLike, ToolPresenters } from '../transcript.ts'
@@ -215,6 +216,13 @@ export interface DriverSessionsCtx {
   state(): TuiState
   /** Host context for sessionPersistence/sessionQuery service lookup + agents.resume. */
   ctx: Context
+  /** Create a brand-new agent handle for a minted session id (local /clear). */
+  createHandle(
+    id: SessionId,
+    extras: { cwd: string; agentOptions?: { provider: string; model: string } },
+  ): Promise<AgentHandle>
+  /** Re-apply a captured permission mode on the NEW agent after bind. */
+  reapplyMode(mode: string): Promise<void>
   /** Working directory (fallback when the live header cwd is absent). */
   cwd: string
   /** The rebindable agent holder (switchSession disposes old, binds new). */
@@ -294,6 +302,8 @@ export interface DriverRunLocalCtx {
   showNotice(text: string): void
   /** /resume with an explicit id; the switch engine lives in driver-sessions. */
   switchSession(id: string): Promise<void>
+  /** Bind a freshly created empty session (local /clear, /new, /reset). */
+  startFreshSession(): Promise<void>
   /** Open the /resume overlay (session switcher picker). */
   openSessionSwitcher(): Promise<void>
   /** Open the model picker. */

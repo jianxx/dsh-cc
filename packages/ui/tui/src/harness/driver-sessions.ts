@@ -11,10 +11,12 @@
 
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
+import { randomUUID } from 'node:crypto'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { join } from 'node:path'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import { defaultTuiDir } from '../history.ts'
+import { liveSessionCwd } from './driver-live.ts'
 import { isProjectMember, resolveProject, type ProjectInfo } from '../project.ts'
 import { readProjectSessionIds } from '../project-sessions.ts'
 import {
@@ -46,6 +48,8 @@ export interface SessionsSection {
   openSessionSwitcher(): Promise<void>
   closeSessionSwitcher(): void
   switchSession(id: string): Promise<void>
+  /** Bind a freshly created session in place of the live one (local /clear). */
+  startFreshSession(): Promise<void>
   sessionSwitcherMove(delta: -1 | 1): void
   sessionSwitcherType(text: string): void
   sessionSwitcherBackspace(): void
@@ -242,9 +246,16 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
       return
     }
 
-    // Success — dispose old, bind new. dispose() stops the loop, unregisters
-    // the agent, and removes its session from the in-memory store; it does NOT
-    // delete the durable session log.
+    await bindSession(newHandle, { reseedModel: true })
+  }
+
+  // Shared bind path (also used by startFreshSession). dispose() stops the
+  // loop, unregisters the agent, and removes its session from the in-memory
+  // store; it does NOT delete the durable session log.
+  const bindSession = async (
+    newHandle: AgentHandle,
+    opts: { reseedModel?: boolean } = {},
+  ): Promise<void> => {
     await rt.current.handle.dispose()
     rt.current.handle = newHandle
     rt.current.agent = newHandle.agent
@@ -260,19 +271,20 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     rt.refreshCatalog()
     // Pin the switched session in its project's sidecar index so the picker
     // scope no longer relies on the cwd-prefix heuristic for it.
-    rt.recordProjectSession(id, rt.current.agent.session.header.cwd)
+    rt.recordProjectSession(String(rt.current.agent.session.id), rt.current.agent.session.header.cwd)
 
-    // Refresh the model selection from the new agent's resolved options,
-    // falling back to the deployment default. Reset first so a stale selection
-    // from the previous session never leaks across a switch.
-    await rt.seedDefaultModel(true)
-    rt.writeResumeTarget(id)
+    // Resume reseeds the model AFTER the rebind: seedDefaultModel(true) reads
+    // rt.current.agent, which is the target session only once rebound here;
+    // the fresh-session path (startFreshSession) skips reseed and keeps the
+    // live /model route as agentOptions instead.
+    if (opts.reseedModel === true) await rt.seedDefaultModel(true)
+
+    rt.writeResumeTarget(String(rt.current.agent.session.id))
     rt.setMarkedContent(false)
 
     // Reset the transcript: clear + boot banner + fold new history + mode/busy.
-    // The window title must reset HERE (not inside clearRows — /clear shares
-    // it and keeps the same session's title); foldHistory below re-seeds it
-    // when the switched-to session's log has a session/title event.
+    // Bind always clears the window title; foldHistory below re-seeds it
+    // when the new session's log has a session/title event.
     emit(setSessionTitle(clearRows(rt.state()), undefined))
     const modelLabel = rt.selection.current?.model ?? 'default model'
     emit(upsertRow(rt.state(), {
@@ -298,6 +310,55 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     rt.refreshBranch()
   }
 
+  // /clear, /new, /reset: brand-new empty session in-process. Create-first:
+  // a failed create keeps the old session fully live. The in-flight turn is
+  // cancelled only AFTER the create succeeded, so a failed create leaves the
+  // old session untouched (drain-before-create would resolve parked
+  // approvals/question even when nothing gets replaced). Mode, cwd, and the
+  // live /model route are captured before any of that.
+  const startFreshSession = async (): Promise<void> => {
+    const capturedMode = rt.liveMode(rt.current.agent, rt.state().permissionMode)
+    const liveCwd = liveSessionCwd(rt.current.agent, rt.cwd)
+    const route = rt.selection.current
+
+    let newHandle: AgentHandle
+    try {
+      newHandle = await rt.createHandle(SessionId(`tui-${randomUUID()}`), {
+        cwd: liveCwd,
+        ...(route?.provider !== undefined && route?.model !== undefined
+          ? { agentOptions: { provider: route.provider, model: route.model } }
+          : rt.agentOptions === undefined ? {} : { agentOptions: rt.agentOptions }),
+      })
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error)
+      emit(upsertRow(rt.state(), { kind: 'status', text: `Start failed: ${message}` }))
+      return
+    }
+
+    // Cancel only now that create succeeded: adjacent cancel+dispose may
+    // block until the loop aborts (latency, not correctness) — do not hoist
+    // the cancel back before create.
+    if (rt.state().busy || rt.current.agent.status === 'running') {
+      rt.current.agent.cancel({ kind: 'user' })
+    }
+
+    // Clear pending overlays and the modal queue (mirror switchSession):
+    // every parked approval resolves cancelled and every parked question
+    // rejects cancelled.
+    for (const entry of rt.spliceAll()) {
+      if (entry.kind === 'approval') entry.resolve('cancelled')
+      else entry.reject(new UserQuestionError('session switching', 'CANCELLED'))
+    }
+    emit(setApproval(rt.state(), undefined))
+    emit(setQuestion(rt.state(), undefined))
+    emit(setModelPicker(rt.state(), undefined))
+    emit(closeTodoPanel(rt.state()))
+    emit(clearQueue(setBusy(rt.state(), false)))
+
+    await bindSession(newHandle)
+    if (capturedMode !== 'default') await rt.reapplyMode(capturedMode)
+  }
+
   const sessionSwitcherSubmit = async (): Promise<void> => {
     const sw = rt.state().sessionSwitcher
     if (sw === undefined || sw.switching) return
@@ -319,6 +380,7 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     openSessionSwitcher,
     closeSessionSwitcher,
     switchSession,
+    startFreshSession,
     sessionSwitcherMove(delta) {
       emit(moveSessionSwitcherFocus(rt.state(), delta))
     },

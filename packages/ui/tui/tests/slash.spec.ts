@@ -5,7 +5,7 @@ describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
     expect(names).toEqual([
-      'agents', 'clear', 'copy', 'cost', 'effort', 'exit', 'export-md', 'model', 'quit', 'resume', 'tui-help', 'usage',
+      'agents', 'clear', 'copy', 'cost', 'effort', 'exit', 'export-md', 'model', 'new', 'quit', 'reset', 'resume', 'tui-help', 'usage',
     ])
   })
 
@@ -13,6 +13,15 @@ describe('LOCAL_COMMANDS', () => {
     for (const cmd of LOCAL_COMMANDS) {
       expect(cmd.description.length).toBeGreaterThan(0)
     }
+  })
+
+  it('clear describes a new empty conversation, not a screen wipe', () => {
+    const clear = LOCAL_COMMANDS.find(c => c.name === 'clear')
+    expect(clear).toBeDefined()
+    expect(clear!.description.toLowerCase()).toMatch(/new conversation|empty context/)
+    expect(clear!.description.toLowerCase()).not.toMatch(/transcript rows/)
+    expect(LOCAL_COMMANDS.find(c => c.name === 'new')?.description).toBe('Alias of /clear')
+    expect(LOCAL_COMMANDS.find(c => c.name === 'reset')?.description).toBe('Alias of /clear')
   })
 
   it('resume carries an argument hint', () => {
@@ -56,6 +65,8 @@ describe('parseSlash', () => {
     expect(parseSlash('/quit')).toEqual({ kind: 'local', name: 'quit', rawInput: '' })
     expect(parseSlash('/exit now')).toEqual({ kind: 'local', name: 'exit', rawInput: 'now' })
     expect(parseSlash('/clear')).toEqual({ kind: 'local', name: 'clear', rawInput: '' })
+    expect(parseSlash('/new')).toEqual({ kind: 'local', name: 'new', rawInput: '' })
+    expect(parseSlash('/reset')).toEqual({ kind: 'local', name: 'reset', rawInput: '' })
     expect(parseSlash('/resume sess-1')).toEqual({ kind: 'local', name: 'resume', rawInput: 'sess-1' })
     expect(parseSlash('/model 2')).toEqual({ kind: 'local', name: 'model', rawInput: '2' })
     expect(parseSlash('/agents')).toEqual({ kind: 'local', name: 'agents', rawInput: '' })

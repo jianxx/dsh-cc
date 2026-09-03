@@ -145,6 +145,26 @@ describe('createDriver switchSession', () => {
     expect(readResumeTarget()).toBeUndefined()
   })
 
+  it('reseeds the model from the TARGET session after the rebind (banner + statusLine follow /resume)', async () => {
+    const { ctx } = makeSwitchableCtx({
+      createSession: { id: 's-a', provider: 'old-p', model: 'old-m', events: [], status: 'idle' },
+      resumeSessions: { 's-b': { id: 's-b', provider: 'new-p', model: 'new-m', events: [], status: 'idle' } },
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    // Boot banner reflects the boot session's model.
+    expect(driver.statusLine).toContain('old-m')
+    const bootBanner = driver.state.rows.find(row => row.kind === 'status' && /dsh cc-mode/.test(row.text ?? ''))
+    expect(bootBanner?.text).toContain('old-m')
+
+    await driver.switchSession('s-b')
+
+    expect(driver.statusLine).toContain('new-m')
+    expect(driver.statusLine).not.toContain('old-m')
+    const banner = driver.state.rows.find(row => row.kind === 'status' && /dsh cc-mode/.test(row.text ?? ''))
+    expect(banner?.text).toContain('new-m')
+    expect(banner?.text).not.toContain('old-m')
+  })
+
   it('is a no-op when switching to the current session (dispose NOT called)', async () => {
     const { ctx, disposed, resumeCalls } = makeSwitchableCtx({
       createSession: { id: 's-a', events: [], status: 'idle' },

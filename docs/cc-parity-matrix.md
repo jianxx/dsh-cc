@@ -129,7 +129,7 @@ Degraded by design (documented):
 - `/config` — text-only render/patch with an allowlisted key set.
 - `/init` — drives a follow-up turn that writes/refreshes `CLAUDE.md`.
 
-Excluded: `/model`, `/clear`, `/exit` (host-owned), `/copy` (preset-side has no
+TUI-local: `/clear` `/new` `/reset` start a new empty session in-process; the previous session stays on disk and is `/resume`-able. Excluded: `/model`, `/exit` (host-owned), `/copy` (preset-side has no
 clipboard seam; the TUI surface now ships a local `/copy` over OSC 52 — see the
 keybindings row above),
 `/rewind` (needs checkpoint/file-snapshot design — deferred), billing/login
