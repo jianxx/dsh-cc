@@ -32,6 +32,9 @@ if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
 pnpm check:spec-deps
 pnpm check:deep-imports
+# capability manifest 校验 + README/matrix 生成产物无漂移(改 manifest 后跑 pnpm docs:parity)
+pnpm check:capabilities
+pnpm check:parity
 # 一手 .ts 硬门 ≤500 行(空基线);pi-tui 与 tests/ 豁免,见 scripts/check-file-size.mjs
 pnpm check:size
 pnpm typecheck

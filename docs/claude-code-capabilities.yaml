@@ -1,0 +1,1853 @@
+# docs/claude-code-capabilities.yaml — machine-readable Claude Code capability manifest.
+# Authored source of truth (spec: docs/plans/2026-09-03-claude-code-capability-manifest.md §4, §6).
+# docs/cc-parity-matrix.md and the README parity block are GENERATED from this file;
+# hand edits there fail CI. Edit loop: edit this file → run pnpm docs:parity → commit all.
+manifest_version: 1
+
+baseline:
+  upstream: claude-code
+  sources:
+    - id: cc-docs
+      kind: context7
+      ref: /websites/code_claude
+      url: https://code.claude.com/docs
+      retrieved: '2026-09-03'
+    - id: cc-repo
+      kind: context7
+      ref: /anthropics/claude-code
+      url: https://github.com/anthropics/claude-code
+      retrieved: '2026-09-03'
+  freshness_threshold_days: 120
+
+categories:
+  - { id: engine, title: Engine subsystems }
+  - { id: hooks, title: Hook events }
+  - { id: commands, title: Command surface }
+  - { id: sessions, title: Sessions and context }
+  - { id: memory, title: Memory and CLAUDE.md }
+  - { id: skills, title: Skills }
+  - { id: subagents, title: Subagents }
+  - { id: mcp, title: MCP }
+  - { id: plugins, title: Plugins and marketplaces }
+  - { id: settings, title: Settings }
+  - { id: permissions, title: Permissions }
+  - { id: models, title: Models }
+  - { id: workspace, title: Workspace }
+  - { id: ux, title: Interactive UX }
+
+upstream_dependencies:
+  session-file-snapshot-seam:
+    title: Session file-snapshot seam
+    problem: >-
+      dsh sessions persist a jsonl/sqlite projection; there is no per-prompt
+      snapshot store of edited files to anchor a rewind against.
+    cc_contract: >-
+      Every prompt checkpoints files about to be edited; /rewind (or Esc Esc)
+      restores code, conversation, or both; checkpoints persist across resumed
+      sessions and do not cover Bash-side changes.
+    refs:
+      - https://code.claude.com/docs/en/checkpointing
+    needed_for:
+      - sessions.checkpointing
+      - commands.rewind
+  schedule-cron-selector:
+    title: Cron-expression selector for dsh-schedule
+    problem: >-
+      dsh-schedule supports after_seconds / at / every_seconds (>=300s) but has
+      no cron-expression selector, so ScheduleCronTool parity is unreachable.
+    cc_contract: >-
+      Claude Code scheduled reminders accept cron expressions as selectors.
+    refs: []
+    needed_for:
+      - engine.schedule
+  webfetch-ssrf-allowlist:
+    title: SSRF host allowlist for web-fetch-http
+    problem: >-
+      The web-fetch-http executor row is unshipped by the CLI through
+      0.1.1-rc.2 and there is no host allowlist, so WebFetch stays
+      enable-only-on-egress-restricted-deployments.
+    cc_contract: >-
+      Claude Code WebFetch enforces an SSRF allowlist before honoring fetches.
+    refs: []
+    needed_for:
+      - engine.web-fetch
+  precompact-seam:
+    title: PreCompact interception seam in dsh-compaction
+    problem: >-
+      dsh-compaction has no interception point where a user-configured hook
+      could run before compaction fires, so the PreCompact event cannot bridge.
+    cc_contract: >-
+      Claude Code fires PreCompact hooks before automatic or manual
+      compaction, letting hooks inject or transform context.
+    refs: []
+    needed_for:
+      - hooks.pre-compact
+  tasks-todo-seam:
+    title: Human-facing todo-list seam for /tasks
+    problem: >-
+      dsh-tool-todo is model-facing and the TUI renders the todo panel, but
+      human-facing /tasks still lists background jobs only.
+    cc_contract: >-
+      Claude Code's /tasks surfaces the session todo list to the human user.
+    refs: []
+    needed_for:
+      - commands.tasks
+  memory-fsinfo-mtime:
+    title: Memory freshness — FsInfo mtime seam
+    problem: >-
+      CC threads mtimeMs through recall and ages memories (memoryAge); the
+      current dsh-fs seam does not expose mtime, so both are deferred.
+    cc_contract: >-
+      Claude Code memory recall orders by file mtime and exposes a memoryAge
+      signal so stale memories age out of prominence.
+    refs: []
+    needed_for:
+      - memory.core
+  notification-seam:
+    title: Notification seam in deepseek-harness
+    problem: >-
+      No notification seam exists in deepseek-harness (bell/OS/iterm);
+      shipping notifications needs a new design.
+    cc_contract: >-
+      Claude Code emits desktop/terminal notifications for attention-needed
+      moments (bell, OS notification, iTerm2 escape sequences).
+    refs: []
+    needed_for:
+      - engine.notifications
+  permission-mode-catalog-pin:
+    title: Upstream catalog pin of permission/mode session events
+    problem: >-
+      The plugin registers permission/mode into KNOWN_SESSION_EVENT_TYPES via a
+      runtime Set.add at load; bumping the harness's own compiled catalog is an
+      upstream polish.
+    cc_contract: >-
+      Permission-mode session state persists across process restarts, not just
+      within the registering process.
+    refs: []
+    needed_for:
+      - permissions.rules
+  upstream-issue-2124:
+    title: Upstream harness issue #2124 — fork + background Task
+    problem: >-
+      Fork children remain foreground one-shot until upstream harness issue
+      #2124 resolves; fork + run_in_background is rejected with an error naming
+      the issue.
+    cc_contract: >-
+      Claude Code Task supports the fork provider in continuable background
+      mode with the same agentId-addressable loop as spawn.
+    refs: []
+    needed_for:
+      - subagents.task-tool
+
+capabilities:
+  # ── engine ──────────────────────────────────────────────────────────────
+  engine.agent-loop:
+    title: Agent loop + tool pipeline
+    category: engine
+    plane: host
+    upstream:
+      summary: >-
+        The core agent loop with the CC tool catalog; CC↔harness tool-name
+        translation (strict/lenient, aliases for rule/matcher matching,
+        canonical CC-facing payloads) consumed by frontmatter, permission
+        rules, and hook matchers.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/core/tools/src/cc-names.ts, anchor: "ccToolAliases" }
+      - { type: test, path: packages/core/tools/tests/cc-names.spec.ts, anchor: "translateToolNames" }
+    deviation: { kind: none }
+
+  engine.ask-user-question:
+    title: AskUserQuestion
+    category: engine
+    plane: preset
+    upstream:
+      summary: Structured clarifying questions from the model with option buttons.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-ask-user" }
+      - { type: test, path: packages/bundle/cc-shell/tests/ask-user-bundle.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/driver-question.spec.ts }
+    deviation: { kind: none }
+
+  engine.bash-jobs:
+    title: Bash / PowerShell + background jobs
+    category: engine
+    plane: preset
+    upstream:
+      summary: Shell tools with background job controls (TaskCreate/TaskOutput/TaskStop).
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-bash" }
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-jobs" }
+    deviation:
+      kind: downgrade
+      summary: >-
+        CC's TaskCreate/TaskOutput/TaskStop tool naming is not aliased; the
+        dsh jobs tools (tool-jobs over the host job registry) carry the
+        equivalent surface under dsh names.
+
+  engine.coordinator:
+    title: Coordinator mode
+    category: engine
+    plane: preset
+    upstream:
+      summary: Orchestrator mode coordinating subagents.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: coordinator" }
+      - { type: test, path: packages/subagent/coordinator/tests/coordinator.spec.ts }
+    deviation: { kind: none }
+
+  engine.cost-tracking:
+    title: Cost / token tracking
+    category: engine
+    plane: preset
+    upstream:
+      summary: /cost spend report; live token/context usage surfaces.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-cost" }
+      - { type: test, path: packages/session/command-cost/tests/command-cost.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/usage-panel.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Ships an empty default price table (composition decides pricing), and
+        CC quota/limit surfaces are vendor-billing-bound — the TUI /usage panel
+        footnotes quota as unavailable.
+
+  engine.credentials:
+    title: Credentials storage
+    category: engine
+    plane: host
+    upstream:
+      summary: Local credential storage backing authenticated tool/service access.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: >-
+        FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane
+        upstream package dsh-credentials-local, but that package has no
+        in-repo file to anchor a positive claim against, so per the evidence
+        backfill rule the claim is downgraded until an in-repo seam exists.
+
+  engine.file-tools:
+    title: File tools (Read/Edit/Write), Glob/Grep
+    category: engine
+    plane: preset
+    upstream:
+      summary: Core file read/edit/write and glob/grep search tools.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-fs" }
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-fs-search" }
+    deviation: { kind: none }
+
+  engine.ide-lsp:
+    title: IDE integration / LSP
+    category: engine
+    plane: preset
+    upstream:
+      summary: >-
+        IDE connection with LSP-backed code intelligence: hover, definitions,
+        references, diagnostics, call hierarchy.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: false
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: test, path: packages/bundle/cc-shell/tests/lsp-bundle.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Two paths. Production: Serena MCP via user-scope ~/.claude.json (v1.7.0
+        pin) — symbol-level retrieval/editing/diagnostics, ~30 tools deferred
+        through ToolSearch; gaps: no hover tool, no call hierarchy, no push
+        diagnostics. Native dsh-lsp/dsh-lsp-stdio/dsh-tool-lsp exist with a
+        closed 4-operation read-only seam but are NOT mounted by any shipped
+        composition (no lsp rows in cordis.patch.yml/agent.cordis.yml).
+        cc-plugin-loader does not parse lspServers/.lsp.json manifests; PreToolUse
+        hooks ignore additionalContext. /ide and editor pods remain host-shell
+        scope; headless does not apply.
+
+  engine.notebook-edit:
+    title: NotebookEdit
+    category: engine
+    plane: preset
+    upstream:
+      summary: Edit Jupyter notebook (.ipynb) cells (replace/insert/delete by cell id).
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-notebook-edit" }
+      - { type: test, path: packages/core/tool-notebook-edit/tests/tools.spec.ts }
+    deviation: { kind: none }
+
+  engine.notifications:
+    title: Notifications (bell/OS/iterm)
+    category: engine
+    plane: host
+    upstream:
+      summary: Terminal-bell / OS / iTerm2 notifications when input or attention is needed.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: upstream-blocked
+      summary: No notification seam in deepseek-harness; needs a new design.
+      upstream_dependency: notification-seam
+
+  engine.onboarding:
+    title: Onboarding / tips
+    category: engine
+    plane: preset
+    upstream:
+      summary: First-run onboarding flow and contextual tips.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: No package or design doc exists for onboarding/tips.
+
+  engine.plan-mode:
+    title: Plan mode
+    category: engine
+    plane: preset
+    upstream:
+      summary: >-
+        Read-only planning mode with exit_plan_mode approval gate; Shift+Tab
+        and /permissions plan switch into it.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: plan-mode" }
+      - { type: test, path: packages/ui/tui/tests/plan-channel.spec.ts }
+      - { type: test, path: packages/interaction/command-permissions/tests/plan-channel.integration.spec.ts }
+    deviation: { kind: none }
+
+  engine.remote-sessions:
+    title: Remote / web sessions
+    category: engine
+    plane: host
+    upstream:
+      summary: claude.ai-bound bridge for remote/web-driven sessions.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: >-
+        FORCED DOWNGRADE at seed: the legacy row reads "🔶 different — CC
+        bridge/ is claude.ai-bound; dsh has its own web/host/sdk/acp stack
+        outside this repo", but that stack has no in-repo surface to anchor a
+        positive claim against, so the seed records the four dimensions as
+        non-positive until the external stack gains an in-repo seam.
+
+  engine.sandbox:
+    title: Sandbox
+    category: engine
+    plane: host
+    upstream:
+      summary: OS-level sandboxing of tool execution with policy-controlled access.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: >-
+        FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane
+        upstream packages dsh-sandbox-local + policy, but they have no in-repo
+        file to anchor a positive claim against, so per the evidence backfill
+        rule the claim is downgraded until an in-repo seam exists.
+
+  engine.schedule:
+    title: Schedule / reminders
+    category: engine
+    plane: preset
+    upstream:
+      summary: Scheduled reminders, including cron-expression selectors.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: schedule" }
+      - { type: test, path: packages/bundle/cc-shell/tests/schedule-bundle.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        after_seconds / at / every_seconds (>=300s) supported; CC's
+        cron-expression selectors are unsupported until the dsh-schedule
+        selector seam lands (upstream extension planned).
+
+  engine.sleep:
+    title: Sleep tool
+    category: engine
+    plane: preset
+    upstream:
+      summary: Cooperative sleep/wait tool with interrupt and concurrency safety.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-sleep" }
+      - { type: test, path: packages/core/tool-sleep/tests/tools.spec.ts }
+    deviation: { kind: none }
+
+  engine.structured-output:
+    title: StructuredOutput (synthetic output tool)
+    category: engine
+    plane: preset
+    upstream:
+      summary: Validates the model's final output against a caller-supplied JSON schema.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-structured-output" }
+      - { type: test, path: packages/core/tool-structured-output/tests/tools.spec.ts }
+    deviation: { kind: none }
+
+  engine.tool-search:
+    title: ToolSearch (deferred tools)
+    category: engine
+    plane: preset
+    upstream:
+      summary: Search-activated deferred tools kept out of the model-visible schema.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-search" }
+      - { type: test, path: packages/core/tool-search/tests/tool-search.spec.ts }
+    deviation: { kind: none }
+
+  engine.tui:
+    title: Vim mode / keybindings / ghost text
+    category: engine
+    plane: host
+    upstream:
+      summary: >-
+        Terminal UX surface: permission-mode cycling, approval modals with
+        previews, bash mode, slash completion, theming; vim mode and ghost
+        text completion.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: test, path: packages/ui/tui/tests/mode-cycle.spec.ts, anchor: "cycles the five CC modes" }
+    deviation:
+      kind: downgrade
+      summary: >-
+        dsh --profile tui is the terminal surface: Shift+Tab mode cycling, Esc
+        interrupt, Ctrl+C/Ctrl+S/Ctrl+T/Ctrl+O/Up/Tab bindings, approval
+        previews with 1/2/3 answers on a shared FIFO, leading-! bash mode with
+        separate history, TUI-local /export-md /copy /usage, six-role theme,
+        context-occupancy statusline, multi-hunk diff transcript rendering.
+        Vim mode and ghost text are still later. The statusline settings
+        contract is tracked separately as ux.statusline.
+
+  engine.vendor-internals:
+    title: Buddy / KAIROS / undercover / ultraplan / computer-use
+    category: engine
+    plane: host
+    upstream:
+      summary: Anthropic-internal or vendor-bound subsystems with no public contract.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: non-goal
+      summary: Anthropic-internal or vendor-bound features; no design asset and out of parity scope.
+
+  engine.voice:
+    title: Voice
+    category: engine
+    plane: host
+    upstream:
+      summary: Voice input mode.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: non-goal
+      summary: Vendor feature with no design asset; won't port.
+
+  engine.web-fetch:
+    title: WebFetch
+    category: engine
+    plane: preset
+    upstream:
+      summary: Model-directed URL fetch with SSRF allowlist and optional prompt summarization.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-web-fetch" }
+      - { type: test, path: packages/core/tool-web-fetch/tests/tools.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Mounted via @jianxx/dsh-cc-tool-web-fetch (optional prompt summarized
+        on resolve('haiku') when configured, else raw converted text + notice).
+        No fetch provider is shipped through 0.1.1-rc.2 (WEB_PROVIDER_UNAVAILABLE
+        at execute until a deployment mounts one); no host allowlist — enable
+        only on egress-restricted deployments; upstream SSRF allowlist remains
+        a follow-up.
+
+  engine.web-search:
+    title: WebSearch
+    category: engine
+    plane: preset
+    upstream:
+      summary: Web search tool backed by a search provider.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-web" }
+    deviation: { kind: none }
+
+  engine.workflow-ralph:
+    title: Workflow / Ralph loop
+    category: engine
+    plane: preset
+    upstream:
+      summary: Multi-agent workflow orchestration and fresh-agent iterative loops.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-workflow" }
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-ralph" }
+    deviation: { kind: none }
+
+  # ── hooks ───────────────────────────────────────────────────────────────
+  # One row per upstream event (spec §6; Context7 hooks baseline 2026-09-03).
+  # The legacy "18 of 30" figure counted dsh-side extras (StopFailure,
+  # TeammateIdle, SessionResume resume-only) that have no upstream row here.
+  hooks.executors:
+    title: Hook executors (command/http/prompt/agent)
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Four executor kinds run configured hooks; prompt/agent fork small subagents.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: { status: false, notes: "command+http executors always on; prompt/agent behind enablePromptHooks/enableAgentHooks, default off (spec §6)" }
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/executors.spec.ts, anchor: "enablePromptHooks" }
+      - { type: source, path: packages/hooks/hooks-claude-code/src/dispatch.ts, anchor: "enablePromptHooks" }
+    deviation:
+      kind: downgrade
+      summary: >-
+        command + http (SSRF-allowlisted via allowedHttpHookUrls) executors are
+        always on; prompt/agent executors are gated behind enablePromptHooks /
+        enableAgentHooks (default off) and resolve their model: through
+        ccModelRoutes (omitted model → the haiku cheap lane).
+
+  hooks.message-display:
+    title: MessageDisplay hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a message is rendered to the user.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: Not bridged — no dsh emit point for message-display rendering events.
+
+  hooks.notification:
+    title: Notification hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires on notifications (permission prompts, idle, auth, elicitation subtypes).
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Bridged for the permission_prompt subtype only; idle_prompt / auth_success / elicitation* subtypes have no equivalent seam in a headless harness (cannot map).
+
+  hooks.permission-denied:
+    title: PermissionDenied hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a permission request is denied.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.permission-request:
+    title: PermissionRequest hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires on a permission ask; hooks can allow or deny.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.post-compact:
+    title: PostCompact hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires after compaction completes.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.post-tool-batch:
+    title: PostToolBatch hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires after a tool batch completes.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: Not bridged — the dsh tool pipeline has no per-batch emit point yet (hook-bridge follow-up).
+
+  hooks.post-tool-use:
+    title: PostToolUse hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires after a tool completes, with matcher support on the tool name.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.post-tool-use-failure:
+    title: PostToolUseFailure hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a tool call fails.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.pre-compact:
+    title: PreCompact hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires before compaction, letting hooks inject or transform context.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: upstream-blocked
+      summary: Needs an upstream compaction-waterfall interception seam in dsh-compaction (planned).
+      upstream_dependency: precompact-seam
+
+  hooks.pre-tool-use:
+    title: PreToolUse hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: >-
+        Fires before a tool runs; JSON decision contract with permissionDecision,
+        updatedInput, and additionalContext.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Bridged with matcher support and the permissionDecision decision contract, but additionalContext is ignored, bounding hook-based pre-tool shaping.
+
+  hooks.session-end:
+    title: SessionEnd hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a session ends.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.session-start:
+    title: SessionStart hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires at session start with source variants (startup/resume/clear/compact).
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation:
+      kind: none
+
+  hooks.setup:
+    title: Setup hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: First-run initialization hook.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Bridged as a first-run approximation, not the full upstream Setup contract.
+
+  hooks.stop:
+    title: Stop hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when the agent finishes responding (no matcher subject).
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/coverage-stop.spec.ts }
+    deviation: { kind: none }
+
+  hooks.subagent-start:
+    title: SubagentStart hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a subagent starts, including background starts.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/background-subagent-start.spec.ts }
+    deviation: { kind: none }
+
+  hooks.subagent-stop:
+    title: SubagentStop hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a subagent stops.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.task-created:
+    title: TaskCreated hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when a task/todo item is created.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  hooks.user-prompt-expansion:
+    title: UserPromptExpansion hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires when an expanded prompt template is resolved, before submission.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: Not bridged — no dsh emit point for prompt-template expansion.
+
+  hooks.user-prompt-submit:
+    title: UserPromptSubmit hook
+    category: hooks
+    plane: preset
+    upstream:
+      summary: Fires on prompt submission (no matcher subject); can inject context.
+      refs:
+        - { source: cc-docs, path: /docs/en/hooks-guide, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/hooks, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: hooks-claude-code" }
+      - { type: test, path: packages/hooks/hooks-claude-code/tests/events.spec.ts }
+    deviation: { kind: none }
+
+  # ── commands ────────────────────────────────────────────────────────────
+  # Mounted set taken from packages/preset/cc/agent.cordis.yml reality (21
+  # command-* rows) plus commands mounted by non-command rows (/plan via
+  # plan-mode, /output-style via cc-output-styles, /reload-plugins via
+  # cc-shell-glue). The legacy matrix also said "21" but enumerated a
+  # different set (it omitted /compact).
+  commands.branch:
+    title: /branch
+    category: commands
+    plane: preset
+    upstream:
+      summary: Fork the current session into a new branch and switch to it.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-branch" }
+      - { type: test, path: packages/interaction/command-branch/tests/command-branch.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Forks and reports the child id; switching to the child requires a restart.
+
+  commands.compact:
+    title: /compact
+    category: commands
+    plane: preset
+    upstream:
+      summary: Compact the conversation, optionally with free-text instructions.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-compact" }
+      - { type: test, path: packages/interaction/command-compact/tests/command-compact.spec.ts }
+    deviation: { kind: none }
+
+  commands.config:
+    title: /config
+    category: commands
+    plane: preset
+    upstream:
+      summary: Interactive settings editor.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-config" }
+      - { type: test, path: packages/interaction/command-config/tests/command-config.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Text-only render/patch with an allowlisted key set, not an interactive editor.
+
+  commands.cost:
+    title: /cost
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show token usage and cost for the session.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-cost" }
+      - { type: test, path: packages/session/command-cost/tests/command-cost.spec.ts }
+    deviation: { kind: none }
+
+  commands.diff:
+    title: /diff
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show the working-tree diff.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-diff" }
+      - { type: test, path: packages/interaction/command-diff/tests/command-diff.spec.ts }
+    deviation: { kind: none }
+
+  commands.doctor:
+    title: /doctor
+    category: commands
+    plane: preset
+    upstream:
+      summary: Installation/health diagnostics.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-doctor" }
+      - { type: test, path: packages/interaction/command-doctor/tests/command-doctor.spec.ts }
+    deviation: { kind: none }
+
+  commands.exit:
+    title: /exit
+    category: commands
+    plane: host
+    upstream:
+      summary: Exit the CLI session.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: false
+      behavioral: divergent
+      ux: missing
+    evidence:
+      - { type: source, path: packages/ui/tui/src/slash.ts, anchor: "name: 'exit'" }
+    deviation:
+      kind: non-goal
+      summary: >-
+        Host-owned by design; the dsh-native equivalents are the TUI /exit
+        command (packages/ui/tui/src/slash.ts) and the idle double Ctrl+C
+        gesture, so a preset-side port is out of parity scope.
+
+  commands.export:
+    title: /export
+    category: commands
+    plane: preset
+    upstream:
+      summary: Export the conversation transcript.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-export" }
+      - { type: test, path: packages/session/command-export/tests/command-export.spec.ts }
+    deviation: { kind: none }
+
+  commands.help:
+    title: /help
+    category: commands
+    plane: preset
+    upstream:
+      summary: List available commands.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-help" }
+      - { type: test, path: packages/interaction/command-help/tests/command-help.spec.ts }
+    deviation: { kind: none }
+
+  commands.init:
+    title: /init
+    category: commands
+    plane: preset
+    upstream:
+      summary: Bootstrap a CLAUDE.md for the project.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-init" }
+      - { type: test, path: packages/interaction/command-init/tests/command-init.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Drives a follow-up turn that writes/refreshes CLAUDE.md rather than the upstream one-shot initializer flow.
+
+  commands.mcp:
+    title: /mcp
+    category: commands
+    plane: preset
+    upstream:
+      summary: Inspect MCP server connections and tools.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-mcp" }
+      - { type: test, path: packages/interaction/command-mcp/tests/command-mcp.spec.ts }
+    deviation: { kind: none }
+
+  commands.memory:
+    title: /memory
+    category: commands
+    plane: preset
+    upstream:
+      summary: Open/edit memory files (CLAUDE.md hierarchy).
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-memory" }
+      - { type: test, path: packages/interaction/command-memory/tests/command-memory.spec.ts }
+    deviation: { kind: none }
+
+  commands.model:
+    title: /model
+    category: commands
+    plane: host
+    upstream:
+      summary: List or switch the active model.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: false
+      behavioral: divergent
+      ux: missing
+    evidence:
+      - { type: source, path: packages/ui/tui/src/slash.ts, anchor: "name: 'model'" }
+      - { type: test, path: packages/ui/tui/tests/driver-model.spec.ts }
+    deviation:
+      kind: non-goal
+      summary: >-
+        Host-owned by design; the dsh-native equivalents are the TUI-local
+        /model and /effort commands (packages/ui/tui/src/slash.ts, model-catalog)
+        plus the ccModelRoutes alias service, so a preset-side port is out of
+        parity scope.
+
+  commands.output-style:
+    title: /output-style
+    category: commands
+    plane: preset
+    upstream:
+      summary: Switch the system-prompt output style.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-output-styles" }
+      - { type: test, path: packages/compat/cc-output-styles/tests/output-styles.spec.ts }
+    deviation: { kind: none }
+
+  commands.permissions:
+    title: /permissions [mode]
+    category: commands
+    plane: preset
+    upstream:
+      summary: Switch permission modes; bare invocation opens a mode picker.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-permissions" }
+      - { type: test, path: packages/interaction/command-permissions/tests/command-permissions.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/driver-permissions.spec.ts }
+    deviation: { kind: none }
+
+  commands.plan:
+    title: /plan
+    category: commands
+    plane: preset
+    upstream:
+      summary: Enter plan mode explicitly.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: plan-mode" }
+      - { type: test, path: packages/ui/tui/tests/plan-channel.spec.ts }
+    deviation: { kind: none }
+
+  commands.plugin:
+    title: /plugin
+    category: commands
+    plane: preset
+    upstream:
+      summary: Browse and manage installed plugins/marketplaces.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-plugin" }
+      - { type: test, path: packages/interaction/command-plugin/tests/command-plugin.spec.ts }
+    deviation: { kind: none }
+
+  commands.release-notes:
+    title: /release-notes
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show release notes for the current version.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-release-notes" }
+      - { type: test, path: packages/interaction/command-release-notes/tests/command-release-notes.spec.ts }
+    deviation: { kind: none }
+
+  commands.reload-plugins:
+    title: /reload-plugins
+    category: commands
+    plane: preset
+    upstream:
+      summary: Re-scan and reload installed plugins.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-shell-glue" }
+      - { type: test, path: packages/bundle/cc-shell/tests/ccPlugins.spec.ts }
+    deviation: { kind: none }
+
+  commands.rename:
+    title: /rename <title>
+    category: commands
+    plane: preset
+    upstream:
+      summary: Rename the current session.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-rename" }
+      - { type: test, path: packages/interaction/command-rename/tests/command-rename.spec.ts }
+    deviation: { kind: none }
+
+  commands.resume:
+    title: /resume
+    category: commands
+    plane: preset
+    upstream:
+      summary: List and switch to a previous session in place.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-resume" }
+      - { type: test, path: packages/interaction/command-resume/tests/command-resume.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: Lists sessions; switching is host-owned (dsh --resume <id>).
+
+  commands.rewind:
+    title: /rewind
+    category: commands
+    plane: preset
+    upstream:
+      summary: Restore code, conversation, or both from per-prompt file checkpoints.
+      refs:
+        - { source: cc-docs, path: /docs/en/checkpointing, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: upstream-blocked
+      summary: Needs the session file-snapshot seam; no checkpoint/rewind design exists yet.
+      upstream_dependency: session-file-snapshot-seam
+
+  commands.skills:
+    title: /skills
+    category: commands
+    plane: preset
+    upstream:
+      summary: List/discover available skills.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-skills" }
+      - { type: test, path: packages/interaction/command-skills/tests/command-skills.spec.ts }
+    deviation: { kind: none }
+
+  commands.stats:
+    title: /stats
+    category: commands
+    plane: preset
+    upstream:
+      summary: Session statistics.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-stats" }
+      - { type: test, path: packages/session/command-stats/tests/command-stats.spec.ts }
+    deviation: { kind: none }
+
+  commands.status:
+    title: /status
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show session/system status.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-status" }
+      - { type: test, path: packages/interaction/command-status/tests/command-status.spec.ts }
+    deviation: { kind: none }
+
+  commands.tasks:
+    title: /tasks
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show the session todo list to the human user.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-tasks" }
+      - { type: test, path: packages/interaction/command-tasks/tests/command-tasks.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Human-facing /tasks lists background jobs only; the todo-list seam is
+        pending. The model-facing dsh-tool-todo and the TUI Ctrl+T todo panel
+        cover the rest of the workflow.
+
+  commands.version:
+    title: /version
+    category: commands
+    plane: preset
+    upstream:
+      summary: Show the CLI version.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-version" }
+      - { type: test, path: packages/interaction/command-version/tests/command-version.spec.ts }
+    deviation: { kind: none }
+
+  # ── sessions ────────────────────────────────────────────────────────────
+  sessions.checkpointing:
+    title: File checkpointing and rewind
+    category: sessions
+    plane: preset
+    upstream:
+      summary: >-
+        Per-prompt file snapshots before edits; /rewind menu restores code /
+        conversation / both / summarize; operates outside git; Bash-made changes
+        are not tracked.
+      refs:
+        - { source: cc-docs, path: /docs/en/checkpointing, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: upstream-blocked
+      summary: Feature absent; requires a snapshot seam in the session layer.
+      upstream_dependency: session-file-snapshot-seam
+
+  sessions.persistence:
+    title: Session persistence / resume / fork
+    category: sessions
+    plane: preset
+    upstream:
+      summary: >-
+        jsonl session storage with resume and fork; session titles; /rename to
+        pin a user title.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-resume" }
+      - { type: test, path: packages/compat/session-title-provider/tests/provider.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/session-list.spec.ts }
+    deviation: { kind: none }
+
+  # ── memory ──────────────────────────────────────────────────────────────
+  memory.claude-md-imports:
+    title: CLAUDE.md @path imports
+    category: memory
+    plane: preset
+    upstream:
+      summary: CLAUDE.md files pull in additional files via @path import syntax.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: The @path import machinery is absent — no parser or loader handles imports today.
+
+  memory.core:
+    title: Memory / CLAUDE.md
+    category: memory
+    plane: preset
+    upstream:
+      summary: >-
+        Auto memory directories (per-project plus global), a save channel,
+        recall with aging by file mtime (memoryAge), and team-shared memory.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: memory" }
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: memory-consolidation" }
+      - { type: test, path: packages/memory/memory/tests/save.spec.ts }
+      - { type: test, path: packages/memory/memory/tests/team.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Per-repo isolation (worktrees/subdirs share one store), shared global
+        layer, memory_save as the save channel, recall reference-doc
+        suppression, and opt-in team memory all work; CC's mtime-threaded
+        recall and memoryAge aging are deferred until the harness FsInfo seam
+        grows an mtime field.
+
+  # ── skills ──────────────────────────────────────────────────────────────
+  skills.system:
+    title: Skills system
+    category: skills
+    plane: preset
+    upstream:
+      summary: >-
+        SKILL.md skills with frontmatter and conditional paths activation,
+        bundled skills, and slash-menu invocation.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: skill-claude-code" }
+      - { type: test, path: packages/skill/skill-claude-code/tests/conditional-bundled.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/driver-skill-slash.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Loader + base tool-skill, CC paths conditional activation, bundled
+        subset (debug/simplify/batch), and TUI /name routing all work; CC's
+        verify/stuck skills are not ported (ant-only; verify companion files
+        absent).
+
+  # ── subagents ───────────────────────────────────────────────────────────
+  subagents.task-tool:
+    title: Subagents / Agent tool / teams
+    category: subagents
+    plane: preset
+    upstream:
+      summary: >-
+        Task tool dispatching subagents from .claude/agents definitions with
+        model aliases, tool filters, background/continuable runs, and
+        TaskOutput collection.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: divergent
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-task" }
+      - { type: test, path: packages/subagent/task/tests/tool.spec.ts }
+      - { type: test, path: packages/subagent/task/tests/integration.spec.ts }
+    deviation:
+      kind: divergent
+      summary: >-
+        subagent_type dispatch over per-workspace .claude/agents (persona =
+        definition systemPrompt, alias routing via ccModelRoutes, sanitized
+        toolFilter, maxDepth 3, bundled explore/dsh-cc-guide agents) plus the
+        continuable background loop (run_in_background, agentId-addressable
+        send_message/interrupt/list). Deliberate deviations: fork + background
+        is rejected naming upstream issue #2124 (fork stays foreground
+        one-shot); no TaskOutput alias and no outputFile field; omitting
+        run_in_background stays foreground unless the definition pins
+        background: true, unlike Claude Code's interactive omit=background.
+
+  # ── mcp ─────────────────────────────────────────────────────────────────
+  mcp.client:
+    title: MCP client
+    category: mcp
+    plane: preset
+    upstream:
+      summary: MCP servers over stdio/HTTP with tools, resources, prompts, and OAuth.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-shell-glue" }
+      - { type: test, path: packages/mcp/mcp-client/tests/mcp-client.spec.ts }
+      - { type: test, path: packages/mcp/mcp-client/tests/auth.spec.ts }
+    deviation: { kind: none }
+
+  # ── plugins ─────────────────────────────────────────────────────────────
+  plugins.loader:
+    title: Plugin system
+    category: plugins
+    plane: preset
+    upstream:
+      summary: >-
+        .claude-plugin/plugin.json plugins (skills/commands/agents/hooks/mcp/
+        settings) with marketplaces, install scopes, and enabledPlugins.
+      refs:
+        - { source: cc-docs, path: /docs/en/plugin-marketplaces, retrieved: '2026-09-03' }
+        - { source: cc-docs, path: /docs/en/plugins-reference, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-shell-glue" }
+      - { type: test, path: packages/compat/cc-plugin-loader/tests/mounts.spec.ts }
+      - { type: test, path: packages/compat/cc-plugin-loader/tests/discovery.spec.ts }
+    deviation: { kind: none }
+
+  # ── settings ────────────────────────────────────────────────────────────
+  settings.migrations:
+    title: Settings migrations
+    category: settings
+    plane: host
+    upstream:
+      summary: Version-gated migrations over settings.json.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: test, path: packages/settings/settings-migrations/tests/migrations.spec.ts, anchor: "runMigrations" }
+    deviation:
+      kind: downgrade
+      summary: Mechanism only (version-gated runMigrations over an atomically-written settings.json, auto-run on mount) — no real migrations yet.
+
+  settings.precedence:
+    title: Settings precedence
+    category: settings
+    plane: host
+    upstream:
+      summary: User/project/local/flag settings layers resolve in precedence order.
+      refs:
+        - { source: cc-docs, path: /docs/en/settings-reference, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: test, path: packages/settings/settings-cascade/tests/cascade.spec.ts, anchor: "dsh-cascade-" }
+      - { type: test, path: packages/settings/settings-cascade/tests/merge.spec.ts }
+    deviation: { kind: none }
+
+  # ── permissions ─────────────────────────────────────────────────────────
+  permissions.rules:
+    title: Permission rules
+    category: permissions
+    plane: host
+    upstream:
+      summary: >-
+        Rule engine with allow/deny/ask, risk classification, durable
+        permission modes, and always-allow rule persistence.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: test, path: packages/interaction/permission-rules/tests/mode.spec.ts, anchor: "bypassPermissions" }
+      - { type: test, path: packages/interaction/permission-rules/tests/classifier.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/approval-preview.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Rule engine + dangerous-command/path risk classifier, durable modes
+        (default/acceptEdits/plan/auto/bypassPermissions via /permissions),
+        plan deny with exit_plan_mode guidance, bypassPermissions pinning
+        danger-full-access with resumeSandbox restore, and the always-allow
+        derived-rule persistence all work. Remaining vs CC: ML/bash risk
+        classifier service, managed/enterprise remote settings, UI mode cycle;
+        the upstream permission/mode catalog pin is an upstream polish.
+
+  # ── models ──────────────────────────────────────────────────────────────
+  models.aliases:
+    title: Model aliases
+    category: models
+    plane: preset
+    upstream:
+      summary: >-
+        model: frontmatter aliases (sonnet/opus/haiku plus custom) resolve to
+        provider/model routes, with settings-level alias configuration.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-model-routes" }
+      - { type: test, path: packages/compat/cc-model-aliases/tests/resolveAlias.spec.ts }
+      - { type: test, path: packages/compat/cc-model-aliases/tests/service.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Frontmatter aliases (sonnet/opus/haiku/fable + dsh lanes + open set),
+        settings model-aliases overlay with null-delete and builtin fallback,
+        shared toAgentOptions per-field inheritance, and the ccModelRoutes
+        service all work. Follow-ups: the /model command, ANTHROPIC_* env vars
+        (no Anthropic semantics), and aliasing the main-session default model.
+
+  # ── workspace ───────────────────────────────────────────────────────────
+  workspace.worktree:
+    title: Worktree tools
+    category: workspace
+    plane: preset
+    upstream:
+      summary: Enter/exit isolated git worktrees mid-session.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-git-worktree" }
+      - { type: test, path: packages/workspace/tool-git-worktree/tests/worktree.spec.ts }
+    deviation: { kind: none }
+
+  # ── ux ──────────────────────────────────────────────────────────────────
+  ux.output-styles:
+    title: Output styles
+    category: ux
+    plane: preset
+    upstream:
+      summary: CLAUDE.md-style output styles rendered into the system prompt, switchable via /output-style.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-output-styles" }
+      - { type: test, path: packages/compat/cc-output-styles/tests/styles.spec.ts }
+    deviation: { kind: none }
+
+  ux.statusline:
+    title: Status line
+    category: ux
+    plane: preset
+    upstream:
+      summary: >-
+        User-configured status line command/script whose output replaces the
+        bottom status line of the TUI.
+      refs: []
+    dimensions:
+      recognized: false
+      mounted: false
+      behavioral: missing
+      ux: missing
+    evidence: []
+    deviation:
+      kind: downgrade
+      summary: >-
+        The statusLine settings contract is unimplemented (no parsing or
+        execution of a configured status-line command); the TUI renders its
+        own fixed HUD statusline (context occupancy) instead.

@@ -48,7 +48,7 @@ mode exclusively this way (`apps/web/tests/plan-control-row.e2e.ts`).
 
 1. **CC parity is the product contract.** Real Claude Code presents `plan` as
    a permission mode: Shift+Tab cycles into it, the statusline shows it.
-   `docs/cc-parity-matrix.md:49` tracks plan mode as ✅. The TUI cycle is
+   `docs/cc-parity-matrix.md#cap-engine.plan-mode` tracks plan mode as ✅. The TUI cycle is
    deliberately sourced from the same `PERMISSION_COMMAND_MODES` list as
    `/permissions` (`packages/ui/tui/src/mode-cycle.ts`: "so the cycle cannot
    drift from the `/permissions` list"). Dropping `plan` from the list would
@@ -335,7 +335,7 @@ the root context (`command-permissions/tests/command-permissions.spec.ts:42`)
 - `command-permissions` module docstring (`index.ts:1-26`): the write path
   sentence now reads: engine modes route through `setMode`; `plan` routes
   through the `/plan` command channel.
-- `docs/cc-parity-matrix.md:49`: extend the plan-mode note —
+- `docs/cc-parity-matrix.md#cap-engine.plan-mode`: extend the plan-mode note —
   `Shift+Tab / /permissions plan switch into it through the /plan command channel`.
 
 ## 11. Definition of done
