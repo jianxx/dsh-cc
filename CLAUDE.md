@@ -118,3 +118,19 @@ vite-tsconfig-paths resolve @jianxx/dsh-cc-* to source. A mid-work
 Changes to CLAUDE.md or agent contracts are prompt changes: state the
 expected observable behavior change in the commit message and verify it
 in a later real session. No observation, no claim.
+
+### Capability manifest (parity docs)
+
+`docs/claude-code-capabilities.yaml` is the authored source of truth for Claude
+Code parity; `docs/cc-parity-matrix.md` and the README parity block are
+generated from it (regenerate with `pnpm docs:parity`). Rule: any change that
+alters the Claude-Code-compatible surface — preset composition
+(`packages/preset/cc/**`), hook bridging (`packages/hooks/**`), command mounting
+(`packages/interaction/command-*`, `packages/session/command-*`),
+settings/permissions surface (`packages/settings/**`,
+`packages/interaction/permission-rules`), the plugin loader
+(`packages/compat/cc-plugin-loader`), or user-visible behavior these gate —
+MUST update the manifest in the same commit/PR and commit the regenerated docs
+together. `pnpm check:capabilities` and `pnpm check:parity` run in pre-commit
+and presubmit and will fail the build otherwise. Hand-editing the generated
+matrix or the README block is a CI failure by design.

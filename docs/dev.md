@@ -83,6 +83,14 @@ presubmit steps. Docs citing a capability must link the matrix by anchor —
 output is not line-stable. See
 `docs/plans/2026-09-03-claude-code-capability-manifest.md` for the full design.
 
+Governance: a PR that touches capability-affecting code (preset composition,
+hook bridging, command mounting, settings/permissions surface, plugin loader)
+must update `docs/claude-code-capabilities.yaml` in the same PR — see the
+"Capability manifest (parity docs)" section in CLAUDE.md. Reviewers: the
+manifest entry is where you check that a claimed status change carries evidence
+(I4 anchors) and an explicit deviation; stale generated docs are CI's job,
+stale claims are yours.
+
 ## Worktree local setup
 
 - After `bash scripts/sync-local-profile.sh web`, also run
