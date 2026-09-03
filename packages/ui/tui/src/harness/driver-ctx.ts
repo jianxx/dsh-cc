@@ -334,6 +334,8 @@ export interface DriverQueueCtx {
   state(): TuiState
   /** The rebindable agent holder (switchSession replaces it in place). */
   current: { agent: Agent }
+  /** Host context for the optional ccPlugins service lookup. */
+  ctx: Context
   /** Dispatch a local slash command (run-local section). */
   runLocal(name: string, rawInput: string): Promise<void>
   /** Dispatch a harness slash command (run-local section, late-bound). */

@@ -6,7 +6,7 @@
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { parseSlash } from '../slash.ts'
+import { LOCAL_SLASH, parseSlash } from '../slash.ts'
 import { saveHistory } from '../history.ts'
 import {
   clearQueue,
@@ -21,6 +21,68 @@ import {
 import type { DriverQueueCtx } from './driver-ctx.ts'
 
 /**
+ * Duck-typed surface for the optional cc-shell plugin-commands service (see
+ * CcPluginsLike in driver-catalog.ts / CcPluginsRunLike in driver-run-local.ts).
+ * A missing service degrades to sending the raw queued line — the same
+ * unknown-slash fall-through philosophy as the submit path.
+ */
+type CcPluginsRunLike = {
+  runPluginCommand(
+    name: string,
+    input: { agent: unknown; rawInput: string },
+  ): Promise<{ ok: true } | { ok: false; reason: string }>
+}
+
+const asUserMessage = (text: string) => createUserMessage({
+  content: [{ type: 'text', text }],
+  source: { kind: 'user' },
+})
+
+/**
+ * Dispatch one queued outbox entry. A queued plugin command (`/codex:review
+ * args`) is re-classified here instead of being forwarded verbatim: flush and
+ * steer otherwise leak the raw slash line to the model as prompt text. A local
+ * name that is NOT a TUI-owned LOCAL_SLASH entry is a plugin command — it
+ * routes through the ccPlugins service. Anything else (plain prose, ordinary
+ * local names) sends as the original followup/steer, unchanged.
+ */
+const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'steer'): void => {
+  const send = (raw: string): void => {
+    const message = asUserMessage(raw)
+    if (mode === 'followup') rt.current.agent.followup(message)
+    else rt.current.agent.steer(message)
+  }
+  const parsed = parseSlash(text)
+  if (parsed.kind !== 'local') {
+    send(text)
+    return
+  }
+  if ((LOCAL_SLASH as readonly string[]).includes(parsed.name)) {
+    // Ordinary TUI-local names never enter the outbox while busy, but if one
+    // ever does, keep the historical behavior: forward the text verbatim.
+    send(text)
+    return
+  }
+  // Plugin command. Degrade silently to the raw line when the service is
+  // absent or reports failure — never throw out of a synchronous flush.
+  const plugins = rt.ctx.get('ccPlugins') as CcPluginsRunLike | undefined
+  if (plugins === undefined || typeof plugins.runPluginCommand !== 'function') {
+    send(text)
+    return
+  }
+  const { name, rawInput } = parsed
+  void plugins.runPluginCommand(name, { agent: rt.current.agent, rawInput })
+    .then((result) => {
+      if (result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false) {
+        send(text)
+      }
+    })
+    .catch(() => {
+      send(text)
+    })
+}
+
+/**
  * Outbox flush, anchored to the durable `turn/end` event: snapshot the queue,
  * dispatch every entry FIFO through `followup`, and clear the queue in the same
  * synchronous stroke as the dispatch — so the queue never holds an entry that
@@ -33,10 +95,7 @@ const flushQueue = (rt: DriverQueueCtx): void => {
   const pending = [...s.queued]
   if (pending.length === 0) return
   for (const text of pending) {
-    rt.current.agent.followup(createUserMessage({
-      content: [{ type: 'text', text }],
-      source: { kind: 'user' },
-    }))
+    dispatchQueued(rt, text, 'followup')
   }
   // Unconditional anchor: the only call site is the turn/end handler, which
   // has just cleared the previous turn's anchor, so this re-anchors for the
@@ -55,10 +114,10 @@ const steerQueued = (rt: DriverQueueCtx): void => {
   const pending = [...s.queued]
   if (pending.length === 0) return
   for (const text of pending) {
-    rt.current.agent.steer(createUserMessage({
-      content: [{ type: 'text', text }],
-      source: { kind: 'user' },
-    }))
+    // Semantic trade-off: a queued plugin command reaches the running turn as
+    // a followup (queued work) rather than a steer — running it through the
+    // plugin seam is more important than steering semantics.
+    dispatchQueued(rt, text, 'steer')
   }
   rt.emit(clearQueue(s))
 }
