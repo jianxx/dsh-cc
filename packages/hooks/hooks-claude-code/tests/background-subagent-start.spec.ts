@@ -73,8 +73,10 @@ async function setup(script: ConstructorParameters<typeof MockAdapter>[0]) {
   return { ctx, parent, marker, starts, hooksFiber }
 }
 
-/** Poll a predicate to a deadline (the bridge's hook runs are detached). */
-async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
+/** Poll a predicate to a deadline (the bridge's hook runs are detached).
+ *  20s: cold resume + detached hook subprocess must fit a fully loaded CI
+ *  runner (the whole-suite presubmit), not just a warm local machine. */
+async function waitFor(predicate: () => boolean, timeout = 20_000): Promise<void> {
   const deadline = Date.now() + timeout
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('waitFor: condition not met before deadline')
@@ -121,5 +123,5 @@ describe('hooks-claude-code — SubagentStart on background starts (§4.14)', ()
     expect(lineCount(marker)).toBe(2)
 
     await ctx.fiber.dispose()
-  }, 30_000)
+  }, 60_000)
 })

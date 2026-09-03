@@ -45,9 +45,19 @@ const harnessAliases: Record<string, string | undefined> = {
   '@jianxx/dsh-cc-subagent-task': resolve('packages/subagent/task/src/index.ts'),
 }
 
-const aliases = Object.fromEntries(
-  Object.entries(harnessAliases).filter((entry): entry is [string, string] => entry[1] !== undefined),
-)
+/**
+ * Exact-match aliases ONLY. Vite string-key aliases prefix-match
+ * (`'@deepseek-ai/dsh-llm'` would also capture `'@deepseek-ai/dsh-llm/brand'`
+ * and rewrite it to `<replacement>/brand` — a file path plus a suffix, which
+ * fails with ENOTDIR). Anchor every find with ^…$ so subpath imports fall
+ * through to normal node_modules/exports resolution.
+ */
+const aliases = Object.entries(harnessAliases)
+  .filter((entry): entry is [string, string] => entry[1] !== undefined)
+  .map(([find, replacement]) => ({
+    find: new RegExp(`^${find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`),
+    replacement,
+  }))
 
 export default defineConfig({
   resolve: { alias: aliases },
