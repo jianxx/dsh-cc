@@ -750,6 +750,50 @@ describe('subagent helpers', () => {
     expect(state.subagents.find(r => r.runId === 'r20')).toBeDefined()
   })
 
+  it('upserts a resumable row by sessionId so a new runId replaces parked', () => {
+    let state = upsertSubagent(createInitialState(), {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running',
+    })
+    state = upsertSubagent(state, {
+      runId: 'r1', provider: 'openai', sessionId: 'tui-abcdef01', status: 'parked', resumable: true,
+    })
+    // Cold-resume: same sessionId, new runId — replaces the parked row in place.
+    state = upsertSubagent(state, {
+      runId: 'r2', provider: 'openai', sessionId: 'tui-abcdef01', status: 'running', resumable: true,
+    })
+    expect(state.subagents).toHaveLength(1)
+    expect(state.subagents[0]).toMatchObject({ runId: 'r2', sessionId: 'tui-abcdef01', status: 'running' })
+  })
+
+  it('countRunningSubagents ignores parked', () => {
+    let state = createInitialState()
+    state = upsertSubagent(state, { runId: 'r1', provider: 'p', sessionId: 's1', status: 'running' })
+    state = upsertSubagent(state, { runId: 'r2', provider: 'p', sessionId: 's2', status: 'parked', resumable: true })
+    state = upsertSubagent(state, { runId: 'r3', provider: 'p', sessionId: 's3', status: 'done', stopReason: 'x' })
+    expect(countRunningSubagents(state)).toBe(1)
+  })
+
+  it('caps by dropping oldest parked before running (like done)', () => {
+    let state = createInitialState()
+    // 15 parked (p0..p14) then 10 running (r0..r9) = 25; cap 20 → drop 5 oldest parked.
+    for (let i = 0; i < 15; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `p${i}`, provider: 'p', sessionId: `s${i}`, status: 'parked', resumable: true,
+      })
+    }
+    for (let i = 0; i < 10; i += 1) {
+      state = upsertSubagent(state, {
+        runId: `r${i}`, provider: 'p', sessionId: `s${i}`, status: 'running',
+      })
+    }
+    expect(state.subagents).toHaveLength(20)
+    expect(state.subagents.find(r => r.runId === 'p0')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'p4')).toBeUndefined()
+    expect(state.subagents.find(r => r.runId === 'p5')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r0')).toBeDefined()
+    expect(state.subagents.find(r => r.runId === 'r9')).toBeDefined()
+  })
+
   it('countRunningSubagents counts only running runs', () => {
     let state = createInitialState()
     state = upsertSubagent(state, { runId: 'r1', provider: 'p', sessionId: 's1', status: 'running' })
@@ -762,11 +806,15 @@ describe('subagent helpers', () => {
     expect(countRunningSubagents(createInitialState())).toBe(0)
   })
 
-  it('SubagentRunView status is narrowed to running | done', () => {
+  it('SubagentRunView status is narrowed to running | parked | done', () => {
     const view: SubagentRunView = {
       runId: 'r1', provider: 'p', sessionId: 's1', status: 'done', stopReason: 'end_turn',
     }
-    expect(view.status === 'running' || view.status === 'done').toBe(true)
+    expect(view.status === 'running' || view.status === 'parked' || view.status === 'done').toBe(true)
+    const parked: SubagentRunView = {
+      runId: 'r2', provider: 'p', sessionId: 's2', status: 'parked', resumable: true,
+    }
+    expect(parked.status).toBe('parked')
   })
 })
 

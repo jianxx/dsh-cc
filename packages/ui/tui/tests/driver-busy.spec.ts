@@ -65,6 +65,9 @@ function makeCtx(agent: FakeAgent): { ctx: Record<string, unknown>; emitSession:
   return { ctx, emitSession }
 }
 
+/** Let the microtask-deferred outbox flush (and its dispatch promises) settle. */
+const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
 describe('createDriver busy input semantics', () => {
   let prevHome: string | undefined
   let tempHome: string
@@ -150,16 +153,39 @@ describe('createDriver busy input semantics', () => {
     expect(driver.state.queued).toEqual(['one', 'two'])
 
     emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await settle()
     expect(sentTexts(agent.followup.mock.calls)).toEqual(['one', 'two'])
     expect(agent.steer).not.toHaveBeenCalled()
-    // Dispatched and cleared in the same synchronous stroke.
+    // Dispatched and cleared in one atomic stroke (deferred one microtask out
+    // of the session append publication window).
     expect(driver.state.queued).toEqual([])
     // Optimistic busy: the flushed followups start a new turn immediately.
     expect(driver.state.busy).toBe(true)
   })
 
-  it('an errored turn/end still flushes the outbox', async () => {
+  it('turn/end flush waits for agent convergence when whenIdle is available', async () => {
     const agent = makeFakeAgent('running')
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    agent.whenIdle = () => gate
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('queued line')
+    emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await settle()
+    // The driver-teardown gap must pass first: nothing dispatches, nothing clears.
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.queued).toEqual(['queued line'])
+
+    release()
+    await settle()
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['queued line'])
+    expect(driver.state.queued).toEqual([])
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('an errored turn/end still flushes the outbox', async () => {    const agent = makeFakeAgent('running')
     const { ctx, emitSession } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
 
@@ -168,6 +194,7 @@ describe('createDriver busy input semantics', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'boom' } } },
     })
+    await settle()
     expect(sentTexts(agent.followup.mock.calls)).toEqual(['retry me'])
     expect(driver.state.queued).toEqual([])
     expect(driver.state.busy).toBe(true)
@@ -197,6 +224,7 @@ describe('createDriver busy input semantics', () => {
     expect(driver.state.queued).toEqual([])
 
     emitSession({ type: 'turn/end', data: { reason: { kind: 'aborted' } } })
+    await settle()
     expect(agent.followup).not.toHaveBeenCalled()
     expect(driver.state.queued).toEqual([])
   })
@@ -279,6 +307,7 @@ describe('createDriver busy input semantics', () => {
     expect(agent.followup).not.toHaveBeenCalled()
 
     emitSession({ type: 'compaction/end', data: { compactionId: 'c1', turn: null } })
+    await settle()
     expect(sentTexts(agent.followup.mock.calls)).toEqual(['queued during compact'])
     expect(driver.state.queued).toEqual([])
   })

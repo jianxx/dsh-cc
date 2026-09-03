@@ -45,6 +45,17 @@ message — the loop's parallel pool (10) runs them concurrently. Never
 drip-feed independent forks across turns; a fork whose prompt needs
 another fork's result is the ONLY legal reason to serialize.
 
+### Foreground vs background
+- If this turn's answer to the human depends on the child, omit
+  `run_in_background` (foreground). If the human can keep talking, or
+  independent units need not return text this turn, pass
+  `run_in_background: true`. Synthesize on the wake; do not poll.
+- A definition with `background: true` backgrounds on omit. If you need
+  that child's result this turn, pass `run_in_background: false`.
+- Keep the batching hard rule above (N independent Tasks in ONE
+  assistant message). Do not background mutating `fast-worker` /
+  same-tree edits: `isolation: worktree` is not wired.
+
 ### Verification is planned too
 Before verifying, specify: what behavior, how driven (script/browser/
 CLI), what observable result counts as pass. fast-worker executes;

@@ -33,7 +33,7 @@ function makeFakeAgent(): FakeAgent {
   }
 }
 
-function makeCtx(agent: FakeAgent) {
+function makeCtx(agent: FakeAgent, children: Record<string, unknown> = {}) {
   const sessionHandlers = new Set<(session: unknown, event: unknown) => void>()
   const startHandlers = new Set<(info: unknown) => void>()
   const endHandlers = new Set<(info: unknown) => void>()
@@ -69,6 +69,8 @@ function makeCtx(agent: FakeAgent) {
     agents: {
       create: async () => ({ agent, dispose: async () => {} }),
       resume: async () => ({ agent, dispose: async () => {} }),
+      // Child-agent probe: key is the subagent payload `id`. Undefined → fail closed.
+      get: (id: string) => children[id],
     },
   }
   const emitSession = (event: unknown): void => {
@@ -184,6 +186,103 @@ describe('createDriver subagent tracking', () => {
     if (done?.kind === 'status') {
       expect(done.text).toContain('✓')
       expect(done.text).toContain('end_turn')
+    }
+  })
+
+  it('folds continuable subagent/end into parked, not done', async () => {
+    const agent = makeFakeAgent()
+    const continuableChild = {
+      session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
+    }
+    const { ctx, emitStart, emitEnd } = makeCtx(agent, { 'tui-abcdef01-dead-beef': continuableChild })
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    emitEnd({
+      runId: 'r1',
+      provider: 'openai',
+      id: 'tui-abcdef01-dead-beef',
+      local: true,
+      stopReason: 'end_turn',
+    })
+    expect(driver.state.subagents).toHaveLength(1)
+    expect(driver.state.subagents[0]).toMatchObject({
+      runId: 'r1',
+      sessionId: 'tui-abcdef01-dead-beef',
+      status: 'parked',
+      resumable: true,
+    })
+    // stopReason is omitted on parked — the `[completed]` render reads as a crash.
+    expect('stopReason' in driver.state.subagents[0]!).toBe(false)
+  })
+
+  it('a later start for the same sessionId replaces the parked row', async () => {
+    const agent = makeFakeAgent()
+    const continuableChild = {
+      session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
+    }
+    const { ctx, emitStart, emitEnd } = makeCtx(agent, { 'tui-abcdef01-dead-beef': continuableChild })
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    emitEnd({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true, stopReason: 'end_turn' })
+    expect(driver.state.subagents[0]!.status).toBe('parked')
+
+    // Cold-resume: new runId, same sessionId.
+    emitStart({ runId: 'r2', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    expect(driver.state.subagents).toHaveLength(1)
+    expect(driver.state.subagents[0]).toMatchObject({
+      runId: 'r2',
+      sessionId: 'tui-abcdef01-dead-beef',
+      status: 'running',
+    })
+  })
+
+  it('one-shot subagent/end stays done with its stop reason', async () => {
+    const agent = makeFakeAgent()
+    const { ctx, emitStart, emitEnd } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    emitEnd({
+      runId: 'r1',
+      provider: 'openai',
+      id: 'tui-abcdef01-dead-beef',
+      local: true,
+      stopReason: 'end_turn',
+    })
+    expect(driver.state.subagents[0]!.status).toBe('done')
+    expect(driver.state.subagents[0]!.stopReason).toBe('end_turn')
+  })
+
+  it('/agents renders ○ parked for a continuable epoch and ✓ done for one-shot', async () => {
+    const agent = makeFakeAgent()
+    const continuableChild = {
+      session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
+    }
+    const { ctx, emitStart, emitEnd } = makeCtx(agent, { 'tui-abcdef01-dead-beef': continuableChild })
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    emitEnd({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true, stopReason: 'end_turn' })
+    await driver.submit('/agents')
+    const parkedRow = driver.state.rows.at(-1)
+    expect(parkedRow?.kind).toBe('status')
+    if (parkedRow?.kind === 'status') {
+      expect(parkedRow.text).toContain('○')
+      expect(parkedRow.text).toContain('[parked]')
+      expect(parkedRow.text).not.toContain('end_turn')
+    }
+
+    // One-shot run (no continuable child) ends done.
+    emitStart({ runId: 'r2', provider: 'anthropic', id: 'tui-99999999', local: true })
+    emitEnd({ runId: 'r2', provider: 'anthropic', id: 'tui-99999999', local: true, stopReason: 'end_turn' })
+    await driver.submit('/agents')
+    const doneRow = driver.state.rows.at(-1)
+    expect(doneRow?.kind).toBe('status')
+    if (doneRow?.kind === 'status') {
+      expect(doneRow.text).toContain('✓')
+      expect(doneRow.text).toContain('end_turn')
     }
   })
 

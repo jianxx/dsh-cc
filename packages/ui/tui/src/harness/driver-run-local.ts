@@ -27,7 +27,7 @@ import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { shortenSession } from '../statusline.ts'
 import { shouldEchoCommandResult } from '../compact-fold.ts'
-import { moveWorktreeExitFocus, openUsagePanel, setWorktreeExit, upsertRow } from '../store.ts'
+import { enqueue, moveWorktreeExitFocus, openUsagePanel, setBusy, setTurnActive, setWorktreeExit, upsertRow } from '../store.ts'
 import {
   createWorktreeExitHooks,
   ownsBranch,
@@ -38,6 +38,19 @@ import type {
   TokenUsageStateLike,
 } from '../state/driver-types.ts'
 import type { DriverRunLocalCtx } from './driver-ctx.ts'
+
+/**
+ * Duck-typed surface for the optional cc-shell plugin-commands service (see
+ * CcPluginsService in cc-shell). Only the run seam is named here; the catalog
+ * half lives in driver-catalog.ts. A missing service or a non-plugin name
+ * falls off the end of runLocal silently — same as an unknown local name.
+ */
+type CcPluginsRunLike = {
+  runPluginCommand(
+    name: string,
+    input: { agent: unknown; rawInput: string },
+  ): Promise<{ ok: true } | { ok: false; reason: string }>
+}
 
 /** Host slash-command registry surface runHarness dispatches through. */
 type CommandsLike = {
@@ -260,9 +273,12 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       }
       const lines = ['Subagent activity:']
       for (const run of runs) {
-        const marker = run.status === 'running' ? '●' : '✓'
+        // `●` running, `○` parked (continuable epoch — session lives), `✓` done.
+        const marker = run.status === 'running' ? '●' : run.status === 'parked' ? '○' : '✓'
         const short = shortenSession(run.sessionId)
-        const reason = run.stopReason === undefined ? '' : ` [${run.stopReason}]`
+        const reason = run.status === 'parked'
+          ? ' [parked]'
+          : run.stopReason === undefined ? '' : ` [${run.stopReason}]`
         lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
       }
       emit(upsertRow(rt.state(), { kind: 'status', text: lines.join('\n') }))
@@ -276,6 +292,37 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       copyLatestReply()
       return
     }
+    // Plugin commands (colon form `plugin:command`) dispatch through the
+    // optional ccPlugins service. The agent is read from the LIVE holder at
+    // fire time — never a cached boot reference — so a post-switch session
+    // receives the command, not the one booted with the driver.
+    const plugins = rt.ctx.get('ccPlugins') as CcPluginsRunLike | undefined
+    if (plugins === undefined || typeof plugins.runPluginCommand !== 'function') return
+    const s = rt.state()
+    if (s.busy) {
+      // Mirror Enter-on-prompt while busy: park the full line in the outbox
+      // instead of dispatching. Nothing is injected into the running turn.
+      emit(enqueue(s, `/${name}${rawInput.length === 0 ? '' : ` ${rawInput}`}`))
+      return
+    }
+    let result: { ok: true } | { ok: false; reason: string }
+    try {
+      result = await plugins.runPluginCommand(name, { agent: rt.current.agent, rawInput })
+    } catch (error) {
+      // A throwing plugin must not reject into `void driver.submit()` — show
+      // a notice and stop, mirroring the {ok:false} path below.
+      const reason = error instanceof Error ? error.message : String(error)
+      showNotice(`Plugin command /${name} failed: ${reason}`)
+      return
+    }
+    if (result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false) {
+      const reason = (result as { reason?: string }).reason ?? 'unknown error'
+      showNotice(`Plugin command /${name} failed: ${reason}`)
+      return
+    }
+    // Turn tail mirroring the prompt path (driver-queue.submit): anchor the
+    // working line at dispatch, token delta from the pre-dispatch HUD total.
+    emit(setTurnActive(setBusy(rt.state(), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
   }
 
   /**

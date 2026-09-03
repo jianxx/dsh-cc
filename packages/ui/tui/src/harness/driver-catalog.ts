@@ -4,9 +4,10 @@
  * {@link DriverCatalogCtx} instead of closing over createDriver's locals, so
  * the harness factory stays out of this leaf.
  *
- * The catalog merges three sources with command-name precedence:
- * TUI-local commands, the harness command registry (`ctx.commands`), and
- * user-invocable skills (`ctx.skills.snapshot()`). Skill names are duck-typed
+ * The catalog merges four sources with command-name precedence:
+ * TUI-local commands, the harness command registry (`ctx.commands`), the
+ * optional cc-shell plugin-command service (`ctx.ccPlugins`, colon-form
+ * `plugin:command` names), and user-invocable skills (`ctx.skills.snapshot()`). Skill names are duck-typed
  * against upstream `SkillRegistry.snapshot` — the TUI never imports
  * `@deepseek-ai/dsh-skill`; skills are optional and a missing service only
  * leaves the skill half empty. Publishing a new catalog array emits the
@@ -18,7 +19,7 @@
 
 import { upsertSubagent, type SubagentRunView } from '../store.ts'
 import type { SubagentRunEndInfoLike, SubagentRunInfoLike } from '../state/driver-types.ts'
-import { LOCAL_COMMANDS } from '../slash.ts'
+import { LOCAL_COMMANDS, setPluginSlashNames } from '../slash.ts'
 import type { DriverCatalogCtx } from './driver-ctx.ts'
 
 /** Duck-typed surface for the mounted commands service (matches CommandsLike). */
@@ -43,6 +44,21 @@ export interface SkillsLike {
   }>
 }
 
+/**
+ * Duck-typed surface for the optional cc-shell plugin-commands service (see
+ * CcPluginsService in cc-shell). Plugin commands are exposed in the colon
+ * display form `plugin:command` (e.g. `codex:review`); a missing service
+ * simply contributes no plugin entries — the TUI never imports cc-shell.
+ */
+export interface CcPluginsLike {
+  listPluginCommands(): readonly {
+    name: string
+    plugin: string
+    description: string
+    argumentHint?: string
+  }[]
+}
+
 /** One merged catalog entry (commands and skills share the shape). */
 export interface CatalogItem {
   name: string
@@ -64,6 +80,11 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
 } {
   const commandsService = rt.ctx.get('commands') as CommandsLike | undefined
   const skillsService = rt.ctx.get('skills') as SkillsLike | undefined
+  // NOTE: unlike `commands`/`skills` (provided by the host composition before
+  // the TUI driver mounts), `ccPlugins` is published by the cc-shell bundle's
+  // own fiber (`root.provide('ccPlugins', this)` in CcPluginsService), and
+  // bundle assembly order is not guaranteed relative to the driver — so the
+  // service MUST be resolved live at every refresh, never captured here.
   let commandCatalog: readonly CatalogItem[] = []
   // Last-good user-invocable skill entries (already filtered/prefixed at
   // snapshot time). Retained across incomplete or thrown snapshots.
@@ -74,6 +95,9 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
 
   const buildMerged = (): CatalogItem[] => {
     const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
+    // Live lookup each refresh: the cc-shell bundle may publish the service
+    // after the driver mounted (see the note at the top of this function).
+    const pluginService = rt.ctx.get('ccPlugins') as CcPluginsLike | undefined
     const merged: CatalogItem[] = LOCAL_COMMANDS.map(c => ({
       name: c.name,
       description: c.description,
@@ -93,6 +117,33 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
       } catch {
         // A failing list() degrades to local-only; don't poison the catalog.
       }
+    }
+    // Plugin commands (colon form `plugin:command`) merge after the harness
+    // registry with the same precedence discipline: a name already claimed by
+    // a local or harness command resolves to the earlier source. The names
+    // are also published to slash.ts so parseSlash can classify a typed
+    // `plugin:command` line as local (and unknown colon names keep the
+    // harness fall-through).
+    if (pluginService !== undefined) {
+      try {
+        const used = new Set(merged.map(c => c.name))
+        const pluginNames: string[] = []
+        for (const cmd of pluginService.listPluginCommands()) {
+          pluginNames.push(cmd.name)
+          if (used.has(cmd.name)) continue
+          used.add(cmd.name)
+          merged.push({
+            name: cmd.name,
+            description: cmd.description,
+            ...cmd.argumentHint === undefined ? {} : { argumentHint: cmd.argumentHint },
+          })
+        }
+        setPluginSlashNames(pluginNames)
+      } catch {
+        // A failing listPluginCommands() keeps the last-good table.
+      }
+    } else {
+      setPluginSlashNames([])
     }
     // Skills come last; a name already claimed by a local or harness command
     // resolves to the command (web adjudication precedence).
@@ -175,6 +226,15 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
       refreshCatalog()
     })
   }
+  // `ccPlugins/change` — unconditional (the cordis event bus is shared, so
+  // subscribing does not require the service to exist yet): this is what lets
+  // the catalog pick up a ccPlugins service that the cc-shell bundle publishes
+  // AFTER the driver mounted. Same cast pattern; the event is declared in
+  // cc-shell.
+  const pluginChangeEvent = 'ccPlugins/change' as Parameters<typeof rt.ctx.on>[0]
+  rt.ctx.on(pluginChangeEvent, () => {
+    refreshCatalog()
+  })
 
   // Subagent lifecycle: `subagent/start`|`subagent/end` are global,
   // process-scoped observe-only snapshots paired by `runId` (declared via
@@ -187,21 +247,49 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
   // accordingly and does not overclaim parentage.
   const subagentStart = 'subagent/start' as Parameters<typeof rt.ctx.on>[0]
   const subagentEnd = 'subagent/end' as Parameters<typeof rt.ctx.on>[0]
+  /**
+   * Probe whether a child session is continuable: duck-typed peek at
+   * `rt.ctx.agents.get(id)` — the child session's events carry a
+   * `subagent/descriptor` event with `data.mode === 'continuable'`. Missing
+   * agent, missing `get`, or no such event → not resumable (fail closed).
+   * Kept local and tiny; no new module.
+   */
+  const probeResumable = (id: string): boolean => {
+    const child = (rt.ctx.agents as unknown as { get?: (id: string) => { session?: { events?: readonly unknown[] } } } | undefined)
+      ?.get?.(String(id))
+    if (child === undefined) return false
+    return child.session?.events?.some(event =>
+      (event as { type?: string; data?: { mode?: string } }).type === 'subagent/descriptor'
+      && (event as { data?: { mode?: string } }).data?.mode === 'continuable'
+    ) === true
+  }
   rt.ctx.on(subagentStart, (info: SubagentRunInfoLike) => {
+    const sessionId = String(info.id)
+    const resumable = probeResumable(sessionId)
     rt.emit(upsertSubagent(rt.state(), {
       runId: String(info.runId),
       provider: String(info.provider),
-      sessionId: String(info.id),
+      sessionId,
       status: 'running',
+      ...(resumable ? { resumable: true } : {}),
     }))
   })
   rt.ctx.on(subagentEnd, (info: SubagentRunEndInfoLike) => {
+    const runId = String(info.runId)
+    const sessionId = String(info.id)
+    // A parked run keeps `resumable: true` so a later cold-resume start for
+    // the same sessionId still matches by sessionId. `stopReason` is only
+    // meaningful on done — the `[completed]` render would read as a crash.
+    const existing = rt.state().subagents.find(run => run.runId === runId || run.sessionId === sessionId)
+    const resumable = existing?.resumable === true || probeResumable(sessionId)
+    const parked = resumable
     const view: SubagentRunView = {
-      runId: String(info.runId),
+      runId,
       provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'done',
-      ...(info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
+      sessionId,
+      status: parked ? 'parked' : 'done',
+      ...(parked ? { resumable: true } : {}),
+      ...(parked || info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
     }
     rt.emit(upsertSubagent(rt.state(), view))
   })

@@ -35,17 +35,20 @@ export {
 export const name = 'cc-subagent-task'
 
 /** Section name for the background-subagent contract. */
-const BACKGROUND_SECTION_NAME = 'cc:subagent-background'
+export const BACKGROUND_SECTION_NAME = 'cc:subagent-background'
 
 /** Order slot beside the catalog section (tool guidance owns 100–199). */
 const BACKGROUND_SECTION_ORDER = 112
 
-const BACKGROUND_SECTION_TEXT = [
+export const BACKGROUND_SECTION_TEXT = [
   '## Background subagents',
   '',
-  '- The Task tool runs foreground by default. Pass `run_in_background: true` for long-running',
-  '  or parallelizable work: the call returns promptly with a durable `agentId` once the child',
-  '  accepts its first turn.',
+  '- Heuristic: if this turn\'s answer to the human depends on the child, omit `run_in_background`',
+  '  (foreground — the call waits for the final text). If the human can keep talking while the',
+  '  child works, pass `run_in_background: true`: the call returns promptly with a durable',
+  '  `agentId` once the child accepts its first turn. Synthesize on the wake; do not poll.',
+  '- A definition with `background: true` backgrounds on omit. Pass `run_in_background: false`',
+  '  when this turn needs that child\'s result — explicit true/false always win over the pin.',
   '- A background child\'s report — or its finish notice when it ends without reporting — arrives',
   '  as a waking message; do not poll.',
   '- Control the child by that id: `list_agents` for status, `send_message` to continue the same',

@@ -55,9 +55,13 @@ Given a `Task(subagent_type, description, prompt)` call from a CC preset session
 4. **Any other type** (not found in the workspace) → an **error result** listing the
    available types in this workspace (or noting the workspace defines none).
 
-The run is **foreground one-shot**: the tool awaits the child to completion and returns its
-final text. A non-`completed` stop reason is surfaced as an error, and only `text` blocks of
-the child output are concatenated.
+The dispatch is **foreground unless the child is explicitly or definition-pinned background**:
+with `run_in_background` omitted, the run is foreground — the tool awaits the child to
+completion, surfaces a non-`completed` stop reason as an error, and concatenates only the
+`text` blocks of the child output — unless the definition pins `background: true`, in which
+case the run backgrounds on omit. Explicit `run_in_background: false` wins over the pin and
+forces foreground. An explicit `run_in_background: true` (or a pin on omit) starts the child
+as a durable continuable background agent and returns promptly with its `agentId`.
 
 ### Tool-restriction sanitization and reserved names
 
@@ -150,11 +154,11 @@ supplies the alias resolver. The cc preset **disables** the harness `tool-subage
 
 ## Known limits
 
-- **Foreground only.** The harness `tool-subagent-fork` row this tool replaces was
-  `backgroundMode: continuable` (durable id + `report`/`send_message` on a host-plane
-  singleton). v1 makes the CC Task a foreground one-shot; the durable background/continuable
-  workflow is a **follow-up** — this is a visible regression from the previous preset
-  behaviour and is tracked honestly in the parity matrix.
+- **Cold resume drops extra `agentOptions`.** Background (continuable) dispatch exists —
+  `run_in_background: true` or a `background: true` definition pin — but cold resume restores
+  `persona`/`toolFilter`/model route only and drops every other `agentOptions` field
+  (alias-stamped `reasoningEffort`, `maxTokens`). See the parity matrix for the full
+  background contract (drain on parent exit, no `outputFile`, fork + background rejected).
 - **Process-level discovery cache.** The registry caches per workspace root for the process
   lifetime and does not watch the filesystem. Editing a `.claude/agents` definition takes
   effect on the next session for a workspace whose cache entry has not yet been created, and
@@ -188,7 +192,11 @@ supplies the alias resolver. The cc preset **disables** the harness `tool-subage
 
 ## Non-goals
 
-- `run_in_background` / continuable Task (follow-up).
+- Treating omitted `run_in_background` as background as a session policy (the Claude Code
+  interactive omit=background rule); dsh-cc stays foreground on omit unless the definition
+  pins `background: true`.
+- In-flight promotion of a running foreground Task to background (TUI Ctrl+B) — a follow-up,
+  not a limitation of the package's existence.
 - Seam plugin-agent dispatch.
 - CC frontmatter `permissionMode` / `isolation` / `memory` / `effort` projection onto the
   child (the loader parses them, v1 does not consume them).

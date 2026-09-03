@@ -17,6 +17,7 @@ import ToolRuntime from '@jianxx/dsh-cc-tools'
 import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { AgentRegistry } from '../src/registry.ts'
 import { registerTaskTool, TASK_TOOL } from '../src/tool.ts'
+import { BACKGROUND_SECTION_TEXT } from '../src/index.ts'
 
 /** A faithfully-capability-checking fake subagents seam (mirrors assertCapabilities). */
 interface FakeProvider {
@@ -632,7 +633,7 @@ describe('Task tool', () => {
       expect(runs).toHaveLength(0)
     })
 
-    it('keeps the foreground path byte-identical when run_in_background is absent or false', async () => {
+    it('keeps the foreground path byte-identical when run_in_background is absent or false and the definition does not pin background', async () => {
       const { ctx, runs, continuableStarts } = await mount()
       const omitted = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
       const explicitFalse = await call(ctx, { description: 'x', prompt: 't', run_in_background: false }, agentAt('/any'))
@@ -675,6 +676,92 @@ describe('Task tool', () => {
       expect(filter.allow).toEqual(expect.arrayContaining(['read', 'read_image', 'glob', 'grep']))
       expect(filter.allow?.includes('write')).toBe(false)
       await assertRestrictable(ctx, filter as ToolRestriction)
+    })
+  })
+
+  describe('definition.background pin', () => {
+    it('backgrounds on omit when the definition pins background: true, folding the persona', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'scout', '---\nname: scout\ndescription: Pinned to background\nbackground: true\n---\nYou are a pinned scout.\n')
+      const { ctx, runs, continuableStarts } = await mount()
+      await call(ctx, { subagent_type: 'scout', description: 'pinned', prompt: 'grind' }, agentAt(ws))
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
+      expect(continuableStarts[0]!.request['persona']).toBe('You are a pinned scout.')
+      expect(continuableStarts[0]!.request['prompt']).toEqual([{ type: 'text', text: 'grind' }])
+    })
+
+    it('explicit run_in_background: false wins over the pin and keeps the foreground path', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'scout', '---\nname: scout\ndescription: Pinned to background\nbackground: true\n---\nYou are a pinned scout.\n')
+      const { ctx, runs, continuableStarts } = await mount()
+      const result = await call(ctx, { subagent_type: 'scout', description: 'pinned', prompt: 't', run_in_background: false }, agentAt(ws))
+      expect(result.content[0]!.text).toBe('done')
+      expect(runs).toHaveLength(1)
+      expect(runs[0]!.provider).toBe('spawn')
+      expect(runs[0]!.request['persona']).toBe('You are a pinned scout.')
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('explicit run_in_background: true also backgrounds a pinned definition', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'scout', '---\nname: scout\ndescription: Pinned to background\nbackground: true\n---\nYou are a pinned scout.\n')
+      const { ctx, runs, continuableStarts } = await mount()
+      await call(ctx, { subagent_type: 'scout', description: 'pinned', prompt: 't', run_in_background: true }, agentAt(ws))
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.request['persona']).toBe('You are a pinned scout.')
+    })
+
+    it('a definition without the background field stays foreground on omit', async () => {
+      const ws = freshWorkspace()
+      writeAgent(ws, 'plain', '---\nname: plain\ndescription: No pin\n---\nPlain body.\n')
+      const { ctx, runs, continuableStarts } = await mount()
+      await call(ctx, { subagent_type: 'plain', description: 'x', prompt: 't' }, agentAt(ws))
+      expect(runs).toHaveLength(1)
+      expect(runs[0]!.provider).toBe('spawn')
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('the bundled explore agent stays foreground on omit (no pin)', async () => {
+      const ws = freshWorkspace()
+      const { ctx, runs, continuableStarts } = await mount()
+      await call(ctx, { subagent_type: 'explore', description: 'find it', prompt: 'where is X?' }, agentAt(ws))
+      expect(runs).toHaveLength(1)
+      expect(runs[0]!.provider).toBe('spawn')
+      expect(runs[0]!.request['persona']).toContain('read-only codebase scout')
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('general-purpose with omit stays foreground (no definition to pin)', async () => {
+      const { ctx, runs, continuableStarts } = await mount()
+      await call(ctx, { subagent_type: 'general-purpose', description: 'x', prompt: 't' }, agentAt('/any'))
+      expect(runs).toHaveLength(1)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('registers the prompt contract: background section carries the human heuristic and the pin escape hatch', () => {
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/run_in_background: true/)
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/run_in_background: false/)
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/background: true/)
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/## Background subagents/)
+      expect(BACKGROUND_SECTION_TEXT.toLowerCase()).not.toContain('foreground by default')
+      expect(BACKGROUND_SECTION_TEXT.toLowerCase()).not.toContain('long-running or parallelizable')
+    })
+
+    it('registers the tool description and parameter description with the same contract', async () => {
+      const { ctx } = await mount()
+      const def = ctx.tools.get(TASK_TOOL) as unknown as { description: string; parameters: { properties: Record<string, { description: string }> } } | undefined
+      expect(def).toBeDefined()
+      expect(def!.description.toLowerCase()).not.toContain('foreground by default')
+      expect(def!.description.toLowerCase()).not.toContain('long-running or parallelizable')
+      expect(def!.description).toMatch(/run_in_background/)
+      expect(def!.description).toMatch(/background: true|definition/)
+      const param = def!.parameters.properties['run_in_background']
+      expect(param).toBeDefined()
+      expect(param.description.toLowerCase()).not.toContain('default false')
+      expect(param.description).toMatch(/false|pin/)
     })
   })
 })

@@ -207,9 +207,18 @@ export interface SubagentRunView {
   runId: string
   provider: string
   sessionId: string
-  status: 'running' | 'done'
+  /**
+   * Continuable (resumable) epochs park on `subagent/end` — the activation is
+   * torn down but the session lives; one-shot runs end as `done`.
+   */
+  status: 'running' | 'parked' | 'done'
   /** Present once the `subagent/end` snapshot lands. */
   stopReason?: string
+  /**
+   * True when the child session carries a continuable descriptor, so a later
+   * `subagent/start` for the same `sessionId` is a cold-resume of this row.
+   */
+  resumable?: boolean
 }
 
 /**
