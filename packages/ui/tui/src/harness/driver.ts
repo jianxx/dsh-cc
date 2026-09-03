@@ -102,6 +102,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   const agentOptions = config.provider !== undefined && config.model !== undefined
     ? { provider: config.provider, model: config.model }
     : undefined
+  const createHandle = (id: SessionId, extras: { cwd: string; agentOptions?: { provider: string; model: string } }) =>
+    ctx.agents.create({
+      sessionId: id,
+      meta: { cwd: extras.cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
+      setup: withSelection,
+      ...(extras.agentOptions === undefined ? {} : { agentOptions: extras.agentOptions }),
+    })
   const createArgs = (id: SessionId) => ({
     sessionId: id,
     meta: { cwd, ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset } },
@@ -347,6 +354,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     recordProjectSession,
     spliceAll: () => approvals.spliceAll(),
     refreshCatalog: () => catalog.refreshCatalog(),
+    createHandle,
+    reapplyMode: (mode: string) => { modeSection.applyMode(mode as never); return modeSection.modeWrites },
     withSelection,
     agentOptions,
   })
@@ -366,6 +375,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     applyUsage,
     showNotice,
     switchSession,
+    startFreshSession: sessions.startFreshSession,
     openSessionSwitcher,
     openModelPicker,
     applyModelSwitch,

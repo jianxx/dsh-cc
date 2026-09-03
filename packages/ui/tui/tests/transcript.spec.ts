@@ -812,7 +812,7 @@ describe('session/title folding', () => {
     expect(applySessionEvent(initial, { type: 'session/title' }, [])).toBe(initial)
   })
 
-  it('/clear (clearRows) preserves the session title', () => {
+  it('clearRows preserves the session title', () => {
     const titled = applySessionEvent(createInitialState(), titleEvent('Keep me'), [])
     const cleared = clearRows(titled)
     expect(cleared.title).toBe('Keep me')

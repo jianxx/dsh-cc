@@ -27,7 +27,7 @@ import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { shortenSession } from '../statusline.ts'
 import { shouldEchoCommandResult } from '../compact-fold.ts'
-import { clearRows, moveWorktreeExitFocus, openUsagePanel, setWorktreeExit, upsertRow } from '../store.ts'
+import { moveWorktreeExitFocus, openUsagePanel, setWorktreeExit, upsertRow } from '../store.ts'
 import {
   createWorktreeExitHooks,
   ownsBranch,
@@ -150,14 +150,14 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       await finalizeQuit(true)
       return
     }
-    if (name === 'clear') {
-      emit(clearRows(rt.state()))
+    if (name === 'clear' || name === 'new' || name === 'reset') {
+      await rt.startFreshSession()
       return
     }
     if (name === 'tui-help') {
       emit(upsertRow(rt.state(), {
         kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /quit exits.',
+        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /clear starts a new conversation. /quit exits.',
       }))
       return
     }

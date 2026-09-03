@@ -6,7 +6,7 @@
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
 export const LOCAL_SLASH = [
-  'quit', 'exit', 'clear', 'tui-help', 'resume', 'model', 'effort', 'agents', 'cost', 'usage', 'export-md', 'copy',
+  'quit', 'exit', 'clear', 'new', 'reset', 'tui-help', 'resume', 'model', 'effort', 'agents', 'cost', 'usage', 'export-md', 'copy',
 ] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
@@ -25,7 +25,9 @@ export interface LocalCommand {
 export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'quit', description: 'Exit the TUI session' },
   { name: 'exit', description: 'Exit the TUI session' },
-  { name: 'clear', description: 'Clear the transcript rows' },
+  { name: 'clear', description: 'Start a new conversation (empty context). Previous session stays resumable.' },
+  { name: 'new', description: 'Alias of /clear' },
+  { name: 'reset', description: 'Alias of /clear' },
   { name: 'tui-help', description: 'Show TUI keyboard and command help' },
   { name: 'resume', description: 'Switch to a resumed session (picker or /resume <id>)', argumentHint: '<sessionId>' },
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },

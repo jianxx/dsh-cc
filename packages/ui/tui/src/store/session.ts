@@ -124,7 +124,7 @@ export function setApproval(state: TuiState, approval: ApprovalView | undefined)
   return approval === undefined ? rest : { ...rest, approval }
 }
 
-/** Drop the transcript (local `/clear`). */
+/** Drop the transcript rows (bind/switch helper; not the `/clear` command). */
 export function clearRows(state: TuiState): TuiState {
   const { notice: _dropped, ...rest } = state
   return { ...rest, rows: [] }
