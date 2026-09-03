@@ -15,6 +15,7 @@ import {
   appendHookResult,
   matchesMatcher,
   mergeHookOutputs,
+  type HookIssue,
   type HookOutput,
   type MatcherGroup,
   type MergedHookOutcome,
@@ -47,6 +48,12 @@ export interface RunPointDeps {
   stderrSummaryMaxChars: number
   /** The http-hook header interpolation policy (a deployment's fixed allowlist). */
   httpAllowedEnvVars: () => ReadonlySet<string>
+  /**
+   * Best-effort sink for hook issues (safety-loop F5) — timeout, spawn failure,
+   * non-0/2 exit, JSON parse failure. Optional (absent when no dsh-home path is
+   * available); the appender itself never throws.
+   */
+  recordIssue?: (issue: HookIssue) => void
 }
 
 /**
@@ -54,7 +61,7 @@ export interface RunPointDeps {
  * function's contract is unchanged from the pre-split in-apply closure.
  */
 export function createRunPoint(deps: RunPointDeps): (point: string, matchQuery: string, payload: unknown, opts: { agent?: Agent; turn?: number; readonly signal: AbortSignal }) => Promise<MergedHookOutcome> {
-  const { ctx, parsed, config, defaultTimeoutMs, stderrSummaryMaxChars, httpAllowedEnvVars } = deps
+  const { ctx, parsed, config, defaultTimeoutMs, stderrSummaryMaxChars, httpAllowedEnvVars, recordIssue } = deps
   /**
    * Run every hook configured for `point` whose matcher selects
    * `matchQuery`, with the per-event `payload` on stdin, and fold the results.
@@ -117,14 +124,40 @@ export function createRunPoint(deps: RunPointDeps): (point: string, matchQuery: 
         if (output.updatedInput !== undefined) {
           ctx.logger.warn(`hooks-claude-code: ${point} hook requested updatedInput, which is not yet honored (ignored)`)
         }
-        if (output.systemMessage !== undefined) {
-          ctx.logger.warn(`hooks-claude-code: ${point} hook emitted a systemMessage, which is not yet surfaced (ignored)`)
-        }
+        if (recordIssue !== undefined) recordHookIssues(recordIssue, point, handlerId, output, effectiveTimeoutMs(hook, defaultTimeoutMs))
         if (session && opts.turn !== undefined) {
           appendHookResult(session, { turn: opts.turn, point, handlerId, output, stderrSummaryMaxChars, durationMs })
         }
       }
     }
     return mergeHookOutputs(outputs)
+  }
+}
+
+/** The effective timeout budget of one hook in ms (its per-hook value or the default). */
+function effectiveTimeoutMs(hook: { timeoutSec?: number }, defaultTimeoutMs: number): number {
+  return hook.timeoutSec !== undefined ? hook.timeoutSec * 1000 : defaultTimeoutMs
+}
+
+/**
+ * Record the diagnostics-visible issues of one finished hook run (F5 detector
+ * table): timeout, spawn failure (no exit code and not a timeout), a non-0/2
+ * exit (2 is an intentional block, not an error), and a JSON parse failure.
+ */
+function recordHookIssues(record: (issue: HookIssue) => void, point: string, handlerId: string, output: HookOutput, timeoutMs: number): void {
+  const base = { dialect: 'claude-code' as const, point, handlerId }
+  if (output.timedOut) {
+    record({ ...base, ts: new Date().toISOString(), kind: 'timeout', detail: `timed out after ${timeoutMs} ms` })
+    return
+  }
+  if (output.exitCode === undefined) {
+    record({ ...base, ts: new Date().toISOString(), kind: 'spawn-failure', detail: 'hook could not be spawned (no exit code)' })
+    return
+  }
+  if (output.exitCode !== 0 && output.exitCode !== 2) {
+    record({ ...base, ts: new Date().toISOString(), kind: 'exit-code', detail: `exit ${output.exitCode}: ${output.stderr}` })
+  }
+  if (output.parseFailure) {
+    record({ ...base, ts: new Date().toISOString(), kind: 'parse-failure', detail: `exit 0 stdout looked like JSON but failed to decode: ${output.stdout}` })
   }
 }

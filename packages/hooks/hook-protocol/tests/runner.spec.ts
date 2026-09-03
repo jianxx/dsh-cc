@@ -127,6 +127,24 @@ describe('runHook — outcome decoding + duration', () => {
     expect(output.stderr).toBe('killed')
   })
 
+  it('threads ShellRunResult.timedOut onto the output (timeout is visible to the bridge)', async () => {
+    const { bash } = recordingBash(async () => result({ timedOut: true, exitCode: 1, stderr: { text: 'killed by timeout', truncated: false } }))
+    const { output } = await runHook(bash, { command: 'h' }, { payload: {}, signal: testSignal(), defaultTimeoutMs: 1000, trailingNewline: true }, clock())
+    expect(output.timedOut).toBe(true)
+  })
+
+  it('a clean (non-timed-out) run leaves timedOut unset', async () => {
+    const { bash } = recordingBash(async () => result())
+    const { output } = await runHook(bash, { command: 'h' }, { payload: {}, signal: testSignal(), defaultTimeoutMs: 1000, trailingNewline: true }, clock())
+    expect(output.timedOut).toBeUndefined()
+  })
+
+  it('the executor-rejection catch path leaves timedOut undefined', async () => {
+    const { bash } = recordingBash(async () => { throw new Error('bad workdir: ENOENT') })
+    const { output } = await runHook(bash, { command: 'h' }, { payload: {}, signal: testSignal(), defaultTimeoutMs: 1000, trailingNewline: true }, clock())
+    expect(output.timedOut).toBeUndefined()
+  })
+
   it('an executor rejection (infra fault) becomes a non-blocking error, never throws', async () => {
     const { bash } = recordingBash(async () => { throw new Error('bad workdir: ENOENT') })
     const { output } = await runHook(bash, { command: 'h' }, { payload: {}, signal: testSignal(), defaultTimeoutMs: 1000, trailingNewline: true }, clock())

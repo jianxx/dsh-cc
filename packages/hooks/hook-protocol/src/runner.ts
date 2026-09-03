@@ -89,10 +89,12 @@ export async function runHook(
     // protocol's exit-code contract is numeric, so a signal death maps to
     // `undefined` (a non-blocking error — no clean exit code to act on).
     const exitCode = result.exitCode ?? undefined
-    return {
-      output: parseHookOutput(exitCode, result.stdout.text, result.stderr.text, options.expectedEventName),
-      durationMs: now() - started,
-    }
+    const output = parseHookOutput(exitCode, result.stdout.text, result.stderr.text, options.expectedEventName)
+    // Thread the executor's timeout verdict onto the output so a bridge can
+    // surface a hook that was killed by its budget (see the safety-loop plan
+    // F5). Populated ONLY when true; the executor-fault path leaves it unset.
+    if (result.timedOut) output.timedOut = true
+    return { output, durationMs: now() - started }
   } catch (error: unknown) {
     // The executor rejects only on infrastructure faults (unusable workdir,
     // missing shell). A hook that cannot run is a non-blocking error: no exit

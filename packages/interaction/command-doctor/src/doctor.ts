@@ -5,6 +5,8 @@
  * @module @jianxx/dsh-cc-command-doctor/doctor
  */
 
+import type { HookIssue } from '@jianxx/dsh-cc-hook-protocol'
+
 /** One capability seam's mount status. */
 export interface SeamStatus {
   /** Seam name (e.g. `fs`, `llm`, `shell`). */
@@ -23,6 +25,13 @@ export interface DoctorReport {
   readonly settings: boolean
   /** Mount status of each capability seam (provider mounts, individual seams where enumerable). */
   readonly seams: readonly SeamStatus[]
+  /** Recorded hook issues (last 10 shown) plus the count of ALL valid lines in the diagnostics file. */
+  readonly hooks: {
+    readonly issues: readonly HookIssue[]
+    readonly total: number
+    /** The diagnostics file path — absent when no dsh home is resolvable. */
+    readonly path?: string
+  }
 }
 
 /**
@@ -45,5 +54,20 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
   }
   if (report.seams.length === 0) lines.push('  (none)')
+  lines.push(...renderHooks(report.hooks))
   return lines.join('\n')
+}
+
+/** How many of the newest recorded hook issues the report shows. */
+const HOOK_ISSUES_SHOWN = 10
+
+/** Render the trailing hook-diagnostics section of the report. */
+function renderHooks(hooks: DoctorReport['hooks']): string[] {
+  if (hooks.path === undefined) return ['Hooks: diagnostics unavailable (no dsh home)']
+  if (hooks.total === 0) return ['Hooks: no issues recorded']
+  const lines = [`Hooks: ${hooks.total} issue(s) recorded (${hooks.path})`]
+  for (const issue of hooks.issues.slice(-HOOK_ISSUES_SHOWN)) {
+    lines.push(`  [${issue.ts}] ${issue.point} ${issue.kind} — ${issue.detail} (${issue.dialect})`)
+  }
+  return lines
 }
