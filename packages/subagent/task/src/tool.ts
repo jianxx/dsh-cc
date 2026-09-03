@@ -35,6 +35,7 @@ import { cwdOf } from '@jianxx/dsh-cc-memory'
 import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
 import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
+import { sanitizeToolFilter } from './sanitize-filter.ts'
 
 /** The registered tool name (the CC display mapping surfaces it as `Task`). */
 export const TASK_TOOL = 'subagent_fork'
@@ -133,99 +134,15 @@ interface TaskArgs {
 }
 
 /**
- * The MCP public-name prefix every bridged MCP tool carries on `ctx.tools`.
+ * Precedence for the background decision: explicit `run_in_background` always wins
+ * (true and false alike), otherwise the definition's `background: true` pin applies,
+ * otherwise foreground. A `true`-string pin cannot reach this check — the agents
+ * parser rejects a non-boolean `background` at load time.
  */
-const MCP_PUBLIC_PREFIX = 'mcp__'
-
-/**
- * Expand one raw filter entry into the concrete names it asks for.
- *
- * - Anything not MCP-qualified passes through untouched (it is then gated by
- *   the `knownNames` check).
- * - A bare `mcp__` (no server segment) is dropped with a loud warning — it
- *   can never name a mounted tool.
- * - `mcp__<server>` (no third segment) and `mcp__<server>__*` expand to every
- *   known MCP tool of that server (`mcp__<server>__` prefix), so frontmatter
- *   survives servers publishing new tools without a hash-suffix dance.
- * - An exact `mcp__<server>__<tool>` passes through as written (the caller
- *   must use the public name, including any identity-hash suffix).
- */
-function expandFilterName(
-  rawName: string,
-  knownNames: ReadonlySet<string>,
-  warn: (m: string) => void,
-): readonly string[] {
-  if (!rawName.startsWith(MCP_PUBLIC_PREFIX)) return [rawName]
-  const rest = rawName.slice(MCP_PUBLIC_PREFIX.length)
-  if (rest.length === 0) {
-    warn('cc-task: invalid MCP wildcard "mcp__" in a subagent toolFilter — expected mcp__<server> or mcp__<server>__<tool>')
-    return []
-  }
-  const server = rest.endsWith('__*')
-    ? rest.slice(0, -'__*'.length)
-    : rest.includes('__')
-      ? undefined
-      : rest
-  if (server === undefined) return [rawName]
-  if (server.length === 0) {
-    warn(`cc-task: invalid MCP wildcard "${rawName}" in a subagent toolFilter — expected mcp__<server> or mcp__<server>__<tool>`)
-    return []
-  }
-  return [...knownNames].filter(name => name.startsWith(`${MCP_PUBLIC_PREFIX}${server}__`))
-}
-
-/**
- * Sanitize a definition's tool restriction against the LIVE set of names the
- * tools registry knows (registered or reserved — `ctx.tools.view(callingAgent)
- * .restrictableNames`, read at execute time so deferred MCP reservations on
- * the standing-scope layer are included).
- *
- * Rules:
- * - A name survives only when the registry knows it. Everything else is
- *   dropped with a warning; there is no static legal-names set, so mounted
- *   MCP tools and any future registered row are accepted without code churn.
- * - If the filter carried an `allow` list and any kept allow name is an MCP
- *   tool while `ToolSearch` is itself restrictable, `ToolSearch` is appended
- *   (deduped): the child otherwise holds MCP names with no load path.
- * - If the filter carried an `allow` list and sanitization left nothing, the
- *   result is `{ allow: [] }` — omitting `allow` would WIDEN the child to
- *   every tool, so an emptied allow-list is pinned as deny-all, loudly.
- */
-function sanitizeToolFilter(
-  filter: ToolRestriction,
-  warn: (m: string) => void,
-  knownNames: ReadonlySet<string>,
-): ToolRestriction {
-  const clean = (names: readonly string[]): string[] => {
-    const out: string[] = []
-    for (const rawName of names) {
-      for (const expanded of expandFilterName(rawName, knownNames, warn)) {
-        if (knownNames.has(expanded)) {
-          if (!out.includes(expanded)) out.push(expanded)
-        } else {
-          warn(`cc-task: dropping unknown tool name "${expanded}" from a subagent toolFilter`)
-        }
-      }
-    }
-    return out
-  }
-  const hadAllow = filter.allow !== undefined
-  const allow = filter.allow !== undefined ? clean(filter.allow) : undefined
-  const deny = filter.deny !== undefined ? clean(filter.deny) : undefined
-  if (hadAllow && allow !== undefined && allow.length > 0 && allow.some(name => name.startsWith(MCP_PUBLIC_PREFIX))
-    && knownNames.has('ToolSearch') && !allow.includes('ToolSearch')) {
-    allow.push('ToolSearch')
-  }
-  if (hadAllow && (allow === undefined || allow.length === 0)) {
-    warn(
-      'cc-task: a subagent toolFilter allow-list matched no mounted tools '
-      + `(originals: ${(filter.allow ?? []).join(', ')}); the child will run with zero tools`,
-    )
-  }
-  return {
-    ...(hadAllow ? { allow: allow ?? [] } : {}),
-    ...(deny !== undefined && deny.length > 0 ? { deny } : {}),
-  }
+function wantsBackground(args: TaskArgs, definition?: { background?: boolean }): boolean {
+  if (args.run_in_background === true) return true
+  if (args.run_in_background === false) return false
+  return definition?.background === true
 }
 
 /**
@@ -271,12 +188,15 @@ export function registerTaskTool(
       + 'Pass `subagent_type: "fork"` to inherit completed parent turns (and the prompt cache, '
       + 'when the child stays on the same model). The child runs to completion and returns its '
       + 'final text. Unknown types fail with the available list. '
-      + 'By default the call is FOREGROUND: it blocks until the child finishes and returns its '
-      + 'final text. For long-running or parallelizable work, pass `run_in_background: true`: '
-      + 'the child starts as a durable background agent, the call returns promptly once the child '
-      + 'has accepted its first turn (with its `agentId`), and you are told when it finishes via a '
-      + 'waking message. Continue the same conversation later with `send_message` addressed to '
-      + 'that id; inspect it with `list_agents` and stop its current turn with `interrupt_agent`. '
+      + 'Omit `run_in_background` (foreground) when this turn\u2019s answer to the human depends on '
+      + 'the child: the call blocks until the child finishes and returns its final text. Pass '
+      + '`run_in_background: true` when the human can keep talking while the child works: the call '
+      + 'returns promptly once the child has accepted its first turn (with its `agentId`), and you '
+      + 'are told when it finishes via a waking message; synthesize on the wake, do not poll. '
+      + 'A definition with `background: true` backgrounds on omit; pass `run_in_background: false` '
+      + 'when this turn needs that child\u2019s result \u2014 explicit true/false always win over the pin. '
+      + 'Continue a background child later with `send_message` addressed to its id; inspect it with '
+      + '`list_agents` and stop its current turn with `interrupt_agent`. '
       + 'Note: `fork` cannot run in the background (upstream harness issue #2124).',
     parameters: {
       subagent_type: {
@@ -299,9 +219,10 @@ export function registerTaskTool(
       run_in_background: {
         type: 'boolean',
         description:
-          'Start the child as a durable background agent and return immediately with its agentId '
-          + 'instead of waiting for its final text. Its report or finish notice arrives as a '
-          + 'waking message; continue it with send_message by that id. Default false.',
+          'Explicit true starts a durable background child (returns its agentId; the report or '
+          + 'finish notice arrives as a waking message) and explicit false forces foreground \u2014 '
+          + 'both win over a definition pin. Omitted: background when the definition pins '
+          + '`background: true`, foreground otherwise.',
       },
     },
     output: {
@@ -328,7 +249,6 @@ export function registerTaskTool(
       if (seam === undefined) throw new Error('subagent_fork unavailable: no subagents seam')
 
       const type = args.subagent_type?.trim()
-      const background = args.run_in_background === true
       const base = {
         label: args.description,
         prompt: [{ type: 'text' as const, text: args.prompt }],
@@ -338,7 +258,7 @@ export function registerTaskTool(
       }
 
       if (type === undefined || type.length === 0 || type === GENERAL_PURPOSE) {
-        if (background) return startBackground(seam, base)
+        if (wantsBackground(args)) return startBackground(seam, base)
         const run = await seam.start(PROVIDER_SPAWN, base)
         return settle(run)
       }
@@ -346,7 +266,7 @@ export function registerTaskTool(
       if (type === FORK_SENTINEL) {
         // Rejected BEFORE any seam call: fork children are one-shot until the
         // upstream harness continuable-fork prefix-reuse issue lands.
-        if (background) {
+        if (wantsBackground(args)) {
           throw new Error(
             'subagent_type "fork" cannot run in the background: fork children are one-shot '
             + `until upstream harness issue ${FORK_BACKGROUND_ISSUE} resolves. Workaround: use a `
@@ -384,7 +304,7 @@ export function registerTaskTool(
           : {}),
         ...(agentOptions !== undefined ? { agentOptions } : {}),
       }
-      if (background) return startBackground(seam, folded)
+      if (wantsBackground(args, definition)) return startBackground(seam, folded)
       const run = await seam.start(PROVIDER_SPAWN, folded)
       return settle(run)
     },

@@ -31,7 +31,7 @@ Claude Code 的 `Task` 工具允许主代理按 `subagent_type`(如 `deep-reason
    - `maxDepth` = 3(与 harness 默认一致;可配置)。
 4. **其它类型**(工作区内找不到)→ **报错结果**,附带本工作区可用类型清单(或说明本工作区未定义任何 agent)。
 
-运行是**前台一次性**:工具等待 child 跑完并返回其最终文本。非 `completed` 的 stop reason 以错误浮出,child 输出只拼接 `text` 块。
+派发规则是**前台,除非显式指定或定义钉死了后台**:`run_in_background` 缺省时运行是前台——工具等待 child 跑完,非 `completed` 的 stop reason 以错误浮出,child 输出只拼接 `text` 块——除非定义钉了 `background: true`,此时缺省即后台。显式 `run_in_background: false` 覆盖钉死,强制前台。显式 `run_in_background: true`(或钉死时缺省)则把 child 作为 durable continuable 后台 agent 启动,并立即返回其 `agentId`。
 
 ### 工具限制消毒与保留名
 
@@ -76,7 +76,7 @@ harness 的 `agent-instructions` 插件会在**每个**会话(包括 Task child)
 
 ## 已知限制
 
-- **仅前台。** 本工具取代的 harness `tool-subagent-fork` 行原本是 `backgroundMode: continuable`(durable id + 挂在 host-plane 单例上的 `report`/`send_message`)。v1 将 CC Task 前台化、一次性;**durable 后台/continuable 流程为 follow-up**——这是对既有 preset 行为的可见回退,已在 parity matrix 中如实记录。
+- **冷恢复丢弃其余 `agentOptions`。** 后台(continuable)派发已存在——`run_in_background: true` 或定义钉 `background: true`——但冷恢复只还原 `persona`/`toolFilter`/模型路由,丢弃其余全部 `agentOptions` 字段(别名标记的 `reasoningEffort`、`maxTokens`)。完整后台契约(父退出 drain、无 `outputFile`、fork + 后台被拒)见 parity matrix。
 - **进程级发现缓存。** 注册表按工作区 root 缓存整个进程生命周期,不监听文件系统。编辑 `.claude/agents` 定义:对缓存条目尚未创建的工作区在下次会话生效,否则在进程重启后生效。基于 mtime 的失效刷为 follow-up。
 - **v1 不做插件 agent 派发。** 只派发 `.claude/agents` 下的文件定义。seam 插件 agent(`AgentProvider`)在 v1 不被 `subagent_type` 寻址(其 start 契约不携带任务正文,且 capability 标志会拒绝 `maxDepth`)——见 parity matrix。
 - **保留类型名。** `general-purpose` 与 `fork` 是哨兵,不是文件类型。工作区文件 `.claude/agents/fork.md` 不可达;`subagent_type: "fork"` 永远表示继承父已完成轮次。
@@ -92,7 +92,8 @@ harness 的 `agent-instructions` 插件会在**每个**会话(包括 Task child)
 
 ## 非目标
 
-- `run_in_background` / continuable Task(follow-up)。
+- 把缺省的 `run_in_background` 视为后台的会话级策略(Claude Code 交互式的 omit=background 规则);dsh-cc 在缺省时保持前台,除非定义钉了 `background: true`。
+- 正在运行的前台 Task 的在途转后台(TUI Ctrl+B)——follow-up,而非本包存在性上的限制。
 - seam 插件 agent 派发。
 - 把 CC frontmatter 的 `permissionMode` / `isolation` / `memory` / `effort` 投影到 child(loader 会解析,v1 不消费)。
 - cc-shell 里的 `registerBaseAgents`(base agent 发现迁至此处;见 cc-shell README)。
