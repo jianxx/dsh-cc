@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uvx --from git+https://github.com/oraios/serena@v1.7.0 serena-hooks remind --client claude-code",
-            "timeout": 10000
+            "command": "serena-hooks remind --client claude-code",
+            "timeout": 10
           }
         ]
       }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/post-edit-diagnostics-nudge.mjs\"",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       },
@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/serena-failure-watchdog.mjs\" advise",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/serena-failure-watchdog.mjs\" record",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }
