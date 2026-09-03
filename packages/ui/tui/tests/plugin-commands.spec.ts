@@ -336,6 +336,28 @@ describe('outbox flush and steer of queued plugin commands', () => {
     expect(driver.state.queued).toEqual([])
   })
 
+  it('turn/end flush dispatches a mixed queue FIFO: plugin command then plain text', async () => {
+    const { service, calls } = makePluginService(
+      [{ name: 'codex:review', plugin: 'codex', description: 'review' }],
+    )
+    const agent = makeFakeAgent('running')
+    const { ctx, fireSessionEvent } = makeCtx(agent, service)
+    const driver = await createDriver(ctx as never, {})
+    await driver.submit('/codex:review later args')
+    await driver.submit('plain queued text')
+    expect(driver.state.queued).toEqual(['/codex:review later args', 'plain queued text'])
+    fireSessionEvent({ type: 'turn/end' })
+    await settle()
+    await settle()
+    // The plugin entry routes through the seam; the plain entry follows as a
+    // raw followup — neither is dropped or reordered.
+    expect(calls).toEqual([{ name: 'codex:review', agent, rawInput: 'later args' }])
+    expect(agent.followup).toHaveBeenCalledTimes(1)
+    const sent = agent.followup.mock.calls[0]?.[0] as { content: { type: string; text: string }[] }
+    expect(sent.content[0]?.text).toBe('plain queued text')
+    expect(driver.state.queued).toEqual([])
+  })
+
   it('Ctrl+S steer re-routes a queued plugin command through runPluginCommand', async () => {
     const { service, calls } = makePluginService(
       [{ name: 'codex:review', plugin: 'codex', description: 'review' }],

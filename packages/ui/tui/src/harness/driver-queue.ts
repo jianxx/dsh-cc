@@ -115,18 +115,25 @@ const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'st
  * handling just set it false), but only when at least one entry was handed
  * off.
  *
- * The stroke is deferred one microtask: the only call sites are `session/event`
- * observers, which run INSIDE the session append publication window, and a
- * synchronous `agent.followup` there is only safe by observer-order luck — when
- * the agent-loop teardown observer ran first, `followup` → `wakeDriver` opens
- * the next turn and its appends hit the session reentrancy guard ("session
- * append cannot reenter while another append is being published"). A microtask
- * runs after the publication stack fully unwinds, and no macrotask (e.g. the ↑
- * recall keypress) can interleave, so the snapshot/dispatch/clear stroke stays
- * race-free against recall exactly as the synchronous version was.
+ * The stroke is deferred until the agent converges to idle (agent.whenIdle,
+ * falling back to one microtask for hosts without it). Two hazards force the
+ * wait, both proven by live e2e:
+ *
+ * 1. The call sites are `session/event` observers running INSIDE the session
+ *    append publication window; `followup` → `inbox.splice` appends
+ *    `agent/inbox/spliced` synchronously and hits the session reentrancy
+ *    guard ("session append cannot reenter while another append is being
+ *    published").
+ * 2. A bare microtask lands in the driver teardown gap: kick()'s loop already
+ *    made its last inbox claim but setPhase(idle) hasn't run, so wakeDriver
+ *    takes the non-idle branch — which neither latches the wake (not an
+ *    abort/maintenance) nor has a live driver to claim the work. The spliced
+ *    message strands in the inbox and the UI sits on a zombie busy anchor.
+ *    whenIdle resolves only after kick's finally sets the idle phase, where
+ *    wakeDriver's idle path reliably starts the next driver.
  */
 const flushQueue = (rt: DriverQueueCtx): void => {
-  queueMicrotask(() => {
+  const flush = (): void => {
     const s = rt.state()
     const pending = [...s.queued]
     if (pending.length === 0) return
@@ -139,7 +146,16 @@ const flushQueue = (rt: DriverQueueCtx): void => {
       if (!results.some(Boolean)) return
       rt.emit(setTurnActive(setBusy(rt.state(), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
     })
-  })
+  }
+  // Await the agent that ENDED the turn (captured now); dispatchQueued reads
+  // rt.current.agent at fire time, so a session switch still targets the
+  // live session. A rejected whenIdle must not strand the queue.
+  const endingAgent = rt.current.agent as { whenIdle?: () => Promise<void> }
+  if (typeof endingAgent.whenIdle === 'function') {
+    void endingAgent.whenIdle().then(flush, flush)
+  } else {
+    queueMicrotask(flush)
+  }
 }
 
 /**

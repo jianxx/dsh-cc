@@ -163,8 +163,29 @@ describe('createDriver busy input semantics', () => {
     expect(driver.state.busy).toBe(true)
   })
 
-  it('an errored turn/end still flushes the outbox', async () => {
+  it('turn/end flush waits for agent convergence when whenIdle is available', async () => {
     const agent = makeFakeAgent('running')
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    agent.whenIdle = () => gate
+    const { ctx, emitSession } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+
+    await driver.submit('queued line')
+    emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await settle()
+    // The driver-teardown gap must pass first: nothing dispatches, nothing clears.
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.queued).toEqual(['queued line'])
+
+    release()
+    await settle()
+    expect(sentTexts(agent.followup.mock.calls)).toEqual(['queued line'])
+    expect(driver.state.queued).toEqual([])
+    expect(driver.state.busy).toBe(true)
+  })
+
+  it('an errored turn/end still flushes the outbox', async () => {    const agent = makeFakeAgent('running')
     const { ctx, emitSession } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
 
