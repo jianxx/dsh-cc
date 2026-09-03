@@ -325,8 +325,11 @@ its self-test are wired as separate, explicit entries):
   - `"check:parity": "node scripts/generate-parity-matrix.mjs --check"`
   - `"docs:parity": "node scripts/generate-parity-matrix.mjs"`
   - `"test:capabilities": "node scripts/check-capability-evidence.test.mjs && node scripts/generate-parity-matrix.test.mjs"`
-- `.github/workflows/presubmit.yml` gains four explicit steps beside the other
-  `node scripts/check-*` steps: the two checkers and the two paired tests.
+- `.github/workflows/presubmit.yml` gains four explicit steps **after
+  `pnpm install`**: the two checkers and the two paired tests. They cannot join
+  the zero-dependency static lane before install (the scripts parse YAML via
+  js-yaml from node_modules), so they run immediately after `Install dsh-cc
+  deps`, ahead of typecheck.
 - `.husky/pre-commit` gains the two fast checks, mirroring its existing gate list.
 
 The paired tests exercise each invariant with minimal inline fixture manifests
