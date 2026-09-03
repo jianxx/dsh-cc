@@ -330,6 +330,7 @@ describe('outbox flush and steer of queued plugin commands', () => {
     await driver.submit('/codex:review later args')
     expect(driver.state.queued).toEqual(['/codex:review later args'])
     fireSessionEvent({ type: 'turn/end' })
+    await settle()
     expect(calls).toEqual([{ name: 'codex:review', agent, rawInput: 'later args' }])
     expect(agent.followup).not.toHaveBeenCalled()
     expect(driver.state.queued).toEqual([])
@@ -360,13 +361,16 @@ describe('outbox flush and steer of queued plugin commands', () => {
     const driver = await createDriver(ctx as never, {})
     await driver.submit('/codex:review later args')
     fireSessionEvent({ type: 'turn/end' })
-    expect(calls).toHaveLength(1)
     await settle()
+    expect(calls).toHaveLength(1)
     expect(agent.followup).not.toHaveBeenCalled()
     expect(driver.state.notice).toBeDefined()
     const notice = String(driver.state.notice)
     expect(notice).toContain('codex:review')
     expect(notice).toContain('no git repo')
+    // An all-dropped flush must not anchor a zombie busy turn.
+    expect(driver.state.busy).toBe(false)
+    expect('turn' in driver.state).toBe(false)
   })
 
   it('a rejected runPluginCommand on flush surfaces a notice and never raw-sends', async () => {

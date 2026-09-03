@@ -46,23 +46,26 @@ const asUserMessage = (text: string) => createUserMessage({
  * name that is NOT a TUI-owned LOCAL_SLASH entry is a plugin command — it
  * routes through the ccPlugins service. Anything else (plain prose, ordinary
  * local names) sends as the original followup/steer, unchanged.
+ *
+ * Returns whether the entry was handed off to the agent (raw send or a
+ * successful plugin dispatch) — false means dropped with a notice. flushQueue
+ * uses this to avoid anchoring a busy turn nothing will arrive for.
  */
-const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'steer'): void => {
-  const send = (raw: string): void => {
+const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'steer'): boolean | Promise<boolean> => {
+  const send = (raw: string): boolean => {
     const message = asUserMessage(raw)
     if (mode === 'followup') rt.current.agent.followup(message)
     else rt.current.agent.steer(message)
+    return true
   }
   const parsed = parseSlash(text)
   if (parsed.kind !== 'local') {
-    send(text)
-    return
+    return send(text)
   }
   if ((LOCAL_SLASH as readonly string[]).includes(parsed.name)) {
     // Ordinary TUI-local names never enter the outbox while busy, but if one
     // ever does, keep the historical behavior: forward the text verbatim.
-    send(text)
-    return
+    return send(text)
   }
   // Plugin command. The raw-line fallback is reserved for names that are no
   // longer in the plugin command table (uninstalled between enqueue and
@@ -72,8 +75,7 @@ const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'st
   // surfaces a notice instead and the queued line is dropped.
   const plugins = rt.ctx.get('ccPlugins') as CcPluginsRunLike | undefined
   if (plugins === undefined || typeof plugins.runPluginCommand !== 'function') {
-    send(text)
-    return
+    return send(text)
   }
   const { name, rawInput } = parsed
   // Live membership check against the CURRENT table, mirrored at failure
@@ -87,47 +89,57 @@ const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'st
       return true // undecidable → keep the line local, never raw-send
     }
   }
-  const failWithNotice = (reason: string): void => {
+  const failWithNotice = (reason: string): boolean => {
     rt.showNotice(`Plugin command /${name} failed: ${reason}`)
+    return false
   }
-  void plugins.runPluginCommand(name, { agent: rt.current.agent, rawInput })
+  return plugins.runPluginCommand(name, { agent: rt.current.agent, rawInput })
     .then((result) => {
-      if (!(result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false)) return
-      if (!stillListed()) {
-        send(text)
-        return
-      }
+      if (!(result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false)) return true
+      if (!stillListed()) return send(text)
       const reason = (result as { reason?: string }).reason ?? 'unknown error'
-      failWithNotice(reason)
+      return failWithNotice(reason)
     })
     .catch((error: unknown) => {
-      if (!stillListed()) {
-        send(text)
-        return
-      }
-      failWithNotice(error instanceof Error ? error.message : String(error))
+      if (!stillListed()) return send(text)
+      return failWithNotice(error instanceof Error ? error.message : String(error))
     })
 }
 
 /**
  * Outbox flush, anchored to the durable `turn/end` event: snapshot the queue,
- * dispatch every entry FIFO through `followup`, and clear the queue in the same
- * synchronous stroke as the dispatch — so the queue never holds an entry that
- * was already sent and ↑ recall cannot race a flush. Busy is re-asserted
- * optimistically (the flushed followups start a new turn immediately; the
- * fold's `turn/end` handling just set it false).
+ * dispatch every entry FIFO through `followup`, and clear the queue in one
+ * atomic stroke — so the queue never holds an entry that was already sent and
+ * ↑ recall cannot race a flush. Busy is re-asserted optimistically (the
+ * flushed followups start a new turn immediately; the fold's `turn/end`
+ * handling just set it false), but only when at least one entry was handed
+ * off.
+ *
+ * The stroke is deferred one microtask: the only call sites are `session/event`
+ * observers, which run INSIDE the session append publication window, and a
+ * synchronous `agent.followup` there is only safe by observer-order luck — when
+ * the agent-loop teardown observer ran first, `followup` → `wakeDriver` opens
+ * the next turn and its appends hit the session reentrancy guard ("session
+ * append cannot reenter while another append is being published"). A microtask
+ * runs after the publication stack fully unwinds, and no macrotask (e.g. the ↑
+ * recall keypress) can interleave, so the snapshot/dispatch/clear stroke stays
+ * race-free against recall exactly as the synchronous version was.
  */
 const flushQueue = (rt: DriverQueueCtx): void => {
-  const s = rt.state()
-  const pending = [...s.queued]
-  if (pending.length === 0) return
-  for (const text of pending) {
-    dispatchQueued(rt, text, 'followup')
-  }
-  // Unconditional anchor: the only call site is the turn/end handler, which
-  // has just cleared the previous turn's anchor, so this re-anchors for the
-  // flushed followup turn and can never reset a live one.
-  rt.emit(setTurnActive(setBusy(clearQueue(s), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
+  queueMicrotask(() => {
+    const s = rt.state()
+    const pending = [...s.queued]
+    if (pending.length === 0) return
+    rt.emit(clearQueue(s))
+    const handedOff = pending.map(text => dispatchQueued(rt, text, 'followup'))
+    // Anchor the followup turn only once we know at least one entry was
+    // actually handed off: an all-dropped flush (e.g. a plugin command that
+    // failed with a notice) must not leave a zombie busy spinner behind.
+    void Promise.all(handedOff).then(results => {
+      if (!results.some(Boolean)) return
+      rt.emit(setTurnActive(setBusy(rt.state(), true), { startedAt: Date.now(), outputBase: s.hud?.tokens?.output }))
+    })
+  })
 }
 
 /**
@@ -144,7 +156,7 @@ const steerQueued = (rt: DriverQueueCtx): void => {
     // Semantic trade-off: a queued plugin command reaches the running turn as
     // a followup (queued work) rather than a steer — running it through the
     // plugin seam is more important than steering semantics.
-    dispatchQueued(rt, text, 'steer')
+    void dispatchQueued(rt, text, 'steer')
   }
   rt.emit(clearQueue(s))
 }

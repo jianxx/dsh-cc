@@ -107,6 +107,9 @@ const usageState = (input: number, output: number) => ({
 
 const driverOpts = { cwd: '/w/proj', branchProbe: async () => undefined }
 
+/** Let the microtask-deferred outbox flush (and its dispatch promises) settle. */
+const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
 describe('createDriver working-line turn anchors', () => {
   let prevHome: string | undefined
   let tempHome: string
@@ -172,6 +175,7 @@ describe('createDriver working-line turn anchors', () => {
     const followupsAfterSubmit = agent.followup.mock.calls.length
 
     emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await settle()
     expect('turn' in driver.state).toBe(false)
     expect(driver.state.busy).toBe(false)
     // The submit itself dispatched once; the empty-queue flush adds nothing.
@@ -187,6 +191,7 @@ describe('createDriver working-line turn anchors', () => {
     expect(driver.state.queued).toEqual(['one'])
 
     emitSession({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await settle()
     // The flush dispatched the queued entry through followup...
     expect(agent.followup).toHaveBeenCalledOnce()
     expect(driver.state.queued).toEqual([])
