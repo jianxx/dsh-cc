@@ -128,9 +128,33 @@ Body`
       .toThrow(/name must be a string/)
   })
 
-  it('throws when a tool list field is not an array', () => {
-    expect(() => parseAgentMarkdown(MD('git'), '---\ndescription: x\ntools: Read\n---\nBody', 'project'))
+  it('accepts a comma-separated string tool list and splits it on commas', () => {
+    const agent = parseAgentMarkdown(MD('git'), '---\ndescription: x\ntools: "Bash, Read"\n---\nBody', 'project')
+    expect(agent.toolRestriction).toEqual({ allow: ['bash', 'read', 'read_image'] })
+  })
+
+  it('accepts a comma-separated disallowedTools string with stray whitespace', () => {
+    const agent = parseAgentMarkdown(MD('git'), '---\ndescription: x\ndisallowedTools: " Write , Edit "\n---\nBody', 'project')
+    expect(agent.toolRestriction).toEqual({ deny: ['write', 'edit'] })
+  })
+
+  it('parses the codex-rescue plugin agent frontmatter (string tools)', () => {
+    const codexRescue = `---
+name: codex-rescue
+description: Rescues a stuck task with Codex
+tools: Bash
+---
+Delegate to Codex.`
+    const agent = parseAgentMarkdown(MD('codex-rescue'), codexRescue, 'project')
+    expect(agent.agentType).toBe('codex-rescue')
+    expect(agent.toolRestriction).toEqual({ allow: ['bash'] })
+  })
+
+  it('still throws when a tool list field is neither a string nor an array', () => {
+    expect(() => parseAgentMarkdown(MD('git'), '---\ndescription: x\ntools: 42\n---\nBody', 'project'))
       .toThrow(/tools must be an array of strings/)
+    expect(() => parseAgentMarkdown(MD('git'), '---\ndescription: x\ndisallowedTools: [7]\n---\nBody', 'project'))
+      .toThrow(/disallowedTools must name strings/)
   })
 
   it('throws when skills holds a non-string element', () => {
