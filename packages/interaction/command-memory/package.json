@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-command-memory",
   "description": "Human-facing slash command to list or print memdir memory files",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc.git",
