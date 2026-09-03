@@ -122,6 +122,8 @@ Use `/mcp` to inspect and manage MCP connections.
 
 Claude Code-style hooks can react to session, prompt, tool, permission, compaction, task, and subagent lifecycle events. Command and HTTP executors are supported, with additional prompt/agent executors available behind configuration gates.
 
+This repository ships a tracked `hooks.json` (the CC preset loads it from the launch cwd). The PreToolUse remind hook requires `serena-hooks` on `PATH` — see [Local development](#local-development).
+
 See the [parity matrix](docs/cc-parity-matrix.md) for the currently bridged event set.
 
 ## Slash commands
@@ -275,6 +277,18 @@ pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm test
 ```
+
+### Serena (`serena-hooks` on PATH)
+
+Dogfooding this repo loads the tracked `hooks.json`. Its PreToolUse remind hook runs `serena-hooks remind --client claude-code` on every Read/Grep, so the binary must already be on `PATH`:
+
+```sh
+uv tool install git+https://github.com/oraios/serena@v1.7.0
+```
+
+That pin provides `serena`, `serena-agent`, and `serena-hooks`. Do **not** invoke `uvx --from git+…` from the hook: that writes `~/.cache/uv` on every call, the session sandbox denies it, and Read hangs behind PreToolUse.
+
+Health-check and index remain one-shot `uvx` commands; see [docs/code-intelligence-health.md](docs/code-intelligence-health.md).
 
 To test unpublished packages against a real profile:
 
