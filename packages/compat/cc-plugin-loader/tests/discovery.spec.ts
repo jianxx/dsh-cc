@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -237,5 +238,63 @@ describe('discoverCcPluginRoots pluginDirs override', () => {
     expect(discoverCcPluginRoots({ pluginDirs: [root] })).toEqual([
       { root, nameHint: 'solo' },
     ])
+  })
+})
+
+describe('local settings hoist (worktree / subdirectory)', () => {
+  /** A real git main checkout with one empty commit and a linked worktree. */
+  async function gitRepoWithWorktree(): Promise<{ main: string; wt: string }> {
+    const base = await tempDir('cc-plugin-git-')
+    const main = join(base, 'main')
+    const wt = join(base, 'wt')
+    await mkdir(main, { recursive: true })
+    const git = (argv: string[], cwd: string): void => {
+      execFileSync('git', argv, { cwd, stdio: 'ignore' })
+    }
+    git(['init', '-q'], main)
+    git(['-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'], main)
+    git(['worktree', 'add', '-b', 'feat', wt, 'HEAD'], main)
+    return { main, wt }
+  }
+
+  it('reads enabledPlugins from the main checkout local file when cwd is a worktree', async () => {
+    const install = await tempDir('cc-plugin-install-')
+    await writeAt(install, '.claude-plugin/plugin.json', JSON.stringify({ name: 'from-main' }))
+    const { main, wt } = await gitRepoWithWorktree()
+    const { home } = await claudeHome({
+      installs: { 'from-main@official': [{ path: install }] },
+    })
+    await writeJson(join(main, '.claude', 'settings.local.json'), { enabledPlugins: { 'from-main@official': true } })
+
+    const found = discoverCcPluginRoots({ claudeHome: home, cwd: wt })
+    expect(found).toEqual([{ root: install, nameHint: 'from-main' }])
+  })
+
+  it('silently ignores a worktree-local settings.local.json (main still wins)', async () => {
+    const install = await tempDir('cc-plugin-install-')
+    await writeAt(install, '.claude-plugin/plugin.json', JSON.stringify({ name: 'from-main' }))
+    const { main, wt } = await gitRepoWithWorktree()
+    const { home } = await claudeHome({
+      installs: { 'from-main@official': [{ path: install }] },
+    })
+    await writeJson(join(main, '.claude', 'settings.local.json'), { enabledPlugins: { 'from-main@official': true } })
+    await writeJson(join(wt, '.claude', 'settings.local.json'), { enabledPlugins: { 'from-wt@official': true } })
+
+    expect(discoverCcPluginRoots({ claudeHome: home, cwd: wt }).map(entry => entry.nameHint))
+      .toEqual(['from-main'])
+
+  })
+
+  it('still applies project settings.json from the worktree itself (not hoisted)', async () => {
+    const install = await tempDir('cc-plugin-install-')
+    await writeAt(install, '.claude-plugin/plugin.json', JSON.stringify({ name: 'wt-project' }))
+    const { wt } = await gitRepoWithWorktree()
+    const { home } = await claudeHome({
+      installs: { 'wt-project@official': [{ path: install }] },
+    })
+    await writeJson(join(wt, '.claude', 'settings.json'), { enabledPlugins: { 'wt-project@official': true } })
+
+    expect(discoverCcPluginRoots({ claudeHome: home, cwd: wt }).map(entry => entry.nameHint))
+      .toEqual(['wt-project'])
   })
 })

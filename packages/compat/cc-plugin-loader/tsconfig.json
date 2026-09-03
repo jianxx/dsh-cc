@@ -25,6 +25,9 @@
     },
     {
       "path": "../cc-model-aliases"
+    },
+    {
+      "path": "../../settings/settings-cascade"
     }
   ]
 }

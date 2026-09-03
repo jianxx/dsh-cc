@@ -18,10 +18,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { resolveLocalSettingsDir, type LocalRootDeps } from './local-root.ts'
 import { mergeSettingsSection } from './merge.ts'
 import { coerceEnv, type EnvSettings } from './env.ts'
 import { applyOpsToSection, diffSections, readUserFile, writeJsonAtomic } from './persist.ts'
 
+export { resolveLocalSettingsDir, type LocalRootDeps, type LocalRootExec, type LocalRootExecResult } from './local-root.ts'
 export { mergeValue, mergeSettingsSection, unionDenyPrecedence } from './merge.ts'
 export { PermissionsSchema, PERMISSION_MODES, type Permissions, type PermissionMode } from './permissions.ts'
 export { applyEnv, applyTrustedEnv, coerceEnv, DANGEROUS_ENV_VARS, type EnvSettings } from './env.ts'
@@ -50,7 +52,7 @@ export interface CascadePolicyConfig {
 
 /** Plugin configuration: source file locations and switches. */
 export interface Config {
-  /** Project root used for the default project/local setting paths. */
+  /** Launch directory: seeds the project settings path and the git probe for the local settings path. */
   projectDir?: string
   /** Harness home used for the default user settings path. */
   dshHome?: string
@@ -58,7 +60,7 @@ export interface Config {
   userSettingsPath?: string
   /** Project settings file; defaults to `<project>/.claude/settings.json`. */
   projectSettingsPath?: string
-  /** Local settings file; defaults to `<project>/.claude/settings.local.json`. */
+  /** Local settings file; defaults to git main-checkout / toplevel `.claude/settings.local.json`. */
   localSettingsPath?: string
   /** Command-line `--settings` file; the flag layer's file half. */
   flagSettingsPath?: string
@@ -96,20 +98,33 @@ function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
 
+/** Whether a filesystem error is a permission denial (EACCES/EPERM). */
+function isAccessDenied(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code === 'EACCES' || code === 'EPERM'
+}
+
 /**
  * Resolve the runtime spec from plugin config: explicit paths win, otherwise
- * the defaults derive from the harness home and the project directory.
+ * the defaults derive from the harness home and the project directory. The
+ * project settings stay at the launch directory, but the local settings file
+ * path hoists Claude Code-style to the git main checkout root (linked
+ * worktree) or git toplevel (subdirectory start) via
+ * {@link resolveLocalSettingsDir} — the session cwd and git operations are
+ * untouched, and explicit `localSettingsPath` never hoists.
  * @param config - raw plugin config.
+ * @param deps - injectable local-root environment (tests only).
  * @returns the resolved source locations, inline flag settings, and policy sources.
  */
-export function resolveSpec(config: Config): ResolvedSpec {
-  const projectDir = resolve(config.projectDir ?? process.cwd())
+export function resolveSpec(config: Config, deps?: LocalRootDeps): ResolvedSpec {
+  const launchDir = resolve(config.projectDir ?? process.cwd())
   const home = resolveDshHome(config.dshHome)
   return {
     sources: {
       userSettings: config.userSettingsPath ?? join(home, 'settings.json'),
-      projectSettings: config.projectSettingsPath ?? join(projectDir, '.claude', 'settings.json'),
-      localSettings: config.localSettingsPath ?? join(projectDir, '.claude', 'settings.local.json'),
+      projectSettings: config.projectSettingsPath ?? join(launchDir, '.claude', 'settings.json'),
+      localSettings: config.localSettingsPath
+        ?? join(resolveLocalSettingsDir(launchDir, deps), '.claude', 'settings.local.json'),
       flagSettings: config.flagSettingsPath,
     },
     flagSettingsInline: config.flagSettingsInline,
@@ -241,7 +256,7 @@ export class SettingsCascadeProvider extends SettingsProvider {
   protected async load(): Promise<Record<string, unknown>> {
     const user = await this.readOptional(this.spec.sources.userSettings)
     const project = await this.readOptional(this.spec.sources.projectSettings)
-    const local = await this.readOptional(this.spec.sources.localSettings)
+    const local = await this.readOptional(this.spec.sources.localSettings, true)
     const flag = await this.resolveFlag()
     const policy = await this.resolvePolicy()
 
@@ -260,13 +275,16 @@ export class SettingsCascadeProvider extends SettingsProvider {
   }
 
   /** Read a source file into raw settings, skipping absence and failing loud on invalidity. */
-  private async readOptional(path: string | undefined): Promise<Record<string, unknown>> {
+  private async readOptional(path: string | undefined, local = false): Promise<Record<string, unknown>> {
     if (path === undefined) return {}
     let text: string
     try {
       text = await readFile(path, 'utf8')
     } catch (error) {
-      if (isENOENT(error)) return {}
+      // The hoisted local file may sit in a main checkout whose `.claude`
+      // denies us mid-session (EACCES/EPERM); treat that as absent so a
+      // cross-boundary read cannot crash boot. Other sources stay loud.
+      if (isENOENT(error) || (local && isAccessDenied(error))) return {}
       throw error
     }
     return this.parse(path, text)

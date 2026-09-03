@@ -358,6 +358,9 @@ importers:
       '@jianxx/dsh-cc-model-aliases':
         specifier: workspace:^
         version: link:../cc-model-aliases
+      '@jianxx/dsh-cc-settings-cascade':
+        specifier: workspace:^
+        version: link:../../settings/settings-cascade
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis

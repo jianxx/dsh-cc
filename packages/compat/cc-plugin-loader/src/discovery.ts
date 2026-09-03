@@ -14,6 +14,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { resolveLocalSettingsDir } from '@jianxx/dsh-cc-settings-cascade/local-root'
 
 /** One discovered plugin root plus the name used to match marketplace overlays. */
 export interface DiscoveredCcPlugin {
@@ -138,7 +139,13 @@ function enabledKeys(
   const cascade: { path: string; scope: 'user' | 'project' }[] = [
     { path: join(claudeHome, 'settings.json'), scope: 'user' },
     { path: join(cwd, '.claude', 'settings.json'), scope: 'project' },
-    { path: join(cwd, '.claude', 'settings.local.json'), scope: 'project' },
+    {
+      // Claude Code-parity: the *local* settings file is read from the git
+      // main checkout root (linked worktree) or git toplevel (subdirectory
+      // start); the project settings above stay at the launch cwd.
+      path: join(resolveLocalSettingsDir(cwd), '.claude', 'settings.local.json'),
+      scope: 'project',
+    },
   ]
   const state = new Map<string, boolean>()
   const order: string[] = []
