@@ -26,6 +26,7 @@
     "check:tui-boundary": "node scripts/check-tui-boundary.mjs",
     "check:vendor-purity": "node scripts/check-vendor-purity.mjs",
     "docs:parity": "node scripts/generate-parity-matrix.mjs",
+    "report:freshness": "node scripts/report-capability-freshness.mjs",
     "test:capabilities": "node scripts/check-capability-evidence.test.mjs && node scripts/generate-parity-matrix.test.mjs",
     "release": "node scripts/release.mjs",
     "check:deep-imports": "node scripts/check-deep-src-imports.mjs"

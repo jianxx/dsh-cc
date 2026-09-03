@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { loadManifest, normalizeDimension } from "./lib/capability-manifest.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GEN = join(__dirname, "generate-parity-matrix.mjs");
@@ -330,6 +331,65 @@ case_("check: stale README region → exit 1 naming the file", () => {
   const w = run(root);
   assert.equal(w.status, 0, w.stderr);
   assert.equal(run(root, ["--check"]).status, 0, "check after repair should pass");
+});
+
+// --- Unit B: JSON render (docs/claude-code-capabilities.json) ---
+const JSON_REL = "docs/claude-code-capabilities.json";
+
+case_("json: write mode also emits the normalized manifest, byte-stable across runs", () => {
+  const j1 = readFileSync(join(root, JSON_REL), "utf8"); // written by the run above
+  assert.ok(j1.endsWith("}\n"), "missing trailing newline");
+  assert.equal(JSON.parse(j1).manifest_version, 1, "not a manifest render");
+  // normalized: dimensions in object form everywhere
+  const parsed = JSON.parse(j1);
+  const hooks = parsed.capabilities["engine.hooks"];
+  // JSON.stringify drops keys whose value is undefined, so `notes` vanishes
+  // when unset — the object form is still the normalized shape.
+  assert.deepEqual(hooks.dimensions, {
+    recognized: { status: true },
+    mounted: { status: true, notes: "command+http executors always on" },
+    behavioral: { status: "full" },
+    ux: { status: "partial", notes: "no hook preview in the approval modal" },
+  }, "dimensions not normalized to object form");
+  const w = run(root);
+  assert.equal(w.status, 0, w.stderr);
+  assert.equal(readFileSync(join(root, JSON_REL), "utf8"), j1, "JSON not byte-identical across two runs");
+});
+
+case_("json: --check covers it (stale/missing → exit 1 naming the file, fresh → exit 0)", () => {
+  const p = join(root, JSON_REL);
+  const fresh = readFileSync(p, "utf8");
+  writeFileSync(p, fresh.replace('"manifest_version": 1', '"manifest_version": 999'));
+  const r = run(root, ["--check"]);
+  assert.equal(r.status, 1, `stale JSON must fail check, got ${r.status}`);
+  assert.ok(r.stderr.includes(JSON_REL), `file not named: ${r.stderr}`);
+  rmSync(p);
+  const r2 = run(root, ["--check"]);
+  assert.equal(r2.status, 1, `missing JSON must fail check, got ${r2.status}`);
+  assert.ok(r2.stderr.includes(JSON_REL), `missing file not named: ${r2.stderr}`);
+  assert.equal(run(root).status, 0, "repair run failed");
+  assert.equal(run(root, ["--check"]).status, 0, "check after repair should pass");
+});
+
+case_("json: key order deterministic; deep-equals the lib-normalized fixture manifest", () => {
+  const j1 = readFileSync(join(root, JSON_REL), "utf8");
+  assert.ok(j1.includes('"manifest_version"'), "sanity");
+  // JSON render must deep-equal the fixture YAML re-loaded through the lib
+  // with dimensions normalized via normalizeDimension (object form everywhere).
+  const manifest = loadManifest(root, "docs/claude-code-capabilities.yaml");
+  const expected = JSON.parse(JSON.stringify(manifest));
+  for (const cap of Object.values(expected.capabilities)) {
+    cap.dimensions = {
+      recognized: normalizeDimension(cap.dimensions?.recognized),
+      mounted: normalizeDimension(cap.dimensions?.mounted),
+      behavioral: normalizeDimension(cap.dimensions?.behavioral),
+      ux: normalizeDimension(cap.dimensions?.ux),
+    };
+  }
+  assert.deepEqual(JSON.parse(j1), JSON.parse(JSON.stringify(expected)),
+    "JSON render diverges from normalized manifest");
+  // deterministic key order: serialization of two loads is byte-identical
+  assert.equal(JSON.stringify(JSON.parse(j1), null, 2) + "\n", j1, "key order not deterministic");
 });
 
 // --- failure modes ---

@@ -234,25 +234,54 @@ function checkInvariants(manifest, id, cap, dims, diags, rootDir) {
     diag(diags, "error", "I11", id, "deviation.kind: none requires behavioral: full and ux: full");
 }
 
-function checkFreshness(manifest, id, cap, diags) {
-  const refs = cap.upstream?.refs ?? [];
-  const sources = new Set((manifest.baseline?.sources ?? []).map((s) => s?.id));
+/**
+ * Phase 2 freshness math, shared by I8 above and the freshness report CLI
+ * (scripts/report-capability-freshness.mjs). One capability at a time:
+ * `newest` is the newest *valid* ISO `retrieved` across upstream.refs (ms,
+ * or null when there are no valid refs — empty-refs capabilities are the
+ * Phase 2 backfill queue, §3), `ageDays` its floor against today, `stale`
+ * true when ageDays exceeds baseline.freshness_threshold_days.
+ */
+export function capabilityFreshness(manifest, id, cap) {
+  const refs = cap?.upstream?.refs ?? [];
+  const thresholdDays = manifest.baseline?.freshness_threshold_days;
   let newest = null;
   for (const ref of refs) {
+    const s = String(ref?.retrieved ?? "");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const t = Date.parse(ref.retrieved);
+      if (!Number.isNaN(t) && (newest === null || t > newest)) newest = t;
+    }
+  }
+  const ageDays = newest === null ? null : Math.floor((Date.now() - newest) / 86_400_000);
+  return {
+    id,
+    refs,
+    newest,
+    ageDays,
+    stale:
+      newest !== null &&
+      typeof thresholdDays === "number" &&
+      (Date.now() - newest) / 86_400_000 > thresholdDays,
+  };
+}
+
+function checkFreshness(manifest, id, cap, diags) {
+  const f = capabilityFreshness(manifest, id, cap);
+  const sources = new Set((manifest.baseline?.sources ?? []).map((s) => s?.id));
+  for (const ref of f.refs) {
     if (!sources.has(ref?.source))
       diag(diags, "warning", "I8", id, `upstream.refs source "${ref?.source}" not present in baseline.sources`);
     const t = Date.parse(ref?.retrieved);
     if (Number.isNaN(t) || !/^\d{4}-\d{2}-\d{2}$/.test(String(ref?.retrieved ?? "")))
       diag(diags, "warning", "I8", id, `upstream.refs retrieved "${ref?.retrieved}" is not an ISO date`);
-    else if (newest === null || t > newest) newest = t;
   }
-  const thresholdDays = manifest.baseline?.freshness_threshold_days;
-  if (newest !== null && typeof thresholdDays === "number") {
-    const ageDays = (Date.now() - newest) / 86_400_000;
-    if (ageDays > thresholdDays)
-      diag(diags, "warning", "I8", id, `upstream refs are stale: newest retrieval ${new Date(newest).toISOString().slice(0, 10)} is ${Math.floor(ageDays)} days old (threshold: ${thresholdDays}) — re-verify against upstream docs`);
+  if (f.stale) {
+    const thresholdDays = manifest.baseline?.freshness_threshold_days;
+    diag(diags, "warning", "I8", id, `upstream refs are stale: newest retrieval ${new Date(f.newest).toISOString().slice(0, 10)} is ${f.ageDays} days old (threshold: ${thresholdDays}) — re-verify against upstream docs`);
   }
-  // Empty refs are exempt until Phase 2 backfills them (§3).
+  // Empty refs are exempt from I8; the Phase 2 freshness report surfaces them
+  // in its backfill queue instead (§3).
 }
 
 function checkPerCapability(manifest, id, cap, diags, rootDir) {
