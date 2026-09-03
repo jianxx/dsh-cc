@@ -160,3 +160,6 @@ packages/**/src/*.d.ts.map
 
 # Serena MCP project-local index (machine state, not source).
 .serena/
+
+# scripts/lib/ contains source, not build output
+!scripts/lib/
