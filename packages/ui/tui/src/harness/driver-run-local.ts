@@ -260,9 +260,12 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       }
       const lines = ['Subagent activity:']
       for (const run of runs) {
-        const marker = run.status === 'running' ? '●' : '✓'
+        // `●` running, `○` parked (continuable epoch — session lives), `✓` done.
+        const marker = run.status === 'running' ? '●' : run.status === 'parked' ? '○' : '✓'
         const short = shortenSession(run.sessionId)
-        const reason = run.stopReason === undefined ? '' : ` [${run.stopReason}]`
+        const reason = run.status === 'parked'
+          ? ' [parked]'
+          : run.stopReason === undefined ? '' : ` [${run.stopReason}]`
         lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
       }
       emit(upsertRow(rt.state(), { kind: 'status', text: lines.join('\n') }))

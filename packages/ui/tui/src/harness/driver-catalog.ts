@@ -187,21 +187,49 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
   // accordingly and does not overclaim parentage.
   const subagentStart = 'subagent/start' as Parameters<typeof rt.ctx.on>[0]
   const subagentEnd = 'subagent/end' as Parameters<typeof rt.ctx.on>[0]
+  /**
+   * Probe whether a child session is continuable: duck-typed peek at
+   * `rt.ctx.agents.get(id)` — the child session's events carry a
+   * `subagent/descriptor` event with `data.mode === 'continuable'`. Missing
+   * agent, missing `get`, or no such event → not resumable (fail closed).
+   * Kept local and tiny; no new module.
+   */
+  const probeResumable = (id: string): boolean => {
+    const child = (rt.ctx.agents as unknown as { get?: (id: string) => { session?: { events?: readonly unknown[] } } } | undefined)
+      ?.get?.(String(id))
+    if (child === undefined) return false
+    return child.session?.events?.some(event =>
+      (event as { type?: string; data?: { mode?: string } }).type === 'subagent/descriptor'
+      && (event as { data?: { mode?: string } }).data?.mode === 'continuable'
+    ) === true
+  }
   rt.ctx.on(subagentStart, (info: SubagentRunInfoLike) => {
+    const sessionId = String(info.id)
+    const resumable = probeResumable(sessionId)
     rt.emit(upsertSubagent(rt.state(), {
       runId: String(info.runId),
       provider: String(info.provider),
-      sessionId: String(info.id),
+      sessionId,
       status: 'running',
+      ...(resumable ? { resumable: true } : {}),
     }))
   })
   rt.ctx.on(subagentEnd, (info: SubagentRunEndInfoLike) => {
+    const runId = String(info.runId)
+    const sessionId = String(info.id)
+    // A parked run keeps `resumable: true` so a later cold-resume start for
+    // the same sessionId still matches by sessionId. `stopReason` is only
+    // meaningful on done — the `[completed]` render would read as a crash.
+    const existing = rt.state().subagents.find(run => run.runId === runId || run.sessionId === sessionId)
+    const resumable = existing?.resumable === true || probeResumable(sessionId)
+    const parked = resumable
     const view: SubagentRunView = {
-      runId: String(info.runId),
+      runId,
       provider: String(info.provider),
-      sessionId: String(info.id),
-      status: 'done',
-      ...(info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
+      sessionId,
+      status: parked ? 'parked' : 'done',
+      ...(parked ? { resumable: true } : {}),
+      ...(parked || info.stopReason === undefined ? {} : { stopReason: String(info.stopReason) }),
     }
     rt.emit(upsertSubagent(rt.state(), view))
   })
