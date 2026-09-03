@@ -113,6 +113,12 @@ describe('hooks-claude-code — SubagentStart on background starts (§4.14)', ()
 
     // A cold resume opens a SECOND epoch: a fresh start event with a new runId,
     // and the hook fires once for that epoch too (not per step or per turn).
+    //
+    // Wait for the first epoch's Activation to be released first: a followup
+    // delivered while an Activation is still resident parks as the SAME
+    // epoch's next FIFO turn (no new start event — the CI flake this guards).
+    // Mirrors waitNoActivation in packages/subagent/task/tests/integration.spec.ts.
+    await waitFor(() => ctx.agents.get(started.childId) === undefined)
     await ctx.subagents.followup(parent, started.childId,
       [{ type: 'text' as const, text: 'keep going' }],
       { source: { kind: 'user' as const }, signal: new AbortController().signal })
