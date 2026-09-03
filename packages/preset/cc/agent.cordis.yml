@@ -294,14 +294,18 @@
 
 # Service rows MUST sit in a group with an `isolate` realm: mounting this preset
 # rejects any row that publishes a cordis Service into the root realm
-# (PresetMountError / leakedServices). The five isolate keys below are all
-# required — the glue dynamically attaches mcp-client as a sub-fiber, and
-# `Context.extend` inherits the group's isolate map down the prototype chain, so
-# without `mcpConnections` isolated here it would publish into the root realm
-# and break the preset. The command rows and the `memory` / `hooks-claude-code`
-# consumers must live INSIDE the group: they `ctx.get('ccModelRoutes')`
-# (and `ctx.get('ccPlugins')` / `ctx.get('mcpConnections')`), which resolve to
-# nothing outside the isolated realm.
+# (PresetMountError / leakedServices). The isolate keys below are all required —
+# the glue dynamically attaches mcp-client as a sub-fiber, and `Context.extend`
+# inherits the group's isolate map down the prototype chain, so without
+# `mcpConnections` isolated here it would publish into the root realm and break
+# the preset. The command rows and the `memory` / `hooks-claude-code` consumers
+# must live INSIDE the group: they `ctx.get('ccModelRoutes')` (and
+# `ctx.get('mcpConnections')`), which resolve to nothing outside the isolated
+# realm. `ccPlugins` is deliberately NOT isolated: the glue publishes it into
+# the ROOT realm from the root fiber (see CcPluginsService in
+# @jianxx/dsh-cc-bundle-shell) so host-plane siblings — the TUI driver and /help
+# — can resolve it; isolating the name here would shadow that publication and
+# break in-group resolution too.
 - id: cc-services
   name: cordis:group
   group: true
@@ -309,7 +313,6 @@
     toolSearch: true
     microcompactor: true
     ccModelRoutes: true
-    ccPlugins: true
     mcpConnections: true
   config:
     # ToolSearch: model-called search that activates deferred tools per scope.

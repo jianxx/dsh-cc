@@ -152,14 +152,13 @@ describe('agent.cordis.yml composition', () => {
     }
   })
 
-  it('isolates exactly the five cc-services services, hosting the commands and the ccModelRoutes consumers', () => {
+  it('isolates exactly the four cc-services services, hosting the commands and the ccModelRoutes consumers', () => {
     const group = doc.find((r) => r.id === 'cc-services')!
     expect(group.name).toBe('cordis:group')
     expect(group.isolate).toEqual({
       toolSearch: true,
       microcompactor: true,
       ccModelRoutes: true,
-      ccPlugins: true,
       mcpConnections: true,
     })
     const configIds = (group.config as any[]).map((r) => r.id)

@@ -249,3 +249,62 @@ describe('@jianxx/dsh-cc-bundle-shell plugin command channel', () => {
     expect(changes).toHaveLength(2)
   })
 })
+
+/**
+ * The topology the flat unit tests above miss: in the real composition the CC
+ * preset mounts cc-shell-glue INSIDE the `cc-services` isolate realm while the
+ * host-plane consumers (TUI driver, /help) sit in sibling plugin fibers that
+ * resolve `ccPlugins` against the root realm. A realm-scoped Service.provide
+ * is invisible across that boundary — this suite pins the cross-scope contract.
+ */
+describe('@jianxx/dsh-cc-bundle-shell cross-scope visibility (real bundle topology)', () => {
+  it('a sibling bundle fiber resolves ccPlugins, receives ccPlugins/change, and degrades after glue dispose', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+
+    const root = new Context()
+    // Host-plane seams the glue reads during mount; in the real composition
+    // they are provided at the root realm (outside the cc-services group).
+    root.provide('mcpConnections', {})
+    root.provide('ccModelRoutes', undefined)
+    root.provide('commands', commands)
+
+    // The cc-services group realm: the preset isolates `ccPlugins` here and
+    // mounts the glue inside it.
+    const group = root.isolate('ccPlugins')
+
+    // The consumer is a SEPARATE plugin fiber directly under root — a sibling
+    // subtree of the group, like the TUI bundle's `tui` row or /help.
+    let consumerCtx: Context | undefined
+    const changes: number[] = []
+    await root.plugin({
+      name: 'host-consumer',
+      apply(c: Context) {
+        consumerCtx = c
+        c.on('ccPlugins/change', () => { changes.push(changes.length) })
+      },
+    })
+
+    const glue = group.plugin({ name: 'cc-shell-glue', apply }, configFor([tmpRoot]))
+    await glue
+
+    // Sibling visibility: the consumer's context resolves the registry even
+    // though it was published from inside the isolated group realm.
+    const resolved = consumerCtx!.get('ccPlugins') as CcPluginsService | undefined
+    expect(resolved).toBeDefined()
+    expect(resolved!.list().map(entry => entry.name)).toEqual(['alpha'])
+    expect(resolved!.listPluginCommands().map(info => info.name)).toEqual(['alpha:alpha-command'])
+
+    // Event reachability: mountAll's change event crossed the bundle boundary.
+    expect(changes).toHaveLength(1)
+
+    // Property-access path (command-help's `(ctx as ...).ccPlugins` read).
+    expect((consumerCtx as { ccPlugins?: CcPluginsService }).ccPlugins).toBe(resolved)
+
+    // Lifecycle: disposing the glue fiber removes the published property, and
+    // the consumer degrades to undefined instead of holding a dead registry.
+    await (await glue).dispose()
+    expect(consumerCtx!.get('ccPlugins')).toBeUndefined()
+
+    await root.fiber.dispose()
+  })
+})
