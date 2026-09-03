@@ -1,153 +1,277 @@
+<!-- GENERATED from docs/claude-code-capabilities.yaml — do not edit; run pnpm docs:parity -->
+
 # Claude Code parity matrix
 
-Single source of truth for how the dsh-cc stack (`@deepseek-ai/dsh-base` +
-`cc-bundle-permissions` + `cc-bundle-shell`) covers Claude Code's user-facing
-features. Status legend:
+Generated from the machine-readable capability manifest. One symbol per capability,
+derived from four orthogonal dimensions (`recognized` / `mounted` / `behavioral` / `ux`):
 
-- ✅ implemented and mounted
-- 🔶 partial (call out what's missing)
-- ❌ missing (no design asset yet)
-- 🚫 won't port (vendor-bound or out of scope, with reason)
-
-## Mode placement (host plane vs preset plane)
-
-How the stack is split across dsh's planes when CC Mode is the active preset.
-
-**Host plane — globally retained, no visible change for the four built-in modes:**
-
-- `@jianxx/dsh-cc-tools` (tools-registry fork + deferred capability)
-- `@jianxx/dsh-cc-settings-cascade` and `@jianxx/dsh-cc-permission-rules`
-  (the `cc-permissions` bundle)
-- `@jianxx/dsh-cc-settings-migrations`
-
-**Preset plane — CC mode only:** `tool-search`, `skill-claude-code`,
-`cc-shell-glue`, `memory`, `memory-consolidation`, `cc-output-styles`,
-`compaction-micro`, `coordinator`, `schedule` (upstream package),
-`tool-git-worktree`, `tool-sleep`, `tool-notebook-edit`,
-`tool-structured-output`, `hooks-claude-code`, `tool-web-fetch`, and the 21 `command-*` packages.
-**Among the `cc-services` group** (isolated realm, `mcpConnections` must be
-isolated): `tool-search`, `compaction-micro`, `cc-shell-glue`,
-`command-plugin`, `command-mcp`, `cc-model-routes`
-(`@jianxx/dsh-cc-model-aliases`), `tool-task` (`@jianxx/dsh-cc-subagent-task`),
-and `tool-web-fetch` (`@jianxx/dsh-cc-tool-web-fetch`).
-
-**Not reassigned — the untouched upstream host face:** the `system-prompt`
-service, the `subagents` registry, and `tokenMeter` (kept per the existing
-dsh-web-app surgery criteria).
+- ✅ full parity: behavior matches upstream, mounted by default, complete UX
+- 🔶 partial: usable with known differences (see Deviation/Notes)
+- ❌ missing: absent today
+- 🚫 not a parity port — may exist as a dsh-native equivalent (see Deviations)
 
 ## Engine subsystems
 
-| CC subsystem                            | Status    | Where / notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent loop + tool pipeline              | ✅        | `@deepseek-ai/dsh-agent-loop`, `dsh-tools` (this repo's `core/tools` swap adds `reserve()`/`isAdmitted()` for deferred tools). CC↔harness tool-name translation lives in `core/tools/src/cc-names.ts` (`translateToolNames` strict/lenient for `restrict()`-bound lists, `ccToolAliases` for rule/matcher matching, `ccCanonicalToolName` for CC-facing payloads) — agent/skill frontmatter, permission rules, and hook matchers all consume it                                                                            |
-| File tools (Read/Edit/Write), Glob/Grep | ✅        | `dsh-tool-fs`, `dsh-tool-fs-search`, `dsh-tool-str-replace-editor`                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Bash / PowerShell + background jobs     | ✅        | `dsh-tool-bash`/`dsh-tool-pwsh` + `dsh-jobs` + `dsh-tool-jobs`; CC's `TaskCreate/Output/Stop` naming not aliased                                                                                                                                                                                                                                                                                                                                                                                                           |
-| WebSearch                               | ✅        | `dsh-tool-web` + `dsh-web-search-deepseek`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| WebFetch                                | 🔶        | tool is mounted via `@jianxx/dsh-cc-tool-web-fetch` (optional `prompt` summarized on `resolve('haiku')` when configured; otherwise raw converted text + notice). **No fetch provider is shipped** through 0.1.1-rc.2 (`WEB_PROVIDER_UNAVAILABLE` at execute until a deployment mounts one). No host allowlist; enable only on egress-restricted deployments. Upstream SSRF allowlist remains a follow-up.                                                                                                                                                                                                                                                                                          |
-| Subagents / Agent tool / teams          | 🔶        | `dsh-subagent*` providers + `tool-subagent-control` (`send_message`/`interrupt`/`list_agents`); CC `.claude/agents` now really dispatched via `@jianxx/dsh-cc-subagent-task` (CC `Task`, tool row `tool-task`) — `subagent_type` dispatch over per-workspace `.claude/agents` definitions: persona = definition systemPrompt, task text = child's first user message, model alias routed through the `ccModelRoutes` service, sanitized toolFilter, `maxDepth` 3; an `Available subagents` system-prompt section lists the options; CC-mode additionally ships **bundled `explore` and `dsh-cc-guide` agents** (`model: haiku`, read-only Read/Glob/Grep allow-list, `source: 'bundled'`, lowest rank) that a `.claude/agents` file of the same name shadows. **Background/continuable loop:** `run_in_background: true` starts the child as a durable continuable agent on the `spawn` provider (same definition folding as foreground: persona, sanitized toolFilter, alias-resolved agentOptions, `maxDepth` 3) and returns promptly with a durable `agentId` once the child accepts its first turn; the child's `report` or the runtime's finish notice wakes the parent, and `send_message` / `interrupt_agent` / `list_agents` address the child by that id (only the child's exact live direct parent may continue it). Omitting `run_in_background` stays foreground unless the definition pins `background: true` (explicit `run_in_background` always wins — true or false alike); the prompt teaches the Claude Code human heuristic (need-this-turn → omit, human can keep talking → background). Task now consumes the already-parsed `background` pin (Claude Code documents the same field). Still a deliberate deviation from Claude Code interactive omit=background. **Deliberate deviations from CC:** `fork` + background is rejected with an error naming upstream harness issue #2124 (fork stays foreground one-shot); there is **no `TaskOutput` alias and no `outputFile` field** — collection flows through the report wake / `list_agents` / `send_message`, and the child's persisted session transcript is inspectable via existing session tooling; **cold resume restores `persona`/`toolFilter`/model route from the persisted descriptor but drops every other `agentOptions` field** (alias-stamped `reasoningEffort`, `maxTokens`) in favor of the resumed route's defaults; **exiting the parent session drains children's in-flight turns** (their persisted Sessions survive and cold-resume on the next `send_message` from the resumed parent); bundled cheap agents (`explore`, `dsh-cc-guide`) **may** run in the background — CC's "built-ins return no agent id" restriction is not mirrored, since background-vs-foreground is the caller's choice and the continuable machinery is uniform. Other known limits: Task children **spawn fresh** (no parent conversation; pass `subagent_type: "fork"` to inherit completed parent turns, matching CC), every Task child **skips the workspace CLAUDE.md/AGENTS.md baseline** (the harness `agent-instructions` user message) so its persona stays the agent file — an intentional deviation from CC, whose custom subagents load CLAUDE.md (fork children still inherit any CLAUDE.md already in the parent seed), **no seam plugin-agent dispatch** (`subagent_type` only addresses file definitions), and discovery is a **process-level cache** — editing `.claude/agents` needs a restart (mtime invalidation pending). Unknown `subagent_type` errors with the available list. MCP deferral interacts with children: a default spawn inherits the parent's deferred MCP reservations; a named child's sanitized `toolFilter` keeps mounted `mcp__*` public names (and `mcp__<server>` / `mcp__<server>__*` wildcards), auto-includes `ToolSearch` when that name is restrictable, and treats an emptied allow-list as deny-all. The harness `tool-subagent`/`tool-subagent-fork` rows are disabled in the cc preset in favour of `tool-task` (the disabled `tool-subagent-fork` row's `backgroundMode: continuable` config is inert while disabled).                                                          |
-| Coordinator mode                        | ✅        | `subagent/coordinator` (`DSH_COORDINATOR_MODE=1`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Workflow / Ralph loop                   | ✅        | `dsh-tool-workflow`, `dsh-tool-ralph` (base)                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Plan mode                               | ✅        | `dsh-plan-mode` (base), incl. `/plan`; Shift+Tab and `/permissions plan` switch through the `/plan` command channel (see docs/plan-mode-command-channel.md)
-| Todo list                               | 🔶        | `dsh-tool-todo` (base) is model-facing; the TUI now renders the session todo list in a modal Ctrl+T panel, but human-facing `/tasks` still lists jobs only — the `/tasks` todo seam remains pending                                                                                                                                                                                                                                                                                                                         |
-| Auto-compaction                         | ✅        | `dsh-compaction-basic` + `command-compact` (`/compact`) + tool-result pruner; this repo adds model-free `compaction-micro`                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Session persistence / resume / fork     | ✅ engine | jsonl/sqlite + projection + checkpoint policy; see command-surface row for `/resume` `/branch` limits. Titles: first-prompt titles generate through the host-plane `session-title-llm-cc` provider (`compat/session-title-provider`) — the auxiliary route stamps the `haiku` cheap lane when configured, else inherits the logged main route (explicit `provider`+`model` config wins); `/rename <title>` pins a user title via `interaction/command-rename` |
-| Skills system                           | ✅        | `skill-claude-code` loader + base `tool-skill`; CC `paths` conditional activation ✅; bundled skills subset (debug/simplify/batch) ✅ — CC's `verify`/`stuck` not ported (ant-only, `verify` companion files absent). TUI `/name` routing ✅: user-invocable skills appear in the `/` menu and an unmatched `/name` submits as a user prompt so `dsh-tool-skill` injects at pre-step (skills are not `/help` entries; `/` autocomplete and `/skills` are the discovery surfaces) |
-| Plugin system                           | ✅        | `cc-plugin-loader` (agents/commands/hooks/mcp servers/skill/settings from `.claude-plugin/plugin.json` or top-level `plugin.json`) + cc-shell-glue discovery: default is `enabledPlugins` ∩ `installed_plugins.json` (`name@marketplace` + `installPath`); explicit `pluginDirs` still flattens. Marketplace-root overlays replace default `skills/`. Project-scope enablement is boot-cwd-biased. |
-| Model aliases                           | ✅        | `compat/cc-model-aliases` (`@jianxx/dsh-cc-model-aliases`) — `model:` frontmatter aliases (`sonnet`/`opus`/`haiku`/`fable` plus dsh-cc lanes `sketch`/`draft`/`blueprint`/`masterplan`/`architect` + open set) resolve to `{provider, model, reasoningEffort?}` routes (object form may stamp an opaque effort onto the child; string form cannot); `inherit` and unconfigured-builtin aliases inherit the parent route (fixes the old `inherit` pass-through bug); settings `model-aliases` overlay + config `modelAliases` defaults, null-delete, builtin fallback; shared **`toAgentOptions`** drops undefined route fields (per-field inheritance) and the cheap background lane **is** `resolve('haiku')` (no second alias). Now shipped as the **`ccModelRoutes` service** (cc preset row `cc-model-routes`) owning the `model-aliases` namespace; cc-shell `AgentProvider` and the Task tool consume it lazily via `ctx.get('ccModelRoutes')`. Follow-ups: `/model` command, `ANTHROPIC_*` env vars (no Anthropic semantics), and aliasing the main-session default model |
-| Output styles | ✅ | `compat/cc-output-styles` + `/output-style` |
-| Settings precedence | ✅ | `settings-cascade` (user/project/local/flags) |
-| Settings migrations | ✅ | `settings/settings-migrations` (`@jianxx/dsh-cc-settings-migrations`) — version-gated `runMigrations` over an atomically-written settings.json, auto-run on mount; mechanism only (no real migrations yet) |
-| Permission rules | ✅ | rule engine + dangerous-command/path risk classifier. Modes are **durable**: `permission/mode` session events (registered into `KNOWN_SESSION_EVENT_TYPES` at plugin load so persistence resumes them); `/permissions <mode>` switches `default\|acceptEdits\|plan\|auto\|bypassPermissions`; the bare `/permissions` opens a picker of those five modes (`bypassPermissions` with the same risk gate as host `/permission` Full access) — browser via popupSelect, TUI via an overlay that submits `/permissions ${id}` through the host command; plan non-read-only calls deny with `exit_plan_mode` guidance; auto auto-allows classifier-LOW asks and still prompts on MEDIUM; entering bypassPermissions pins `danger-full-access` and records `resumeSandbox` for restore. The TUI approval modal's always-allow answer (`3`/`a`) persists a derived rule into the settings allow list — a trailing-space first-word prefix for shell commands (`Bash(npm )` matches `npm install …`, never `npmx …`), a whole-tool rule otherwise — merging via describe → merge → replace with one revision-conflict retry. Remaining vs CC: ML/bash risk classifier service, managed/enterprise remote settings, UI mode cycle |
-| Hooks | 🔶 | 18 of 30 events bridged (see table below); `command`+`http` executors always on, `prompt`/`agent` executors behind `enablePromptHooks`/`enableAgentHooks` (default off); those forks resolve their `model:` through `ccModelRoutes` (omitted `model` → the `haiku` cheap lane) and the `memory` + `hooks-claude-code` rows live inside the `cc-services` isolate group so the service is visible |
-| MCP client | ✅ | tools + resources + prompts + OAuth 2.1. Tools are deferred through ToolSearch when a server lists at least the per-server threshold (default 8; counts `tools/list` including alwaysLoad tools) — deferred tools stay out of the model-visible schema until a ToolSearch hit activates them; `_meta['anthropic/alwaysLoad']` tools stay eager; the resource bridge stays eager; no `toolSearch` seam ⇒ eager fallback. A generation swap (reconnect / `tools/list_changed`) unloads previously activated tools. |
-| Memory / CLAUDE.md | ✅ | `memory` + `memory-consolidation` (AutoDream analog); per-repository isolation mirroring CC auto memory (derived from the git repo so worktrees and subdirectories share one store at `<memoryHome>/projects/<slug>/`, slug = dash-encoding of the canonical git root, not the raw cwd) plus a shared global layer at the home root (`memory_save` `scope`); `memory_save` tool is the save channel (the memdirs sit outside the session sandbox, so direct Write is fenced; forks report structured output and the plugins write host-side under a memdir-confined per-call policy); recall suppresses reference-doc memories for recently used tools; opt-in `teamEnabled` shared team memory (`<workspaceDir>/team`, also collapsed onto the repo) with a seam-native symlink/containment validation chain |
-| Cost / token tracking | ✅ | `token-meter` (base) + `/cost`; the TUI `/usage` panel renders live context occupancy, token totals (cache rows only when non-zero), and a system/tools/messages breakdown, each section degrading independently when its projection is missing; CC quota/limit surfaces are vendor-billing-bound 🚫 (the panel footnotes quota as unavailable) |
-| Schedule / reminders | 🔶 | `@deepseek-ai/dsh-schedule` mounted: `after_seconds` / `at` / `every_seconds` (≥300s). CC's cron-expression selectors unsupported — upstream extension planned |
-| Worktree tools | ✅ | `EnterWorktree`/`ExitWorktree` |
-| Sleep tool | ✅ | `tool-sleep` (`@jianxx/dsh-cc-tool-sleep`) — `Sleep` with cooperative interrupt-cancel and concurrency-safe semantics aligned to CC's SleepTool |
-| StructuredOutput (synthetic output tool) | ✅ | `core/tool-structured-output` (`@jianxx/dsh-cc-tool-structured-output`) — `StructuredOutput` validates the model's final output against a caller-supplied JSON schema and echoes it back, aligned to CC's SyntheticOutputTool; registered only when a schema is declared |
-| NotebookEdit | ✅ | `core/tool-notebook-edit` (`@jianxx/dsh-cc-tool-notebook-edit`) — `NotebookEdit` edits Jupyter notebook (.ipynb) cells over the `ctx.fs` seam with CC's replace/insert/delete, real-id + `cell-<n>` addressing, and a read-before-write gate on `fs/observed` |
-| AskUserQuestion | ✅ | mounted via `dsh-user-questions` + `dsh-tool-ask-user` (harness 包，工具名 `ask_user_question`；UI provider 归宿主 app，无 provider 时优雅报错). The TUI registers a modal provider; questions and approvals share one FIFO so a question arriving mid-approval queues instead of stacking an unreachable second box |
-| ToolSearch (deferred tools) | ✅ | `core/tool-search`; mcp-client is now a production caller (deferred MCP tools above the per-server threshold) |
-| Sandbox | ✅ | `dsh-sandbox-local` + policy (base) |
-| Credentials | ✅ | `dsh-credentials-local` (base) |
-| Notifications (bell/OS/iterm) | ❌ | no notification seam in deepseek-harness; needs a new design |
-| Vim mode / keybindings / statusline / ghost text | 🔶 | `dsh --profile tui` (`@jianxx/dsh-cc-bundle-tui`) is the terminal surface. Keybindings: Shift+Tab cycles CC permission modes, Esc interrupts (and closes/cancels overlays), idle Ctrl+C exits on a double press, Ctrl+S injects the queued outbox into the running turn, Ctrl+T toggles the todo panel, Ctrl+O toggles global collapse of thinking + tool output, ↑ recalls queued messages, and Tab completes `/model`/`/effort`/`/permissions`/`/resume` arguments; slash catalog via `ctx.commands`. Bare `/permissions` opens the TUI permission-mode picker (argued `/permissions <mode>` still switches directly). Approval prompts render a preview (shell command / per-file diff / pretty-printed args) and answer `1`/`y` once, `2`/`n` reject, `3`/`a` always-allow (persists a permission rule — see the Permission rules row); approvals and ask-user questions share one modal FIFO (`Approval (1 of N)`), including subagent approvals. A leading `!` runs a local shell command (warning border, separate `bash-history.txt`, output shown as status rows that never reach the model or the session log). TUI-local commands: `/export-md [path]` (Markdown transcript, default under `$DSH_HOME/tui/exports/`), `/copy` (OSC 52 clipboard, most recent assistant reply), `/usage` (live context bar + token buckets + breakdown panel; quota has no source and is never shown). The `theme` config block recolors six roles (accent/success/error/warning/muted/highlight) via ANSI color names or raw SGR codes. The statusline renders exact context occupancy (`ctx NN% (used/window)`), and transcript rendering covers multi-hunk diffs with gutter numbers plus consecutive-read collapse. Vim / ghost text still later |
-| IDE integration / LSP | 🔶 | Two paths. **Production: Serena MCP** — user-scope `~/.claude.json` (v1.7.0 pin, `--context claude-code --project-from-cwd`): symbol-level retrieval (`find_symbol`, `get_symbols_overview`, `find_referencing_symbols`, `find_implementations`), symbol-level editing (`replace_symbol_body`, `rename_symbol`, `safe_delete_symbol`, `insert_before/after_symbol`, `replace_content`, `replace_in_files`), pull diagnostics (`get_diagnostics_for_file`); ~30 tools deferred through ToolSearch (per-server threshold 8). Gaps vs CC: no hover tool, no call hierarchy, no push diagnostics. **Native: `dsh-lsp`/`dsh-lsp-stdio`/`dsh-tool-lsp`** — packages exist with a closed 4-operation read-only seam (goToDefinition/findReferences/goToImplementation/hover) but are **not mounted by any shipped composition** (`cordis.patch.yml`/`agent.cordis.yml` have no lsp rows; only `packages/bundle/cc-shell/tests/lsp-bundle.spec.ts` mounts them). cc-plugin-loader gap: `lspServers`/`.lsp.json` manifests are not parsed, so CC code-intelligence plugins have no effect. PreToolUse hooks ignore `additionalContext`, bounding hook-based pre-tool shaping. `/ide` 与 editor pods 属交互壳范畴，headless 仍不适用 |
-| Remote / web sessions | 🔶 different | CC `bridge/` is claude.ai-bound 🚫; dsh has its own web/host/sdk/acp stack outside this repo |
-| Voice | 🚫 | vendor feature, no design asset |
-| Buddy / KAIROS / undercover / ultraplan / computer-use | 🚫 | Anthropic-internal or vendor-bound |
-| Onboarding / tips | ❌ | no package or design doc |
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-engine.agent-loop"></a>Agent loop + tool pipeline | ✓ | ✓ | Full | Full | [s1](packages/core/tools/src/cc-names.ts) [t1](packages/core/tools/tests/cc-names.spec.ts) | — | — |
+| ✅ | <a id="cap-engine.ask-user-question"></a>AskUserQuestion | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/bundle/cc-shell/tests/ask-user-bundle.spec.ts) [t2](packages/ui/tui/tests/driver-question.spec.ts) | — | — |
+| 🔶 | <a id="cap-engine.bash-jobs"></a>Bash / PowerShell + background jobs | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [s2](packages/preset/cc/agent.cordis.yml) | downgrade — CC's TaskCreate/TaskOutput/TaskStop tool naming is not aliased; the dsh jobs tools (tool-jobs over the host job registry) carry the equivalent surface under dsh names. | — |
+| ✅ | <a id="cap-engine.coordinator"></a>Coordinator mode | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/subagent/coordinator/tests/coordinator.spec.ts) | — | — |
+| 🔶 | <a id="cap-engine.cost-tracking"></a>Cost / token tracking | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/session/command-cost/tests/command-cost.spec.ts) [t2](packages/ui/tui/tests/usage-panel.spec.ts) | downgrade — Ships an empty default price table (composition decides pricing), and CC quota/limit surfaces are vendor-billing-bound — the TUI /usage panel footnotes quota as unavailable. | — |
+| ❌ | <a id="cap-engine.credentials"></a>Credentials storage | — | — | Missing | Missing | — | downgrade — FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane upstream package dsh-credentials-local, but that package has no in-repo file to anchor a positive claim against, so per the evidence backfill rule the claim is downgraded until an in-repo seam exists. | — |
+| ✅ | <a id="cap-engine.file-tools"></a>File tools (Read/Edit/Write), Glob/Grep | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [s2](packages/preset/cc/agent.cordis.yml) | — | — |
+| 🔶 | <a id="cap-engine.ide-lsp"></a>IDE integration / LSP | ✓ | — | Partial | Partial | [t1](packages/bundle/cc-shell/tests/lsp-bundle.spec.ts) | downgrade — Two paths. Production: Serena MCP via user-scope ~/.claude.json (v1.7.0 pin) — symbol-level retrieval/editing/diagnostics, ~30 tools deferred through ToolSearch; gaps: no hover tool, no call hierarchy, no push diagnostics. Native dsh-lsp/dsh-lsp-stdio/dsh-tool-lsp exist with a closed 4-operation read-only seam but are NOT mounted by any shipped composition (no lsp rows in cordis.patch.yml/agent.cordis.yml). cc-plugin-loader does not parse lspServers/.lsp.json manifests; PreToolUse hooks ignore additionalContext. /ide and editor pods remain host-shell scope; headless does not apply. | — |
+| ✅ | <a id="cap-engine.notebook-edit"></a>NotebookEdit | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/core/tool-notebook-edit/tests/tools.spec.ts) | — | — |
+| ❌ | <a id="cap-engine.notifications"></a>Notifications (bell/OS/iterm) | — | — | Missing | Missing | — | upstream-blocked — No notification seam in deepseek-harness; needs a new design. | — |
+| ❌ | <a id="cap-engine.onboarding"></a>Onboarding / tips | — | — | Missing | Missing | — | downgrade — No package or design doc exists for onboarding/tips. | — |
+| ✅ | <a id="cap-engine.plan-mode"></a>Plan mode | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/ui/tui/tests/plan-channel.spec.ts) [t2](packages/interaction/command-permissions/tests/plan-channel.integration.spec.ts) | — | — |
+| ❌ | <a id="cap-engine.remote-sessions"></a>Remote / web sessions | — | — | Missing | Missing | — | downgrade — FORCED DOWNGRADE at seed: the legacy row reads "🔶 different — CC bridge/ is claude.ai-bound; dsh has its own web/host/sdk/acp stack outside this repo", but that stack has no in-repo surface to anchor a positive claim against, so the seed records the four dimensions as non-positive until the external stack gains an in-repo seam. | — |
+| ❌ | <a id="cap-engine.sandbox"></a>Sandbox | — | — | Missing | Missing | — | downgrade — FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane upstream packages dsh-sandbox-local + policy, but they have no in-repo file to anchor a positive claim against, so per the evidence backfill rule the claim is downgraded until an in-repo seam exists. | — |
+| 🔶 | <a id="cap-engine.schedule"></a>Schedule / reminders | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/bundle/cc-shell/tests/schedule-bundle.spec.ts) | downgrade — after_seconds / at / every_seconds (>=300s) supported; CC's cron-expression selectors are unsupported until the dsh-schedule selector seam lands (upstream extension planned). | — |
+| ✅ | <a id="cap-engine.sleep"></a>Sleep tool | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/core/tool-sleep/tests/tools.spec.ts) | — | — |
+| ✅ | <a id="cap-engine.structured-output"></a>StructuredOutput (synthetic output tool) | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/core/tool-structured-output/tests/tools.spec.ts) | — | — |
+| ✅ | <a id="cap-engine.tool-search"></a>ToolSearch (deferred tools) | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/core/tool-search/tests/tool-search.spec.ts) | — | — |
+| 🔶 | <a id="cap-engine.tui"></a>Vim mode / keybindings / ghost text | ✓ | ✓ | Partial | Partial | [t1](packages/ui/tui/tests/mode-cycle.spec.ts) | downgrade — dsh --profile tui is the terminal surface: Shift+Tab mode cycling, Esc interrupt, Ctrl+C/Ctrl+S/Ctrl+T/Ctrl+O/Up/Tab bindings, approval previews with 1/2/3 answers on a shared FIFO, leading-! bash mode with separate history, TUI-local /export-md /copy /usage, six-role theme, context-occupancy statusline, multi-hunk diff transcript rendering. Vim mode and ghost text are still later. The statusline settings contract is tracked separately as ux.statusline. | — |
+| 🚫 | <a id="cap-engine.vendor-internals"></a>Buddy / KAIROS / undercover / ultraplan / computer-use | — | — | Missing | Missing | — | non-goal — Anthropic-internal or vendor-bound features; no design asset and out of parity scope. | — |
+| 🚫 | <a id="cap-engine.voice"></a>Voice | — | — | Missing | Missing | — | non-goal — Vendor feature with no design asset; won't port. | — |
+| 🔶 | <a id="cap-engine.web-fetch"></a>WebFetch | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/core/tool-web-fetch/tests/tools.spec.ts) | downgrade — Mounted via @jianxx/dsh-cc-tool-web-fetch (optional prompt summarized on resolve('haiku') when configured, else raw converted text + notice). No fetch provider is shipped through 0.1.1-rc.2 (WEB_PROVIDER_UNAVAILABLE at execute until a deployment mounts one); no host allowlist — enable only on egress-restricted deployments; upstream SSRF allowlist remains a follow-up. | — |
+| ✅ | <a id="cap-engine.web-search"></a>WebSearch | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) | — | — |
+| ✅ | <a id="cap-engine.workflow-ralph"></a>Workflow / Ralph loop | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [s2](packages/preset/cc/agent.cordis.yml) | — | — |
 
-## Hook events (18 of 30 bridged)
+## Hook events
 
-Supported now: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`,
-`PermissionRequest`, `PermissionDenied`, `Notification` (`permission_prompt`
-subtype only), `PostCompact`, `SessionEnd`, `StopFailure`, `TaskCreated`,
-`TeammateIdle`, `Setup` (first-run approximation), `SessionResume` (`resume`
-source only).
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-hooks.executors"></a>Hook executors (command/http/prompt/agent) | ✓ | — | Partial | Partial | [t1](packages/hooks/hooks-claude-code/tests/executors.spec.ts) [s1](packages/hooks/hooks-claude-code/src/dispatch.ts) | downgrade — command + http (SSRF-allowlisted via allowedHttpHookUrls) executors are always on; prompt/agent executors are gated behind enablePromptHooks / enableAgentHooks (default off) and resolve their model: through ccModelRoutes (omitted model → the haiku cheap lane). | mounted: command+http executors always on; prompt/agent behind enablePromptHooks/enableAgentHooks, default off (spec §6) |
+| ❌ | <a id="cap-hooks.message-display"></a>MessageDisplay hook | — | — | Missing | Missing | — | downgrade — Not bridged — no dsh emit point for message-display rendering events. | — |
+| 🔶 | <a id="cap-hooks.notification"></a>Notification hook | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | downgrade — Bridged for the permission_prompt subtype only; idle_prompt / auth_success / elicitation* subtypes have no equivalent seam in a headless harness (cannot map). | — |
+| ✅ | <a id="cap-hooks.permission-denied"></a>PermissionDenied hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.permission-request"></a>PermissionRequest hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.post-compact"></a>PostCompact hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ❌ | <a id="cap-hooks.post-tool-batch"></a>PostToolBatch hook | — | — | Missing | Missing | — | downgrade — Not bridged — the dsh tool pipeline has no per-batch emit point yet (hook-bridge follow-up). | — |
+| ✅ | <a id="cap-hooks.post-tool-use"></a>PostToolUse hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.post-tool-use-failure"></a>PostToolUseFailure hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ❌ | <a id="cap-hooks.pre-compact"></a>PreCompact hook | — | — | Missing | Missing | — | upstream-blocked — Needs an upstream compaction-waterfall interception seam in dsh-compaction (planned). | — |
+| 🔶 | <a id="cap-hooks.pre-tool-use"></a>PreToolUse hook | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | downgrade — Bridged with matcher support and the permissionDecision decision contract, but additionalContext is ignored, bounding hook-based pre-tool shaping. | — |
+| ✅ | <a id="cap-hooks.session-end"></a>SessionEnd hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.session-start"></a>SessionStart hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| 🔶 | <a id="cap-hooks.setup"></a>Setup hook | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | downgrade — Bridged as a first-run approximation, not the full upstream Setup contract. | — |
+| ✅ | <a id="cap-hooks.stop"></a>Stop hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/coverage-stop.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.subagent-start"></a>SubagentStart hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/background-subagent-start.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.subagent-stop"></a>SubagentStop hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ✅ | <a id="cap-hooks.task-created"></a>TaskCreated hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
+| ❌ | <a id="cap-hooks.user-prompt-expansion"></a>UserPromptExpansion hook | — | — | Missing | Missing | — | downgrade — Not bridged — no dsh emit point for prompt-template expansion. | — |
+| ✅ | <a id="cap-hooks.user-prompt-submit"></a>UserPromptSubmit hook | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/hooks/hooks-claude-code/tests/events.spec.ts) | — | — |
 
-Not bridged (with reason):
+## Command surface
 
-- `PreCompact` — needs an upstream compaction waterfall seam (planned).
-- `Notification` subtypes `idle_prompt` / `auth_success` / `elicitation*` — no
-  equivalent seam in a headless harness (cannot map).
-- `UserPromptCancel` — no dsh cancel seam; the bridge does not do a lossy
-  approximation (not bridged by design).
-- `SessionResume` `clear`/`compact` sources — no dsh emit point (pending; only
-  `resume` is bridged).
-- The remaining CC event×source payload variants — tracked as hook-bridge
-  follow-ups in the package README.
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-commands.branch"></a>/branch | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-branch/tests/command-branch.spec.ts) | downgrade — Forks and reports the child id; switching to the child requires a restart. | — |
+| ✅ | <a id="cap-commands.compact"></a>/compact | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-compact/tests/command-compact.spec.ts) | — | — |
+| 🔶 | <a id="cap-commands.config"></a>/config | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-config/tests/command-config.spec.ts) | downgrade — Text-only render/patch with an allowlisted key set, not an interactive editor. | — |
+| ✅ | <a id="cap-commands.cost"></a>/cost | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/session/command-cost/tests/command-cost.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.diff"></a>/diff | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-diff/tests/command-diff.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.doctor"></a>/doctor | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-doctor/tests/command-doctor.spec.ts) | — | — |
+| 🚫 | <a id="cap-commands.exit"></a>/exit | ✓ | — | Divergent | Missing | [s1](packages/ui/tui/src/slash.ts) | non-goal — Host-owned by design; the dsh-native equivalents are the TUI /exit command (packages/ui/tui/src/slash.ts) and the idle double Ctrl+C gesture, so a preset-side port is out of parity scope. | — |
+| ✅ | <a id="cap-commands.export"></a>/export | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/session/command-export/tests/command-export.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.help"></a>/help | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-help/tests/command-help.spec.ts) | — | — |
+| 🔶 | <a id="cap-commands.init"></a>/init | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-init/tests/command-init.spec.ts) | downgrade — Drives a follow-up turn that writes/refreshes CLAUDE.md rather than the upstream one-shot initializer flow. | — |
+| ✅ | <a id="cap-commands.mcp"></a>/mcp | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-mcp/tests/command-mcp.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.memory"></a>/memory | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-memory/tests/command-memory.spec.ts) | — | — |
+| 🚫 | <a id="cap-commands.model"></a>/model | ✓ | — | Divergent | Missing | [s1](packages/ui/tui/src/slash.ts) [t1](packages/ui/tui/tests/driver-model.spec.ts) | non-goal — Host-owned by design; the dsh-native equivalents are the TUI-local /model and /effort commands (packages/ui/tui/src/slash.ts, model-catalog) plus the ccModelRoutes alias service, so a preset-side port is out of parity scope. | — |
+| ✅ | <a id="cap-commands.output-style"></a>/output-style | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/cc-output-styles/tests/output-styles.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.permissions"></a>/permissions [mode] | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-permissions/tests/command-permissions.spec.ts) [t2](packages/ui/tui/tests/driver-permissions.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.plan"></a>/plan | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/ui/tui/tests/plan-channel.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.plugin"></a>/plugin | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-plugin/tests/command-plugin.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.release-notes"></a>/release-notes | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-release-notes/tests/command-release-notes.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.reload-plugins"></a>/reload-plugins | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/bundle/cc-shell/tests/ccPlugins.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.rename"></a>/rename <title> | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-rename/tests/command-rename.spec.ts) | — | — |
+| 🔶 | <a id="cap-commands.resume"></a>/resume | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-resume/tests/command-resume.spec.ts) | downgrade — Lists sessions; switching is host-owned (dsh --resume <id>). | — |
+| ❌ | <a id="cap-commands.rewind"></a>/rewind | — | — | Missing | Missing | — | upstream-blocked — Needs the session file-snapshot seam; no checkpoint/rewind design exists yet. | — |
+| ✅ | <a id="cap-commands.skills"></a>/skills | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-skills/tests/command-skills.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.stats"></a>/stats | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/session/command-stats/tests/command-stats.spec.ts) | — | — |
+| ✅ | <a id="cap-commands.status"></a>/status | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-status/tests/command-status.spec.ts) | — | — |
+| 🔶 | <a id="cap-commands.tasks"></a>/tasks | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-tasks/tests/command-tasks.spec.ts) | downgrade — Human-facing /tasks lists background jobs only; the todo-list seam is pending. The model-facing dsh-tool-todo and the TUI Ctrl+T todo panel cover the rest of the workflow. | — |
+| ✅ | <a id="cap-commands.version"></a>/version | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/interaction/command-version/tests/command-version.spec.ts) | — | — |
 
-Executors: `command`, `http` (SSRF-allowlisted via `allowedHttpHookUrls`),
-`prompt`, `agent` (forked subagent; gated by `enablePromptHooks` /
-`enableAgentHooks`, default **off**).
+## Sessions and context
 
-## Command surface (/…)
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ❌ | <a id="cap-sessions.checkpointing"></a>File checkpointing and rewind | — | — | Missing | Missing | — | upstream-blocked — Feature absent; requires a snapshot seam in the session layer. | — |
+| ✅ | <a id="cap-sessions.persistence"></a>Session persistence / resume / fork | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/session-title-provider/tests/provider.spec.ts) [t2](packages/ui/tui/tests/session-list.spec.ts) | — | — |
 
-Mounted CC-parity commands (21): `/cost`, `/doctor`, `/export`, `/stats`,
-`/status`, `/output-style`, `/memory`, `/skills`, `/help`, `/config`,
-`/permissions [mode]` (bare invocation opens a picker of the five CC
-rule-engine modes — default/acceptEdits/plan/auto/bypassPermissions, with
-bypassPermissions carrying the same risk gate as host `/permission` Full
-access; a CC session's slash catalog hides host `/permission` so only
-`/permissions` appears — the composer chip still drives sandbox presets
-through `/permission <preset>`. The popupSelect browser half is a
-host-plane `dsh.client` row on the cc-permissions bundle, because
-preset rows never appear in `ctx.loader.entries()` and would not be
-discovered otherwise; the TUI intercepts the same bare invocation and
-opens an overlay that submits `/permissions ${id}` through the host
-command), `/version`,
-`/release-notes`, `/diff`, `/init`,
-`/plugin`, `/reload-plugins`, `/mcp`, `/tasks`, `/rename <title>`, plus base `plan-mode`'s `/plan`.
+## Memory and CLAUDE.md
 
-Degraded by design (documented):
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ❌ | <a id="cap-memory.claude-md-imports"></a>CLAUDE.md @path imports | — | — | Missing | Missing | — | downgrade — The @path import machinery is absent — no parser or loader handles imports today. | — |
+| 🔶 | <a id="cap-memory.core"></a>Memory / CLAUDE.md | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [s2](packages/preset/cc/agent.cordis.yml) [t1](packages/memory/memory/tests/save.spec.ts) [t2](packages/memory/memory/tests/team.spec.ts) | downgrade — Per-repo isolation (worktrees/subdirs share one store), shared global layer, memory_save as the save channel, recall reference-doc suppression, and opt-in team memory all work; CC's mtime-threaded recall and memoryAge aging are deferred until the harness FsInfo seam grows an mtime field. | — |
 
-- `/resume` — lists sessions; switching is host-owned (`dsh --resume <id>`).
-- `/branch` — forks and reports the child id; switching requires restart.
-- `/config` — text-only render/patch with an allowlisted key set.
-- `/init` — drives a follow-up turn that writes/refreshes `CLAUDE.md`.
+## Skills
 
-TUI-local: `/clear` `/new` `/reset` start a new empty session in-process; the previous session stays on disk and is `/resume`-able. Excluded: `/model`, `/exit` (host-owned), `/copy` (preset-side has no
-clipboard seam; the TUI surface now ships a local `/copy` over OSC 52 — see the
-keybindings row above),
-`/rewind` (needs checkpoint/file-snapshot design — deferred), billing/login
-commands (🚫 vendor-bound).
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-skills.system"></a>Skills system | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/skill/skill-claude-code/tests/conditional-bundled.spec.ts) [t2](packages/ui/tui/tests/driver-skill-slash.spec.ts) | downgrade — Loader + base tool-skill, CC paths conditional activation, bundled subset (debug/simplify/batch), and TUI /name routing all work; CC's verify/stuck skills are not ported (ant-only; verify companion files absent). | — |
 
-## Deferred upstream items
+## Subagents
 
-1. Upstream catalog pin of `permission/mode` — the plugin registers the type
-   into `KNOWN_SESSION_EVENT_TYPES` at load (a runtime `Set.add`), which already
-   unblocks resume in this process; bumping the harness's own compiled catalog is
-   an upstream polish, not a blocker.
-2. SSRF host allowlist for `web-fetch-http` (then un-caveat WebFetch).
-3. Cron-expression selector for `dsh-schedule` (then full `ScheduleCronTool`
-   parity).
-4. `PreCompact` interception seam in `dsh-compaction`.
-5. Human-facing todo-list seam for `/tasks`.
-6. Memory freshness — CC threads `mtimeMs` through recall and ages memories
-   (`memoryAge`). Both depend on the harness `FsInfo` carrying mtime; the
-   current `dsh-fs` seam does not expose it, so mtime tracking and `memoryAge`
-   are deferred until the seam grows an mtime field (see the Memory row above
-   and the `memory` package README Known Limitations).
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-subagents.task-tool"></a>Subagents / Agent tool / teams | ✓ | ✓ | Divergent | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/subagent/task/tests/tool.spec.ts) [t2](packages/subagent/task/tests/integration.spec.ts) | divergent — subagent_type dispatch over per-workspace .claude/agents (persona = definition systemPrompt, alias routing via ccModelRoutes, sanitized toolFilter, maxDepth 3, bundled explore/dsh-cc-guide agents) plus the continuable background loop (run_in_background, agentId-addressable send_message/interrupt/list). Deliberate deviations: fork + background is rejected naming upstream issue #2124 (fork stays foreground one-shot); no TaskOutput alias and no outputFile field; omitting run_in_background stays foreground unless the definition pins background: true, unlike Claude Code's interactive omit=background. | — |
+
+## MCP
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-mcp.client"></a>MCP client | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/mcp/mcp-client/tests/mcp-client.spec.ts) [t2](packages/mcp/mcp-client/tests/auth.spec.ts) | — | — |
+
+## Plugins and marketplaces
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-plugins.loader"></a>Plugin system | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/cc-plugin-loader/tests/mounts.spec.ts) [t2](packages/compat/cc-plugin-loader/tests/discovery.spec.ts) | — | — |
+
+## Settings
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-settings.migrations"></a>Settings migrations | ✓ | ✓ | Partial | Partial | [t1](packages/settings/settings-migrations/tests/migrations.spec.ts) | downgrade — Mechanism only (version-gated runMigrations over an atomically-written settings.json, auto-run on mount) — no real migrations yet. | — |
+| ✅ | <a id="cap-settings.precedence"></a>Settings precedence | ✓ | ✓ | Full | Full | [t1](packages/settings/settings-cascade/tests/cascade.spec.ts) [t2](packages/settings/settings-cascade/tests/merge.spec.ts) | — | — |
+
+## Permissions
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-permissions.rules"></a>Permission rules | ✓ | ✓ | Partial | Partial | [t1](packages/interaction/permission-rules/tests/mode.spec.ts) [t2](packages/interaction/permission-rules/tests/classifier.spec.ts) [t3](packages/ui/tui/tests/approval-preview.spec.ts) | downgrade — Rule engine + dangerous-command/path risk classifier, durable modes (default/acceptEdits/plan/auto/bypassPermissions via /permissions), plan deny with exit_plan_mode guidance, bypassPermissions pinning danger-full-access with resumeSandbox restore, and the always-allow derived-rule persistence all work. Remaining vs CC: ML/bash risk classifier service, managed/enterprise remote settings, UI mode cycle; the upstream permission/mode catalog pin is an upstream polish. | — |
+
+## Models
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 🔶 | <a id="cap-models.aliases"></a>Model aliases | ✓ | ✓ | Partial | Partial | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/cc-model-aliases/tests/resolveAlias.spec.ts) [t2](packages/compat/cc-model-aliases/tests/service.spec.ts) | downgrade — Frontmatter aliases (sonnet/opus/haiku/fable + dsh lanes + open set), settings model-aliases overlay with null-delete and builtin fallback, shared toAgentOptions per-field inheritance, and the ccModelRoutes service all work. Follow-ups: the /model command, ANTHROPIC_* env vars (no Anthropic semantics), and aliasing the main-session default model. | — |
+
+## Workspace
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-workspace.worktree"></a>Worktree tools | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/workspace/tool-git-worktree/tests/worktree.spec.ts) | — | — |
+
+## Interactive UX
+
+| Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-ux.output-styles"></a>Output styles | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/cc-output-styles/tests/styles.spec.ts) | — | — |
+| ❌ | <a id="cap-ux.statusline"></a>Status line | — | — | Missing | Missing | — | downgrade — The statusLine settings contract is unimplemented (no parsing or execution of a configured status-line command); the TUI renders its own fixed HUD statusline (context occupancy) instead. | — |
+
+## Deviations and known limits
+
+- <a id="dev-engine.bash-jobs"></a>`engine.bash-jobs` — downgrade: CC's TaskCreate/TaskOutput/TaskStop tool naming is not aliased; the dsh jobs tools (tool-jobs over the host job registry) carry the equivalent surface under dsh names.
+- <a id="dev-engine.cost-tracking"></a>`engine.cost-tracking` — downgrade: Ships an empty default price table (composition decides pricing), and CC quota/limit surfaces are vendor-billing-bound — the TUI /usage panel footnotes quota as unavailable.
+- <a id="dev-engine.credentials"></a>`engine.credentials` — downgrade: FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane upstream package dsh-credentials-local, but that package has no in-repo file to anchor a positive claim against, so per the evidence backfill rule the claim is downgraded until an in-repo seam exists.
+- <a id="dev-engine.ide-lsp"></a>`engine.ide-lsp` — downgrade: Two paths. Production: Serena MCP via user-scope ~/.claude.json (v1.7.0 pin) — symbol-level retrieval/editing/diagnostics, ~30 tools deferred through ToolSearch; gaps: no hover tool, no call hierarchy, no push diagnostics. Native dsh-lsp/dsh-lsp-stdio/dsh-tool-lsp exist with a closed 4-operation read-only seam but are NOT mounted by any shipped composition (no lsp rows in cordis.patch.yml/agent.cordis.yml). cc-plugin-loader does not parse lspServers/.lsp.json manifests; PreToolUse hooks ignore additionalContext. /ide and editor pods remain host-shell scope; headless does not apply.
+- <a id="dev-engine.notifications"></a>`engine.notifications` — upstream-blocked (upstream_dependency: notification-seam): No notification seam in deepseek-harness; needs a new design.
+- <a id="dev-engine.onboarding"></a>`engine.onboarding` — downgrade: No package or design doc exists for onboarding/tips.
+- <a id="dev-engine.remote-sessions"></a>`engine.remote-sessions` — downgrade: FORCED DOWNGRADE at seed: the legacy row reads "🔶 different — CC bridge/ is claude.ai-bound; dsh has its own web/host/sdk/acp stack outside this repo", but that stack has no in-repo surface to anchor a positive claim against, so the seed records the four dimensions as non-positive until the external stack gains an in-repo seam.
+- <a id="dev-engine.sandbox"></a>`engine.sandbox` — downgrade: FORCED DOWNGRADE at seed: the row is genuinely ✅ via the host-plane upstream packages dsh-sandbox-local + policy, but they have no in-repo file to anchor a positive claim against, so per the evidence backfill rule the claim is downgraded until an in-repo seam exists.
+- <a id="dev-engine.schedule"></a>`engine.schedule` — downgrade: after_seconds / at / every_seconds (>=300s) supported; CC's cron-expression selectors are unsupported until the dsh-schedule selector seam lands (upstream extension planned).
+- <a id="dev-engine.tui"></a>`engine.tui` — downgrade: dsh --profile tui is the terminal surface: Shift+Tab mode cycling, Esc interrupt, Ctrl+C/Ctrl+S/Ctrl+T/Ctrl+O/Up/Tab bindings, approval previews with 1/2/3 answers on a shared FIFO, leading-! bash mode with separate history, TUI-local /export-md /copy /usage, six-role theme, context-occupancy statusline, multi-hunk diff transcript rendering. Vim mode and ghost text are still later. The statusline settings contract is tracked separately as ux.statusline.
+- <a id="dev-engine.vendor-internals"></a>`engine.vendor-internals` — non-goal: Anthropic-internal or vendor-bound features; no design asset and out of parity scope.
+- <a id="dev-engine.voice"></a>`engine.voice` — non-goal: Vendor feature with no design asset; won't port.
+- <a id="dev-engine.web-fetch"></a>`engine.web-fetch` — downgrade: Mounted via @jianxx/dsh-cc-tool-web-fetch (optional prompt summarized on resolve('haiku') when configured, else raw converted text + notice). No fetch provider is shipped through 0.1.1-rc.2 (WEB_PROVIDER_UNAVAILABLE at execute until a deployment mounts one); no host allowlist — enable only on egress-restricted deployments; upstream SSRF allowlist remains a follow-up.
+- <a id="dev-hooks.executors"></a>`hooks.executors` — downgrade: command + http (SSRF-allowlisted via allowedHttpHookUrls) executors are always on; prompt/agent executors are gated behind enablePromptHooks / enableAgentHooks (default off) and resolve their model: through ccModelRoutes (omitted model → the haiku cheap lane).
+- <a id="dev-hooks.message-display"></a>`hooks.message-display` — downgrade: Not bridged — no dsh emit point for message-display rendering events.
+- <a id="dev-hooks.notification"></a>`hooks.notification` — downgrade: Bridged for the permission_prompt subtype only; idle_prompt / auth_success / elicitation* subtypes have no equivalent seam in a headless harness (cannot map).
+- <a id="dev-hooks.post-tool-batch"></a>`hooks.post-tool-batch` — downgrade: Not bridged — the dsh tool pipeline has no per-batch emit point yet (hook-bridge follow-up).
+- <a id="dev-hooks.pre-compact"></a>`hooks.pre-compact` — upstream-blocked (upstream_dependency: precompact-seam): Needs an upstream compaction-waterfall interception seam in dsh-compaction (planned).
+- <a id="dev-hooks.pre-tool-use"></a>`hooks.pre-tool-use` — downgrade: Bridged with matcher support and the permissionDecision decision contract, but additionalContext is ignored, bounding hook-based pre-tool shaping.
+- <a id="dev-hooks.setup"></a>`hooks.setup` — downgrade: Bridged as a first-run approximation, not the full upstream Setup contract.
+- <a id="dev-hooks.user-prompt-expansion"></a>`hooks.user-prompt-expansion` — downgrade: Not bridged — no dsh emit point for prompt-template expansion.
+- <a id="dev-commands.branch"></a>`commands.branch` — downgrade: Forks and reports the child id; switching to the child requires a restart.
+- <a id="dev-commands.config"></a>`commands.config` — downgrade: Text-only render/patch with an allowlisted key set, not an interactive editor.
+- <a id="dev-commands.exit"></a>`commands.exit` — non-goal: Host-owned by design; the dsh-native equivalents are the TUI /exit command (packages/ui/tui/src/slash.ts) and the idle double Ctrl+C gesture, so a preset-side port is out of parity scope.
+- <a id="dev-commands.init"></a>`commands.init` — downgrade: Drives a follow-up turn that writes/refreshes CLAUDE.md rather than the upstream one-shot initializer flow.
+- <a id="dev-commands.model"></a>`commands.model` — non-goal: Host-owned by design; the dsh-native equivalents are the TUI-local /model and /effort commands (packages/ui/tui/src/slash.ts, model-catalog) plus the ccModelRoutes alias service, so a preset-side port is out of parity scope.
+- <a id="dev-commands.resume"></a>`commands.resume` — downgrade: Lists sessions; switching is host-owned (dsh --resume <id>).
+- <a id="dev-commands.rewind"></a>`commands.rewind` — upstream-blocked (upstream_dependency: session-file-snapshot-seam): Needs the session file-snapshot seam; no checkpoint/rewind design exists yet.
+- <a id="dev-commands.tasks"></a>`commands.tasks` — downgrade: Human-facing /tasks lists background jobs only; the todo-list seam is pending. The model-facing dsh-tool-todo and the TUI Ctrl+T todo panel cover the rest of the workflow.
+- <a id="dev-sessions.checkpointing"></a>`sessions.checkpointing` — upstream-blocked (upstream_dependency: session-file-snapshot-seam): Feature absent; requires a snapshot seam in the session layer.
+- <a id="dev-memory.claude-md-imports"></a>`memory.claude-md-imports` — downgrade: The @path import machinery is absent — no parser or loader handles imports today.
+- <a id="dev-memory.core"></a>`memory.core` — downgrade: Per-repo isolation (worktrees/subdirs share one store), shared global layer, memory_save as the save channel, recall reference-doc suppression, and opt-in team memory all work; CC's mtime-threaded recall and memoryAge aging are deferred until the harness FsInfo seam grows an mtime field.
+- <a id="dev-skills.system"></a>`skills.system` — downgrade: Loader + base tool-skill, CC paths conditional activation, bundled subset (debug/simplify/batch), and TUI /name routing all work; CC's verify/stuck skills are not ported (ant-only; verify companion files absent).
+- <a id="dev-subagents.task-tool"></a>`subagents.task-tool` — divergent: subagent_type dispatch over per-workspace .claude/agents (persona = definition systemPrompt, alias routing via ccModelRoutes, sanitized toolFilter, maxDepth 3, bundled explore/dsh-cc-guide agents) plus the continuable background loop (run_in_background, agentId-addressable send_message/interrupt/list). Deliberate deviations: fork + background is rejected naming upstream issue #2124 (fork stays foreground one-shot); no TaskOutput alias and no outputFile field; omitting run_in_background stays foreground unless the definition pins background: true, unlike Claude Code's interactive omit=background.
+- <a id="dev-settings.migrations"></a>`settings.migrations` — downgrade: Mechanism only (version-gated runMigrations over an atomically-written settings.json, auto-run on mount) — no real migrations yet.
+- <a id="dev-permissions.rules"></a>`permissions.rules` — downgrade: Rule engine + dangerous-command/path risk classifier, durable modes (default/acceptEdits/plan/auto/bypassPermissions via /permissions), plan deny with exit_plan_mode guidance, bypassPermissions pinning danger-full-access with resumeSandbox restore, and the always-allow derived-rule persistence all work. Remaining vs CC: ML/bash risk classifier service, managed/enterprise remote settings, UI mode cycle; the upstream permission/mode catalog pin is an upstream polish.
+- <a id="dev-models.aliases"></a>`models.aliases` — downgrade: Frontmatter aliases (sonnet/opus/haiku/fable + dsh lanes + open set), settings model-aliases overlay with null-delete and builtin fallback, shared toAgentOptions per-field inheritance, and the ccModelRoutes service all work. Follow-ups: the /model command, ANTHROPIC_* env vars (no Anthropic semantics), and aliasing the main-session default model.
+- <a id="dev-ux.statusline"></a>`ux.statusline` — downgrade: The statusLine settings contract is unimplemented (no parsing or execution of a configured status-line command); the TUI renders its own fixed HUD statusline (context occupancy) instead.
+
+## Upstream dependencies
+
+### session-file-snapshot-seam — Session file-snapshot seam
+
+**Problem:** dsh sessions persist a jsonl/sqlite projection; there is no per-prompt snapshot store of edited files to anchor a rewind against.
+
+**Claude Code contract:** Every prompt checkpoints files about to be edited; /rewind (or Esc Esc) restores code, conversation, or both; checkpoints persist across resumed sessions and do not cover Bash-side changes.
+
+**Refs:**
+- https://code.claude.com/docs/en/checkpointing
+
+### schedule-cron-selector — Cron-expression selector for dsh-schedule
+
+**Problem:** dsh-schedule supports after_seconds / at / every_seconds (>=300s) but has no cron-expression selector, so ScheduleCronTool parity is unreachable.
+
+**Claude Code contract:** Claude Code scheduled reminders accept cron expressions as selectors.
+
+### webfetch-ssrf-allowlist — SSRF host allowlist for web-fetch-http
+
+**Problem:** The web-fetch-http executor row is unshipped by the CLI through 0.1.1-rc.2 and there is no host allowlist, so WebFetch stays enable-only-on-egress-restricted-deployments.
+
+**Claude Code contract:** Claude Code WebFetch enforces an SSRF allowlist before honoring fetches.
+
+### precompact-seam — PreCompact interception seam in dsh-compaction
+
+**Problem:** dsh-compaction has no interception point where a user-configured hook could run before compaction fires, so the PreCompact event cannot bridge.
+
+**Claude Code contract:** Claude Code fires PreCompact hooks before automatic or manual compaction, letting hooks inject or transform context.
+
+### tasks-todo-seam — Human-facing todo-list seam for /tasks
+
+**Problem:** dsh-tool-todo is model-facing and the TUI renders the todo panel, but human-facing /tasks still lists background jobs only.
+
+**Claude Code contract:** Claude Code's /tasks surfaces the session todo list to the human user.
+
+### memory-fsinfo-mtime — Memory freshness — FsInfo mtime seam
+
+**Problem:** CC threads mtimeMs through recall and ages memories (memoryAge); the current dsh-fs seam does not expose mtime, so both are deferred.
+
+**Claude Code contract:** Claude Code memory recall orders by file mtime and exposes a memoryAge signal so stale memories age out of prominence.
+
+### notification-seam — Notification seam in deepseek-harness
+
+**Problem:** No notification seam exists in deepseek-harness (bell/OS/iterm); shipping notifications needs a new design.
+
+**Claude Code contract:** Claude Code emits desktop/terminal notifications for attention-needed moments (bell, OS notification, iTerm2 escape sequences).
+
+### permission-mode-catalog-pin — Upstream catalog pin of permission/mode session events
+
+**Problem:** The plugin registers permission/mode into KNOWN_SESSION_EVENT_TYPES via a runtime Set.add at load; bumping the harness's own compiled catalog is an upstream polish.
+
+**Claude Code contract:** Permission-mode session state persists across process restarts, not just within the registering process.
+
+### upstream-issue-2124 — Upstream harness issue
+
+**Problem:** Fork children remain foreground one-shot until upstream harness issue #2124 resolves; fork + run_in_background is rejected with an error naming the issue.
+
+**Claude Code contract:** Claude Code Task supports the fork provider in continuable background mode with the same agentId-addressable loop as spawn.
+
+## Renamed capabilities
+
+_None._
+
+---
+
+Baseline sources: cc-docs (https://code.claude.com/docs), cc-repo (https://github.com/anthropics/claude-code).
+Newest upstream retrieval: 2026-09-03.
+Freshness threshold: 120 days — re-verify refs older than that before trusting a row.

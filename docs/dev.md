@@ -64,6 +64,25 @@ presubmit and the pre-commit gate, scanning `packages/*/tests` without needing
 node_modules. When it flags an import, declare the package in the importing
 package's `package.json` **and** add the matching lockfile entry (see above).
 
+## Claude Code capability manifest / parity matrix edit loop
+
+`docs/claude-code-capabilities.yaml` is the machine-readable source of truth
+for Claude Code parity status. `README.md` (between the
+`<!-- parity:matrix:start/end -->` markers) and `docs/cc-parity-matrix.md` are
+**generated** — never hand-edit them. The edit loop:
+
+1. Edit the manifest YAML (status, evidence, deviations).
+2. Run `pnpm docs:parity` to regenerate the README block and the matrix.
+3. Commit the manifest and both regenerated files together.
+
+`pnpm check:capabilities` (manifest invariants) and `pnpm check:parity`
+(freshness, `--check` mode) run in both the pre-commit gate and presubmit;
+their paired self-tests run via `pnpm test:capabilities` and as explicit
+presubmit steps. Docs citing a capability must link the matrix by anchor —
+`docs/cc-parity-matrix.md#cap-<id>` — never by line number, since generated
+output is not line-stable. See
+`docs/plans/2026-09-03-claude-code-capability-manifest.md` for the full design.
+
 ## Worktree local setup
 
 - After `bash scripts/sync-local-profile.sh web`, also run

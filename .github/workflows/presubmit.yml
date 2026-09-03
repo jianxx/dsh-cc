@@ -101,6 +101,25 @@ jobs:
         working-directory: dsh-cc
         run: node scripts/check-vendor-purity.mjs
 
+      # Capability manifest 校验(I1–I10、evidence anchor、registry integrity)。
+      - name: Capability evidence (check:capabilities)
+        working-directory: dsh-cc
+        run: node scripts/check-capability-evidence.mjs
+
+      # README/matrix 生成产物与 manifest 无漂移(手改 matrix 会在此失败)。
+      - name: Parity matrix freshness (check:parity)
+        working-directory: dsh-cc
+        run: node scripts/generate-parity-matrix.mjs --check
+
+      # 两个 checker 的配对自测(见 docs/plans/2026-09-03-claude-code-capability-manifest.md §5.3)。
+      - name: Capability evidence self-test
+        working-directory: dsh-cc
+        run: node scripts/check-capability-evidence.test.mjs
+
+      - name: Parity matrix generator self-test
+        working-directory: dsh-cc
+        run: node scripts/generate-parity-matrix.test.mjs
+
       - name: Cache harness build outputs (restore)
         id: cache-harness
         uses: actions/cache/restore@v4
