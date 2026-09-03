@@ -249,6 +249,59 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
   })
 })
 
+describe('hooks-claude-code bridge — PostToolUseFailure (command-hook dispatch)', () => {
+  // Coverage gap closed for the serena failure watchdog (plan fact 7): the
+  // PostToolUseFailure point dispatches `command` hooks through the same
+  // runPoint machinery, but its outcome is discarded and nothing at bridge
+  // level proved a command hook actually RUNS on an isError tool result.
+  it('runs a PostToolUseFailure command hook on an isError tool result', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const marker = join(dir, 'ptuf-command-ran')
+    const s = join(dir, 'record.sh')
+    writeFileSync(s, `#!/usr/bin/env bash\npayload=$(cat)\nprintf '%s' "$payload" > "${marker}.payload"\ntouch "${marker}"\n`)
+    chmodSync(s, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { PostToolUseFailure: [{ hooks: [{ type: 'command', command: s }] }] } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'boom', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    ctx.tools.register(defineContentToolFixture({ name: 'boom', description: 'b', parameters: {}, async execute() { throw new Error('kaput') } }))
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    // PostToolUseFailure dispatch is detached (its outcome is discarded), so
+    // the marker lands asynchronously after the loop goes idle.
+    await waitFor(() => existsSync(marker))
+    // The failure payload carries the CC-canonical tool name and the session id
+    // (the fields the serena watchdog recorder keys on).
+    const payload = JSON.parse(readFileSync(`${marker}.payload`, 'utf8'))
+    expect(payload.tool_name).toBe('boom')
+    expect(typeof payload.session_id).toBe('string')
+    // PostToolUseFailure payloads flatten the failed result into `error`.
+    expect(payload.error).toContain('kaput')
+  })
+
+  it('does NOT run a PostToolUseFailure command hook when the tool succeeds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const marker = join(dir, 'ptuf-ok-ran')
+    const s = join(dir, 'record.sh')
+    writeFileSync(s, `#!/usr/bin/env bash\ntouch "${marker}"\n`)
+    chmodSync(s, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { PostToolUseFailure: [{ hooks: [{ type: 'command', command: s }] }] } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'ok' }] } }))
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(existsSync(marker)).toBe(false)
+  })
+})
+
 describe('hooks-claude-code bridge — SessionStart', () => {
   it('a SessionStart hook injects additionalContext the first request sees', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))

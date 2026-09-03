@@ -350,6 +350,11 @@
 
     - id: hooks-claude-code
       name: '@jianxx/dsh-cc-hooks-claude-code'
+      # Tracked root-level hook config (serena code-intelligence plan Phase 0).
+      # Relative configPath resolves against the process launch cwd, so a
+      # worktree session started at the worktree root loads it by construction.
+      config:
+        configPath: hooks.json
 
     # Replaces the stock dsh-tool-web web_fetch (fetch: false above): adds the
     # optional `prompt`, summarized on the cheap lane when the haiku alias is

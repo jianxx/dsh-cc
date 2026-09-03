@@ -1,0 +1,50 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(read|grep)$|^mcp__serena__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from git+https://github.com/oraios/serena@v1.7.0 serena-hooks remind --client claude-code",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(edit|write)$|^mcp__serena__(replace_symbol_body|replace_content|replace_in_files|insert_before_symbol|insert_after_symbol|rename_symbol|safe_delete_symbol)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/post-edit-diagnostics-nudge.mjs\"",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/serena-failure-watchdog.mjs\" advise",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__serena__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/serena-failure-watchdog.mjs\" record",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

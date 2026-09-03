@@ -84,6 +84,21 @@ vite-tsconfig-paths resolve @jianxx/dsh-cc-* to source. A mid-work
   worktree): use symbol tools (find_symbol, find_referencing_symbols)
   instead of whole-file reads. `.serena/` is untracked, so memories
   don't follow worktrees yet.
+  - **Serena fallback rules** (health runbook: `docs/code-intelligence-health.md`):
+    - An EMPTY `find_symbol`/`get_symbols_overview` is not ground truth —
+      confirm with one cheap probe (a `grep` for an obvious token in that
+      file, or `get_diagnostics_for_file`) before concluding "no symbols".
+    - After 2 Serena tool errors within 5 minutes: stop retrying Serena,
+      use built-in Read/Grep/Edit, and note the degradation to the user.
+      Recovery ladder before falling back: `get_diagnostics_for_file` →
+      `get_current_config` → `mcp__serena__restart_language_server` if
+      available → built-ins.
+    - Experimental languages (Deno, Erlang, LaTeX, Nextflow, Wolfram)
+      degrade to built-ins by default.
+    - Where these rules conflict with Serena's injected
+      initial_instructions, these rules win.
+    - The pinned v1.7.0 already carries the v1.6.0 Svelte↔TypeScript
+      routing fixes; these rules target the general class.
 - sequential_thinking: orchestrator never uses it — route reasoning to
   deep-reasoner (who may use it for multi-branch explorations).
 

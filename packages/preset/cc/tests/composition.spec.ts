@@ -374,3 +374,40 @@ describe('preset.yml metadata', () => {
     expect(preset.order).toBe(5)
   })
 })
+
+describe('tracked hooks.json (serena code-intelligence plan, Phase 0)', () => {
+  const hooksJsonPath = new URL('../../../../hooks.json', import.meta.url).pathname
+
+  it('wires the hooks-claude-code row to the tracked hooks.json', () => {
+    const rows: any[] = []
+    for (const row of doc) {
+      if (row.name === 'cordis:group' && Array.isArray(row.config)) rows.push(...row.config)
+      else rows.push(row)
+    }
+    const hooksRow = rows.find((r) => r.id === 'hooks-claude-code')
+    expect(hooksRow).toBeDefined()
+    // Relative configPath resolves against the process launch cwd — the
+    // worktree root when `dsh cc-tui` starts there — so a tracked root-level
+    // file loads in worktree sessions by construction (plan fact 5).
+    expect(hooksRow.config).toMatchObject({ configPath: 'hooks.json' })
+    expect(existsSync(hooksJsonPath)).toBe(true)
+  })
+
+  it('hooks.json parses and every matcher either is a literal token set or compiles as a regex', () => {
+    // A malformed matcher regex rejects the ENTIRE hooks config warn-only
+    // (plan fact 7), so every matcher must be validated here.
+    const parsed = JSON.parse(readFileSync(hooksJsonPath, 'utf8'))
+    expect(parsed).toBeTypeOf('object')
+    expect(parsed.hooks).toBeTypeOf('object')
+    for (const [event, entries] of Object.entries(parsed.hooks) as [string, any[]][]) {
+      expect(Array.isArray(entries), `${event} entries`).toBe(true)
+      for (const entry of entries) {
+        expect(Array.isArray(entry.hooks), `${event} entry hooks`).toBe(true)
+        if (typeof entry.matcher !== 'string') continue
+        if (/^[A-Za-z0-9_|]+$/.test(entry.matcher)) continue // literal-token dialect
+        expect(() => new RegExp(entry.matcher), `matcher ${entry.matcher}`).not.toThrow()
+        expect(entry.matcher.startsWith('^'), `matcher ${entry.matcher} must be anchored (unanchored regexes substring-match)`).toBe(true)
+      }
+    }
+  })
+})
