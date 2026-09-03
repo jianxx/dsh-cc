@@ -42,9 +42,25 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
 ] as const
 
 export type ParsedSlash =
-  | { kind: 'local'; name: LocalSlashName; rawInput: string }
+  | { kind: 'local'; name: string; rawInput: string }
   | { kind: 'harness'; line: string }
   | { kind: 'none' }
+
+/**
+ * Plugin-command names exposed by the cc-shell `ccPlugins` service in the
+ * colon form `plugin:command` (e.g. `codex:review`). The TUI treats them as
+ * local commands, so classification must see the live table — but slash.ts is
+ * a pure leaf with no service access, so the catalog section (which owns the
+ * service lookup) publishes the names here. Duck-typed optional consumption:
+ * an empty registry (no ccPlugins service, or none published yet) keeps the
+ * pre-plugin behavior untouched.
+ */
+let pluginSlashNames: ReadonlySet<string> = new Set()
+
+/** Publish the current plugin-command name table (lowercased for matching). */
+export function setPluginSlashNames(names: readonly string[]): void {
+  pluginSlashNames = new Set(names.map(name => name.toLowerCase()))
+}
 
 /**
  * Classify one composer line. Leading slash required; unknown names go to
@@ -63,7 +79,14 @@ export function parseSlash(line: string): ParsedSlash {
   const name = (space === -1 ? body : body.slice(0, space)).toLowerCase()
   const rawInput = space === -1 ? '' : body.slice(space).trim()
   if ((LOCAL_SLASH as readonly string[]).includes(name)) {
-    return { kind: 'local', name: name as LocalSlashName, rawInput }
+    return { kind: 'local', name, rawInput }
+  }
+  // Plugin commands (colon form, `plugin:command`) dispatch through the
+  // ccPlugins service in runLocal. A name NOT in the table keeps the harness
+  // fall-through — the skill-injection gesture boundary depends on it, so a
+  // colon name must never be hard-classified local on a miss.
+  if (pluginSlashNames.has(name)) {
+    return { kind: 'local', name, rawInput }
   }
   return { kind: 'harness', line: trimmed }
 }

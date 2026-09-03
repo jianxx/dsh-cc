@@ -8,6 +8,7 @@ import type { CommandDescriptor } from '@deepseek-ai/dsh-commands'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as commandHelp from '@jianxx/dsh-cc-command-help'
 import { formatHelpDetail, formatHelpList } from '@jianxx/dsh-cc-command-help/help'
+import type { PluginCommandInfo } from '@jianxx/dsh-cc-command-help'
 
 const DESCRIPTORS: readonly CommandDescriptor[] = [
   Object.freeze({ name: 'memory', description: 'list memories' }),
@@ -74,6 +75,59 @@ describe('/help rendering', () => {
   })
   it('returns undefined for an unknown command', () => {
     expect(formatHelpDetail(DESCRIPTORS, 'nope')).toBeUndefined()
+  })
+})
+
+describe('plugin commands via optional ccPlugins service', () => {
+  const PLUGIN_COMMANDS: readonly PluginCommandInfo[] = [
+    { name: 'codex:review', plugin: 'codex', description: 'review code with codex', argumentHint: '[path]' },
+    { name: 'codex:rescue', plugin: 'codex', description: 'rescue a stuck session' },
+  ]
+
+  function fakeCcPlugins(commands: readonly PluginCommandInfo[] = PLUGIN_COMMANDS): unknown {
+    return { listPluginCommands: () => commands }
+  }
+
+  it('merges plugin commands into the rendered list with a plugin marker', async () => {
+    const { ctx, agent } = await harness()
+    ;(ctx as Record<string, unknown>).ccPlugins = fakeCcPlugins()
+    const execution = await ctx.commands.execute(agent, '/help', [], new AbortController().signal)
+    const text = (execution?.result as { text: string }).text
+    expect(text).toContain('/codex:rescue — rescue a stuck session [plugin: codex]')
+    expect(text).toContain('/codex:review — review code with codex [plugin: codex]')
+    expect(text).toContain('/help — ')
+  })
+
+  it('skips a plugin command whose name collides with a harness command', () => {
+    const text = formatHelpList(DESCRIPTORS, [
+      ...PLUGIN_COMMANDS,
+      { name: 'memory', plugin: 'codex', description: 'shady duplicate' },
+    ])
+    expect(text).toContain('/memory — list memories')
+    expect(text).not.toContain('shady duplicate')
+  })
+
+  it('shows plugin command detail for a colon token and reports misses', async () => {
+    const { ctx, agent } = await harness()
+    ;(ctx as Record<string, unknown>).ccPlugins = fakeCcPlugins()
+    const hit = await ctx.commands.execute(agent, '/help codex:review', [], new AbortController().signal)
+    const hitText = (hit?.result as { text: string }).text
+    expect(hitText).toContain('/codex:review')
+    expect(hitText).toContain('review code with codex')
+    expect(hitText).toContain('from plugin: codex')
+    expect(hitText).toContain('usage: /codex:review [path]')
+    const miss = await ctx.commands.execute(agent, '/help codex:nope', [], new AbortController().signal)
+    expect((miss?.result as { text: string }).text).toContain('Unknown command /codex:nope')
+  })
+
+  it('behaves identically when the ccPlugins service is absent', async () => {
+    const { ctx, agent } = await harness()
+    const list = await ctx.commands.execute(agent, '/help', [], new AbortController().signal)
+    const listText = (list?.result as { text: string }).text
+    expect(listText).not.toContain('[plugin:')
+    expect(listText).not.toContain('codex:')
+    const miss = await ctx.commands.execute(agent, '/help codex:review', [], new AbortController().signal)
+    expect((miss?.result as { text: string }).text).toContain('Unknown command /codex:review')
   })
 })
 

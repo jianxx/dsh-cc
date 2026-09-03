@@ -128,8 +128,8 @@ function buildAgent(
   if (display !== undefined && typeof display !== 'string') {
     throw new Error(`${filePath}: name must be a string`)
   }
-  const tools = optionalStringArray(filePath, 'tools', frontmatter['tools'])
-  const disallowedTools = optionalStringArray(filePath, 'disallowedTools', frontmatter['disallowedTools'])
+  const tools = optionalToolList(filePath, 'tools', frontmatter['tools'])
+  const disallowedTools = optionalToolList(filePath, 'disallowedTools', frontmatter['disallowedTools'])
   const toolRestriction = resolveToolRestriction(tools, disallowedTools)
   const model = normalizeModel(frontmatter['model'])
   const effort = parseEffort(filePath, frontmatter['effort'])
@@ -214,6 +214,18 @@ function optionalStringArray(filePath: string, key: string, value: unknown): rea
     }
   }
   return value as readonly string[]
+}
+
+/**
+ * Read an optional tool list: a comma-separated string (Claude Code's
+ * frontmatter shorthand, e.g. `tools: Bash, Read`) or an array of strings.
+ * String entries are split on commas and trimmed; empty entries are dropped.
+ */
+function optionalToolList(filePath: string, key: string, value: unknown): readonly string[] | undefined {
+  if (typeof value === 'string') {
+    return value.split(',').map(item => item.trim()).filter(item => item.length > 0)
+  }
+  return optionalStringArray(filePath, key, value)
 }
 
 /** Read an optional record of arbitrary values (hooks). */

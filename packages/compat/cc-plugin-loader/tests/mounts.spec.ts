@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { parsePluginManifest } from '../src/manifest.ts'
 import { mountCommands } from '../src/commands.ts'
 import { mountHooks } from '../src/hooks.ts'
@@ -23,43 +25,51 @@ describe('mountCommands', () => {
     register: (d: unknown) => { defs.push(d); return () => {} },
   })
 
-  it('registers a namespaced name and a bare alias per command', () => {
+  it('registers one bare name per command (colon names stay off the registry)', () => {
     const manifest = parsePluginManifest({
       name: 'p',
       commands: { hello: { content: 'say hi' }, byebye: { content: 'say bye' } },
     }, 'p')
     const defs: Array<{ name: string }> = []
-    const { disposers, tally } = mountCommands({
+    const { disposers, mounted, tally } = mountCommands({
       pluginRoot: '/tmp',
       manifest,
       commands: seamPushing(defs),
     })
     expect(tally.result().loaded).toBe(2)
     expect(tally.result().failed).toBe(0)
-    expect(defs.map(d => d.name)).toEqual(['p:hello', 'hello', 'p:byebye', 'byebye'])
-    expect(disposers).toHaveLength(4)
+    expect(defs.map(d => d.name)).toEqual(['hello', 'byebye'])
+    expect(disposers).toHaveLength(2)
+    // The colon display form is served through the mounted-command channel.
+    expect(mounted.map(c => c.info.name)).toEqual(['p:hello', 'p:byebye'])
+    expect(mounted.map(c => c.info.plugin)).toEqual(['p', 'p'])
   })
 
-  it('skips the bare alias but keeps the namespaced command when the alias name is taken', () => {
+  it('records a skipped command when its bare name is already registered', () => {
     const manifest = parsePluginManifest({ name: 'p', commands: { hello: { content: 'hi' } } }, 'p')
     const defs: Array<{ name: string }> = []
-    const { disposers, tally } = mountCommands({
+    const { disposers, mounted, tally } = mountCommands({
       pluginRoot: '/tmp',
       manifest,
       commands: {
-        register: (d) => {
-          const def = d as { name: string }
-          if (!def.name.includes(':')) throw new Error('name already registered')
-          defs.push(def as never)
-          return () => {}
-        },
+        register: () => { throw new Error('name already registered') },
       },
     })
-    expect(defs.map(d => d.name)).toEqual(['p:hello'])
-    expect(tally.result().loaded).toBe(1)
+    expect(defs).toEqual([])
+    expect(tally.result().loaded).toBe(0)
     expect(tally.result().skipped).toBe(1)
-    expect(tally.result().reasons.some(reason => /bare name "hello"/.test(reason))).toBe(true)
-    expect(disposers).toHaveLength(1)
+    expect(tally.result().reasons.some(reason => /bare name "hello" not registered/.test(reason))).toBe(true)
+    expect(disposers).toHaveLength(0)
+    expect(mounted).toEqual([])
+  })
+
+  it('registers a bare name even when it equals the plugin name (single-name form)', () => {
+    const manifest = parsePluginManifest({ name: 'review', commands: { review: { content: 'hi' } } }, 'review')
+    const defs: Array<{ name: string }> = []
+    const { mounted, tally } = mountCommands({ pluginRoot: '/tmp', manifest, commands: seamPushing(defs) })
+    expect(tally.result().loaded).toBe(1)
+    expect(defs.map(d => d.name)).toEqual(['review'])
+    expect(mounted.map(c => c.info.name)).toEqual(['review:review'])
   })
 
   it('skips commands when the commands seam is absent', () => {
@@ -114,6 +124,50 @@ describe('mountCommands', () => {
     expect(textOf(sent[0])).toBe('Fix the flaky test now')
   })
 
+  it('reports success when an async followup resolves', async () => {
+    const manifest = parsePluginManifest({
+      name: 'p',
+      commands: { rescue: { content: 'Fix $ARGUMENTS' } },
+    }, 'p')
+    const defs: Array<{ handler(invocation: unknown): Promise<unknown> }> = []
+    mountCommands({ pluginRoot: '/tmp', manifest, commands: seamPushing(defs) })
+    const sent: unknown[] = []
+    const result = await defs[0]!.handler({
+      agent: { followup: (message: unknown) => { sent.push(message); return Promise.resolve('id') } },
+      rawInput: 'it',
+    })
+    expect(result).toEqual({ kind: 'success' })
+    expect(textOf(sent[0])).toBe('Fix it')
+  })
+
+  it('folds a rejected async followup into an error result instead of an unhandled rejection', async () => {
+    const manifest = parsePluginManifest({
+      name: 'p',
+      commands: { rescue: { content: 'Fix it' } },
+    }, 'p')
+    const defs: Array<{ handler(invocation: unknown): Promise<unknown> }> = []
+    mountCommands({ pluginRoot: '/tmp', manifest, commands: seamPushing(defs) })
+    const result = await defs[0]!.handler({
+      agent: { followup: () => Promise.reject(new Error('agent busy')) },
+      rawInput: '',
+    })
+    expect(result).toEqual({ kind: 'error', text: expect.stringContaining('agent busy') })
+  })
+
+  it('reports a synchronous followup throw as an error result', async () => {
+    const manifest = parsePluginManifest({
+      name: 'p',
+      commands: { rescue: { content: 'Fix it' } },
+    }, 'p')
+    const defs: Array<{ handler(invocation: unknown): Promise<unknown> }> = []
+    mountCommands({ pluginRoot: '/tmp', manifest, commands: seamPushing(defs) })
+    const result = await defs[0]!.handler({
+      agent: { followup: () => { throw new Error('no agent') } },
+      rawInput: '',
+    })
+    expect(result).toEqual({ kind: 'error', text: expect.stringContaining('no agent') })
+  })
+
   it('strips frontmatter and surfaces description and argument hint from a command file', async () => {
     const { root, dispose } = await tempPluginRoot()
     try {
@@ -166,8 +220,8 @@ describe('mountCommands', () => {
         commands: seamPushing(defs),
       })
       expect(tally.result().loaded).toBe(1)
-      expect(defs.map(d => d.name)).toEqual(['p:foo', 'foo'])
-      expect(disposers).toHaveLength(2)
+      expect(defs.map(d => d.name)).toEqual(['foo'])
+      expect(disposers).toHaveLength(1)
     } finally {
       await dispose()
     }
@@ -184,7 +238,7 @@ describe('mountCommands', () => {
         commands: seamPushing(defs),
       })
       expect(tally.result().loaded).toBe(1)
-      expect(defs.map(d => d.name)).toEqual(['p:hello', 'hello'])
+      expect(defs.map(d => d.name)).toEqual(['hello'])
     } finally {
       await dispose()
     }
@@ -201,7 +255,7 @@ describe('mountCommands', () => {
         manifest: parsePluginManifest({ name: 'p' }, 'p'),
         commands: seamPushing(defs),
       })
-      expect(defs.map(d => d.name)).toEqual(['p:bar', 'bar'])
+      expect(defs.map(d => d.name)).toEqual(['bar'])
       expect(tally.result().skipped).toBeGreaterThanOrEqual(1)
       expect(tally.result().reasons.some(reason => /nested commands directory/.test(reason))).toBe(true)
     } finally {
@@ -365,5 +419,47 @@ describe('mountAgents', () => {
     } finally {
       await dispose()
     }
+  })
+})
+
+describe('mountCommands against the real harness CommandRuntime', () => {
+  // Global-layer lookups treat the agent as an opaque scope key; a plain
+  // object without a scope registration sees exactly the global commands.
+  const fakeAgent = { id: 'mounts-spec-agent' } as never
+
+  async function runtime(): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(CommandRuntime)
+    return ctx
+  }
+
+  it('registers the bare alias into the real registry and keeps colon names out', async () => {
+    const ctx = await runtime()
+    const manifest = parsePluginManifest({
+      name: 'codex',
+      commands: { review: { content: 'do the review', description: 'Review the change' } },
+    }, 'codex')
+    const { mounted, tally } = mountCommands({ pluginRoot: '/tmp', manifest, commands: ctx.commands })
+    expect(tally.result().loaded).toBe(1)
+    expect(ctx.commands.find(fakeAgent, 'review')).toBeDefined()
+    // The colon form would throw in normalizeDefinition; it must never be
+    // registered and stays reachable only through the mounted-command channel.
+    expect(ctx.commands.find(fakeAgent, 'codex:review')).toBeUndefined()
+    expect(ctx.commands.list(fakeAgent).map(d => d.name)).toEqual(['review'])
+    expect(mounted.map(c => c.info.name)).toEqual(['codex:review'])
+  expect(mounted[0]!.info.description).toBe('Review the change')
+  })
+
+  it('records the second plugin same-named command as skipped in the real registry', async () => {
+    const ctx = await runtime()
+    const first = parsePluginManifest({ name: 'one', commands: { rescue: { content: 'a', description: 'first' } } }, 'one')
+    const second = parsePluginManifest({ name: 'two', commands: { rescue: { content: 'b', description: 'second' } } }, 'two')
+    mountCommands({ pluginRoot: '/tmp', manifest: first, commands: ctx.commands })
+    const { mounted, tally } = mountCommands({ pluginRoot: '/tmp', manifest: second, commands: ctx.commands })
+    expect(tally.result().loaded).toBe(0)
+    expect(tally.result().skipped).toBe(1)
+    expect(tally.result().reasons[0]).toMatch(/bare name "rescue" not registered/)
+    expect(mounted).toEqual([])
+    expect(ctx.commands.find(fakeAgent, 'rescue')?.handler).toBeDefined()
   })
 })

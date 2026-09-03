@@ -167,3 +167,144 @@ describe('@jianxx/dsh-cc-bundle-shell ccPlugins registry', () => {
     expect(GlueConfig({}).pluginDirs).toBeUndefined()
   })
 })
+
+describe('@jianxx/dsh-cc-bundle-shell plugin command channel', () => {
+  it('lists plugin commands with colon display names, including plugin == command as x:x', async () => {
+    const plain = join(tmpRoot, 'alpha')
+    writePlugin(plain, 'alpha', 'alpha-command')
+    const same = join(tmpRoot, 'x')
+    writePlugin(same, 'x', 'x')
+
+    await apply(ctx, configFor([tmpRoot]))
+
+    const names = ctx.ccPlugins.listPluginCommands().map(info => info.name).sort()
+    expect(names).toEqual(['alpha:alpha-command', 'x:x'])
+    const alpha = ctx.ccPlugins.listPluginCommands().find(info => info.plugin === 'alpha')
+    expect(alpha).toMatchObject({ plugin: 'alpha', description: 'command from alpha' })
+  })
+
+  it('runPluginCommand renders $ARGUMENTS and dispatches a user-prompt followup', async () => {
+    const dir = join(tmpRoot, 'alpha')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({
+      name: 'alpha',
+      commands: { rescue: { description: 'rescue it', content: 'Fix $ARGUMENTS now' } },
+    }))
+    await apply(ctx, configFor([tmpRoot]))
+
+    const sent: unknown[] = []
+    const result = await ctx.ccPlugins.runPluginCommand('alpha:rescue', {
+      agent: { followup: (message: unknown) => { sent.push(message); return undefined } },
+      rawInput: 'the flaky test',
+    })
+    expect(result).toEqual({ ok: true })
+    expect(sent).toHaveLength(1)
+    const message = sent[0] as { content?: Array<{ text?: string }>; source?: { kind?: string } }
+    expect(message.content?.map(part => part.text ?? '').join('')).toBe('Fix the flaky test now')
+    expect(message.source?.kind).toBe('user')
+  })
+
+  it('runPluginCommand folds a failed dispatch into { ok: false, reason }', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    const info = ctx.ccPlugins.listPluginCommands()[0]!
+    const result = await ctx.ccPlugins.runPluginCommand(info.name, {
+      agent: { followup: () => { throw new Error('agent busy') } },
+      rawInput: '',
+    })
+    expect(result).toMatchObject({ ok: false })
+    if (!result.ok) expect(result.reason).toContain('agent busy')
+  })
+
+  it('runPluginCommand returns { ok: false } for an unknown command name', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    const result = await ctx.ccPlugins.runPluginCommand('alpha:missing', {
+      agent: { followup: () => undefined },
+      rawInput: '',
+    })
+    expect(result).toMatchObject({ ok: false })
+  })
+
+  it('rescan clears and rebuilds the command table and fires ccPlugins/change', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    expect(ctx.ccPlugins.listPluginCommands().map(info => info.name)).toEqual(['alpha:alpha-command'])
+
+    const changes: number[] = []
+    ctx.on('ccPlugins/change' as Parameters<typeof ctx.on>[0], () => { changes.push(changes.length) })
+
+    // Remove the plugin from disk, then rescan: the table drains to empty.
+    rmSync(join(tmpRoot, 'alpha'), { recursive: true, force: true })
+    await ctx.ccPlugins.rescan()
+    expect(ctx.ccPlugins.listPluginCommands()).toEqual([])
+
+    // Re-add it (with a second command) and rescan: the table rebuilds.
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await ctx.ccPlugins.rescan()
+    const names = ctx.ccPlugins.listPluginCommands().map(info => info.name)
+    expect(names).toEqual(['alpha:alpha-command'])
+    // Two change events after the listener registered (the initial mountAll's
+    // event fired before it): one per rescan.
+    expect(changes).toHaveLength(2)
+  })
+})
+
+/**
+ * The topology the flat unit tests above miss: in the real composition the CC
+ * preset mounts cc-shell-glue INSIDE the `cc-services` isolate realm while the
+ * host-plane consumers (TUI driver, /help) sit in sibling plugin fibers that
+ * resolve `ccPlugins` against the root realm. A realm-scoped Service.provide
+ * is invisible across that boundary — this suite pins the cross-scope contract.
+ */
+describe('@jianxx/dsh-cc-bundle-shell cross-scope visibility (real bundle topology)', () => {
+  it('a sibling bundle fiber resolves ccPlugins, receives ccPlugins/change, and degrades after glue dispose', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+
+    const root = new Context()
+    // Host-plane seams the glue reads during mount; in the real composition
+    // they are provided at the root realm (outside the cc-services group).
+    root.provide('mcpConnections', {})
+    root.provide('ccModelRoutes', undefined)
+    root.provide('commands', commands)
+
+    // The cc-services group realm: the preset isolates `ccPlugins` here and
+    // mounts the glue inside it.
+    const group = root.isolate('ccPlugins')
+
+    // The consumer is a SEPARATE plugin fiber directly under root — a sibling
+    // subtree of the group, like the TUI bundle's `tui` row or /help.
+    let consumerCtx: Context | undefined
+    const changes: number[] = []
+    await root.plugin({
+      name: 'host-consumer',
+      apply(c: Context) {
+        consumerCtx = c
+        c.on('ccPlugins/change', () => { changes.push(changes.length) })
+      },
+    })
+
+    const glue = group.plugin({ name: 'cc-shell-glue', apply }, configFor([tmpRoot]))
+    await glue
+
+    // Sibling visibility: the consumer's context resolves the registry even
+    // though it was published from inside the isolated group realm.
+    const resolved = consumerCtx!.get('ccPlugins') as CcPluginsService | undefined
+    expect(resolved).toBeDefined()
+    expect(resolved!.list().map(entry => entry.name)).toEqual(['alpha'])
+    expect(resolved!.listPluginCommands().map(info => info.name)).toEqual(['alpha:alpha-command'])
+
+    // Event reachability: mountAll's change event crossed the bundle boundary.
+    expect(changes).toHaveLength(1)
+
+    // Property-access path (command-help's `(ctx as ...).ccPlugins` read).
+    expect((consumerCtx as { ccPlugins?: CcPluginsService }).ccPlugins).toBe(resolved)
+
+    // Lifecycle: disposing the glue fiber removes the published property, and
+    // the consumer degrades to undefined instead of holding a dead registry.
+    await (await glue).dispose()
+    expect(consumerCtx!.get('ccPlugins')).toBeUndefined()
+
+    await root.fiber.dispose()
+  })
+})

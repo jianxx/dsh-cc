@@ -395,6 +395,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     emit,
     state: () => state,
     current,
+    ctx,
     runLocal,
     runHarness,
     openPermissionPicker,

@@ -24,13 +24,14 @@ import type { SettingsSeam } from './settings.ts'
 import type { ComponentResult, PluginLoadReport } from './types.ts'
 import { mountSkills, type SkillsSeam } from './skills.ts'
 import { mountAgents, type ResolveModel, type SubagentsSeam } from './agents.ts'
-import { mountCommands } from './commands.ts'
+import { mountCommands, type MountedPluginCommand } from './commands.ts'
 import { mountHooks } from './hooks.ts'
 import { mountMcpServers } from './mcp.ts'
 import { mountSettings } from './settings.ts'
 import { resolvePluginManifest } from './resolve-manifest.ts'
 
 export type { CcPluginManifest, CcCommand, CcSkillRef, CcAgentRef, CcMcpServer, ComponentKind, ComponentResult, PluginLoadReport } from './types.ts'
+export type { CcPluginCommandInfo, MountedPluginCommand } from './commands.ts'
 export { parsePluginManifest } from './manifest.ts'
 export { discoverCcPluginRoots, resolveClaudeHome, NESTED_MANIFEST, TOP_LEVEL_MANIFEST } from './discovery.ts'
 export type { DiscoveredCcPlugin, DiscoverCcPluginRootsOptions } from './discovery.ts'
@@ -85,6 +86,8 @@ export interface MountCcPluginOptions {
 export interface CcPluginMount {
   /** The structural load report. */
   report: PluginLoadReport
+  /** The plugin's mounted slash commands (colon display names, host-served). */
+  commands: MountedPluginCommand[]
   /**
    * Recall every mounted component. Effect-scoped: calling it also releases
    * the Cordis effect, and a context teardown calls it automatically.
@@ -122,7 +125,9 @@ export async function mountCcPlugin(ctx: Context, options: MountCcPluginOptions)
     subagents: probed.subagents,
     ...options.resolveModel !== undefined ? { resolveModel: options.resolveModel } : {},
   }))
-  fold(components, disposers, mountCommands({ pluginRoot: root, manifest, commands: probed.commands }))
+  const commandMount = mountCommands({ pluginRoot: root, manifest, commands: probed.commands })
+  components.push(commandMount.tally.result())
+  disposers.push(...commandMount.disposers)
   fold(components, disposers, mountHooks({ pluginRoot: root, manifest, hooks: probed.hooks }))
   fold(components, disposers, mountMcpServers({ pluginRoot: root, manifest, mcp: probed.mcp }))
   fold(components, disposers, mountSettings({ manifest, settings: probed.settings }))
@@ -134,6 +139,7 @@ export async function mountCcPlugin(ctx: Context, options: MountCcPluginOptions)
 
   return {
     report: { name: manifest.name, components },
+    commands: commandMount.mounted,
     dispose: () => effectDisposer(),
   }
 }
