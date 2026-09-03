@@ -96,13 +96,13 @@ Today `switchSession` after a successful `resume`:
 
 1. Dispose old handle, assign `rt.current`.
 2. `rebindHistory`, `refreshCatalog`, `recordProjectSession`.
-3. `seedDefaultModel(true)` — **resume only**. Must stay in `switchSession` **before** `bindSession`, because the boot banner reads `selection.current` after the reseed.
+3. `seedDefaultModel(true)` — **resume only**. Runs **after** `bindSession` rebinds `rt.current` to the target (the reseed reads `current.agent`, so the rebind must land first) and before the boot banner is written. The fresh-session path does not reseed.
 4. `writeResumeTarget(newId)`, `setMarkedContent(false)`.
 5. `setSessionTitle(clearRows(state), undefined)`, boot banner, `foldHistory`.
 6. `setPermissionMode(liveMode(newAgent, 'default'))`.
 7. `clearTurn` + `setBusy` from new agent status; `seedHud` / `seedTodos` / optional `setTurnActive`; `refreshBranch`.
 
-Extract steps 1–2 and 4–7 as `bindSession(newHandle)`. `switchSession` keeps the same-id no-op, overlay drain, resume-first, **and** `seedDefaultModel(true)` *inline before the `bindSession` call*. `startFreshSession` calls `bindSession` **without** reseeding the model.
+Extract steps 1–2 and 4–7 as `bindSession(newHandle)`. `switchSession` keeps the same-id no-op, overlay drain, resume-first, and calls `bindSession(newHandle, { reseedModel: true })` — the reseed happens inside bind, after the rebind. `startFreshSession` calls `bindSession` **without** reseeding the model.
 
 Failed create/resume never reaches `bindSession` (create/resume-first), so the old handle stays.
 

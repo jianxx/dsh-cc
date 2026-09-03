@@ -260,7 +260,49 @@ describe('createDriver /clear /new /reset', () => {
     expect(createCalls.at(-1)?.agentOptions).toEqual({ provider: 'p', model: 'm' })
   })
 
-  it('cancels a running turn before create and drops the interrupt row', async () => {
+  it('failed create on a running turn does not cancel, drain, or dispose', async () => {
+    const { ctx, disposed, cancels } = makeClearCtx({
+      createSession: { id: 's-a', events: [userEvent('keep me')], status: 'running' },
+      failCreate: true,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    const originalRows = [...driver.state.rows]
+    const markerBefore = readResumeTarget({ cwd: PROJ_CWD })
+
+    await driver.submit('/clear')
+
+    expect(cancels).toEqual([])
+    expect(disposed).toEqual([])
+    expect(driver.state.busy).toBe(true)
+    expect(driver.state.rows.slice(0, originalRows.length)).toEqual(originalRows)
+    const last = driver.state.rows.at(-1)
+    expect((last as { text: string }).text).toMatch(/Start failed/)
+    expect(readResumeTarget({ cwd: PROJ_CWD })).toBe(markerBefore)
+  })
+
+  it('failed create keeps a parked approval parked', async () => {
+    const { ctx, disposed } = makeClearCtx({
+      createSession: { id: 's-a', events: [], status: 'idle' },
+      failCreate: true,
+    })
+    const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
+    const fire = (ctx as { _fireApproval: (req: unknown) => void })._fireApproval
+    fire({
+      agent: { id: 'agent-s-a', session: { id: 's-a', events: [] } },
+      toolName: 'Bash',
+      callId: undefined,
+      reason: undefined,
+      signal: { addEventListener: () => {}, removeEventListener: () => {} },
+    })
+    expect(driver.state.approval).toBeDefined()
+
+    await driver.submit('/clear')
+
+    expect(driver.state.approval).toBeDefined()
+    expect(disposed).toEqual([])
+  })
+
+  it('cancels a running turn before dispose and drops the interrupt row', async () => {
     const { ctx, cancels, createCalls } = makeClearCtx({
       createSession: { id: 's-a', events: [userEvent('old turn')], status: 'running' },
     })

@@ -246,18 +246,16 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
       return
     }
 
-    // Reseed the default model from the TARGET session before bind: the boot
-    // banner reads selection.current after the reseed. The fresh-session path
-    // (startFreshSession) must NOT reseed — its bind uses the live /model
-    // route as agentOptions instead.
-    await rt.seedDefaultModel(true)
-    await bindSession(newHandle)
+    await bindSession(newHandle, { reseedModel: true })
   }
 
   // Shared bind path (also used by startFreshSession). dispose() stops the
   // loop, unregisters the agent, and removes its session from the in-memory
   // store; it does NOT delete the durable session log.
-  const bindSession = async (newHandle: AgentHandle): Promise<void> => {
+  const bindSession = async (
+    newHandle: AgentHandle,
+    opts: { reseedModel?: boolean } = {},
+  ): Promise<void> => {
     await rt.current.handle.dispose()
     rt.current.handle = newHandle
     rt.current.agent = newHandle.agent
@@ -275,9 +273,11 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     // scope no longer relies on the cwd-prefix heuristic for it.
     rt.recordProjectSession(String(rt.current.agent.session.id), rt.current.agent.session.header.cwd)
 
-    // Fresh bind does NOT reseed the model: seedDefaultModel(true) is the
-    // /resume path (which reseats from the target session) and stays inline
-    // in switchSession, called before bindSession.
+    // Resume reseeds the model AFTER the rebind: seedDefaultModel(true) reads
+    // rt.current.agent, which is the target session only once rebound here;
+    // the fresh-session path (startFreshSession) skips reseed and keeps the
+    // live /model route as agentOptions instead.
+    if (opts.reseedModel === true) await rt.seedDefaultModel(true)
 
     rt.writeResumeTarget(String(rt.current.agent.session.id))
     rt.setMarkedContent(false)
@@ -312,16 +312,35 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
 
   // /clear, /new, /reset: brand-new empty session in-process. Create-first:
   // a failed create keeps the old session fully live. The in-flight turn is
-  // cancelled first (so dispose does not wait for it, and no "Interrupted by
-  // user." row lands on the new transcript); mode, cwd, and the live /model
-  // route are captured before dispose.
+  // cancelled only AFTER the create succeeded, so a failed create leaves the
+  // old session untouched (drain-before-create would resolve parked
+  // approvals/question even when nothing gets replaced). Mode, cwd, and the
+  // live /model route are captured before any of that.
   const startFreshSession = async (): Promise<void> => {
-    if (rt.state().busy || rt.current.agent.status === 'running') {
-      rt.current.agent.cancel({ kind: 'user' })
-    }
     const capturedMode = rt.liveMode(rt.current.agent, rt.state().permissionMode)
     const liveCwd = liveSessionCwd(rt.current.agent, rt.cwd)
     const route = rt.selection.current
+
+    let newHandle: AgentHandle
+    try {
+      newHandle = await rt.createHandle(SessionId(`tui-${randomUUID()}`), {
+        cwd: liveCwd,
+        ...(route?.provider !== undefined && route?.model !== undefined
+          ? { agentOptions: { provider: route.provider, model: route.model } }
+          : rt.agentOptions === undefined ? {} : { agentOptions: rt.agentOptions }),
+      })
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error)
+      emit(upsertRow(rt.state(), { kind: 'status', text: `Start failed: ${message}` }))
+      return
+    }
+
+    // Cancel only now that create succeeded: adjacent cancel+dispose may
+    // block until the loop aborts (latency, not correctness) — do not hoist
+    // the cancel back before create.
+    if (rt.state().busy || rt.current.agent.status === 'running') {
+      rt.current.agent.cancel({ kind: 'user' })
+    }
 
     // Clear pending overlays and the modal queue (mirror switchSession):
     // every parked approval resolves cancelled and every parked question
@@ -335,20 +354,6 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     emit(setModelPicker(rt.state(), undefined))
     emit(closeTodoPanel(rt.state()))
     emit(clearQueue(setBusy(rt.state(), false)))
-
-    let newHandle: AgentHandle
-    try {
-      newHandle = await rt.createHandle(SessionId(`tui-${randomUUID()}`), {
-        cwd: liveCwd,
-        agentOptions: route?.provider !== undefined && route?.model !== undefined
-          ? { provider: route.provider, model: route.model }
-          : rt.agentOptions,
-      })
-    } catch (error) {
-      const message = (error as Error)?.message ?? String(error)
-      emit(upsertRow(rt.state(), { kind: 'status', text: `Start failed: ${message}` }))
-      return
-    }
 
     await bindSession(newHandle)
     if (capturedMode !== 'default') await rt.reapplyMode(capturedMode)
