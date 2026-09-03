@@ -144,11 +144,25 @@ describe('createCatalogSection plugin merge', () => {
     expect(section.listCommands().map(c => c.name)).toContain('codex:review')
   })
 
-  it('a missing ccPlugins service contributes no entries and no subscription', () => {
-    const { rt, hasChangeHandler } = makeCatalogRt({})
+  it('a missing ccPlugins service contributes no entries but still subscribes to ccPlugins/change', () => {
+    // The subscription is unconditional: the cc-shell bundle may publish the
+    // service AFTER the driver mounted, and the shared cordis event bus
+    // delivers the change even without the service present yet.
+    const { rt, hasChangeHandler, fireChange } = makeCatalogRt({})
     const section = createCatalogSection(rt as never)
     expect(section.listCommands().some(c => c.name.includes(':'))).toBe(false)
-    expect(hasChangeHandler()).toBe(false)
+    expect(hasChangeHandler()).toBe(true)
+    const service = makePluginService([
+      { name: 'codex:review', plugin: 'codex', description: 'late arrival' },
+    ]).service
+    ;(rt as unknown as { ctx: { get: (key: string) => unknown } }).ctx.get = (key: string) =>
+      key === 'ccPlugins' ? service : undefined
+    fireChange()
+    expect(section.listCommands().map(c => c.name)).toContain('codex:review')
+    // Regression guard for the real-machine e2e leak: a colon name published
+    // only after boot must classify as local (not harness) so the queue's
+    // flush re-routes it through runPluginCommand instead of raw-sending.
+    expect(parseSlash('/codex:review args')).toEqual({ kind: 'local', name: 'codex:review', rawInput: 'args' })
   })
 
   it('a throwing listPluginCommands degrades to local-only without poisoning', () => {
@@ -336,7 +350,7 @@ describe('outbox flush and steer of queued plugin commands', () => {
     expect(driver.state.queued).toEqual([])
   })
 
-  it('an {ok:false} result degrades to the original raw followup on flush', async () => {
+  it('an {ok:false} result on flush surfaces a notice and never raw-sends the slash line', async () => {
     const { service, calls } = makePluginService(
       [{ name: 'codex:review', plugin: 'codex', description: 'review' }],
       () => ({ ok: false, reason: 'no git repo' }),
@@ -347,6 +361,49 @@ describe('outbox flush and steer of queued plugin commands', () => {
     await driver.submit('/codex:review later args')
     fireSessionEvent({ type: 'turn/end' })
     expect(calls).toHaveLength(1)
+    await settle()
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.notice).toBeDefined()
+    const notice = String(driver.state.notice)
+    expect(notice).toContain('codex:review')
+    expect(notice).toContain('no git repo')
+  })
+
+  it('a rejected runPluginCommand on flush surfaces a notice and never raw-sends', async () => {
+    const service = {
+      listPluginCommands: () => [{ name: 'codex:review', plugin: 'codex', description: 'review' }],
+      runPluginCommand: async () => { throw new Error('boom at flush') },
+    }
+    const agent = makeFakeAgent('running')
+    const { ctx, fireSessionEvent } = makeCtx(agent, service)
+    const driver = await createDriver(ctx as never, {})
+    await driver.submit('/codex:review later args')
+    fireSessionEvent({ type: 'turn/end' })
+    await settle()
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(driver.state.notice).toBeDefined()
+    const notice = String(driver.state.notice)
+    expect(notice).toContain('codex:review')
+    expect(notice).toContain('boom at flush')
+  })
+
+  it('a name that left the plugin table before flush degrades to the raw line', async () => {
+    // Same failure surface, but the command was uninstalled between enqueue
+    // and flush (the service is still mounted, the name is gone from
+    // listPluginCommands): the raw-line fall-through (unknown-slash
+    // philosophy) applies.
+    const table: { name: string }[] = [{ name: 'codex:review' }]
+    const service = {
+      listPluginCommands: () => table,
+      runPluginCommand: async () => ({ ok: false as const, reason: 'uninstalled' }),
+    }
+    const agent = makeFakeAgent('running')
+    const { ctx, fireSessionEvent } = makeCtx(agent, service)
+    const driver = await createDriver(ctx as never, {})
+    await driver.submit('/codex:review later args')
+    expect(driver.state.queued).toEqual(['/codex:review later args'])
+    table.length = 0
+    fireSessionEvent({ type: 'turn/end' })
     await settle()
     expect(agent.followup).toHaveBeenCalledTimes(1)
     const message = agent.followup.mock.calls[0]![0] as { content: { type: string; text?: string }[] }

@@ -80,7 +80,11 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
 } {
   const commandsService = rt.ctx.get('commands') as CommandsLike | undefined
   const skillsService = rt.ctx.get('skills') as SkillsLike | undefined
-  const pluginService = rt.ctx.get('ccPlugins') as CcPluginsLike | undefined
+  // NOTE: unlike `commands`/`skills` (provided by the host composition before
+  // the TUI driver mounts), `ccPlugins` is published by the cc-shell bundle's
+  // own fiber (`root.provide('ccPlugins', this)` in CcPluginsService), and
+  // bundle assembly order is not guaranteed relative to the driver — so the
+  // service MUST be resolved live at every refresh, never captured here.
   let commandCatalog: readonly CatalogItem[] = []
   // Last-good user-invocable skill entries (already filtered/prefixed at
   // snapshot time). Retained across incomplete or thrown snapshots.
@@ -91,6 +95,9 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
 
   const buildMerged = (): CatalogItem[] => {
     const localNames = new Set(LOCAL_COMMANDS.map(c => c.name))
+    // Live lookup each refresh: the cc-shell bundle may publish the service
+    // after the driver mounted (see the note at the top of this function).
+    const pluginService = rt.ctx.get('ccPlugins') as CcPluginsLike | undefined
     const merged: CatalogItem[] = LOCAL_COMMANDS.map(c => ({
       name: c.name,
       description: c.description,
@@ -219,14 +226,15 @@ export function createCatalogSection(rt: DriverCatalogCtx): {
       refreshCatalog()
     })
   }
-  if (pluginService !== undefined) {
-    // `ccPlugins/change` — same cast pattern; declared in cc-shell (plugin
-    // commands register/unregister with the plugin set).
-    const pluginChangeEvent = 'ccPlugins/change' as Parameters<typeof rt.ctx.on>[0]
-    rt.ctx.on(pluginChangeEvent, () => {
-      refreshCatalog()
-    })
-  }
+  // `ccPlugins/change` — unconditional (the cordis event bus is shared, so
+  // subscribing does not require the service to exist yet): this is what lets
+  // the catalog pick up a ccPlugins service that the cc-shell bundle publishes
+  // AFTER the driver mounted. Same cast pattern; the event is declared in
+  // cc-shell.
+  const pluginChangeEvent = 'ccPlugins/change' as Parameters<typeof rt.ctx.on>[0]
+  rt.ctx.on(pluginChangeEvent, () => {
+    refreshCatalog()
+  })
 
   // Subagent lifecycle: `subagent/start`|`subagent/end` are global,
   // process-scoped observe-only snapshots paired by `runId` (declared via

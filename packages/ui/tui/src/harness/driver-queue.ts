@@ -27,6 +27,7 @@ import type { DriverQueueCtx } from './driver-ctx.ts'
  * unknown-slash fall-through philosophy as the submit path.
  */
 type CcPluginsRunLike = {
+  listPluginCommands?(): readonly { name: string }[]
   runPluginCommand(
     name: string,
     input: { agent: unknown; rawInput: string },
@@ -63,22 +64,48 @@ const dispatchQueued = (rt: DriverQueueCtx, text: string, mode: 'followup' | 'st
     send(text)
     return
   }
-  // Plugin command. Degrade silently to the raw line when the service is
-  // absent or reports failure — never throw out of a synchronous flush.
+  // Plugin command. The raw-line fallback is reserved for names that are no
+  // longer in the plugin command table (uninstalled between enqueue and
+  // flush) or a vanished service — the same unknown-slash fall-through
+  // philosophy as the submit path. A name that IS still registered but fails
+  // ({ok:false} or reject) must never reach the model as raw slash text: it
+  // surfaces a notice instead and the queued line is dropped.
   const plugins = rt.ctx.get('ccPlugins') as CcPluginsRunLike | undefined
   if (plugins === undefined || typeof plugins.runPluginCommand !== 'function') {
     send(text)
     return
   }
   const { name, rawInput } = parsed
+  // Live membership check against the CURRENT table, mirrored at failure
+  // time: a name that left the table degrades to the raw line; a name that is
+  // still registered keeps the line local.
+  const stillListed = (): boolean => {
+    if (typeof plugins.listPluginCommands !== 'function') return true
+    try {
+      return plugins.listPluginCommands().some(c => c.name.toLowerCase() === name)
+    } catch {
+      return true // undecidable → keep the line local, never raw-send
+    }
+  }
+  const failWithNotice = (reason: string): void => {
+    rt.showNotice(`Plugin command /${name} failed: ${reason}`)
+  }
   void plugins.runPluginCommand(name, { agent: rt.current.agent, rawInput })
     .then((result) => {
-      if (result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false) {
+      if (!(result !== null && typeof result === 'object' && (result as { ok?: unknown }).ok === false)) return
+      if (!stillListed()) {
         send(text)
+        return
       }
+      const reason = (result as { reason?: string }).reason ?? 'unknown error'
+      failWithNotice(reason)
     })
-    .catch(() => {
-      send(text)
+    .catch((error: unknown) => {
+      if (!stillListed()) {
+        send(text)
+        return
+      }
+      failWithNotice(error instanceof Error ? error.message : String(error))
     })
 }
 
