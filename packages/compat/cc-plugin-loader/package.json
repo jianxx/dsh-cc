@@ -28,7 +28,8 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
-    "@jianxx/dsh-cc-model-aliases": "workspace:^"
+    "@jianxx/dsh-cc-model-aliases": "workspace:^",
+    "@jianxx/dsh-cc-settings-cascade": "workspace:^"
   },
   "peerDependencies": {
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",

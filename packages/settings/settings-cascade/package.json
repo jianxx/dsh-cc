@@ -21,6 +21,10 @@
       "types": "./lib/permissions.d.ts",
       "default": "./lib/permissions.js"
     },
+    "./local-root": {
+      "types": "./lib/local-root.d.ts",
+      "default": "./lib/local-root.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

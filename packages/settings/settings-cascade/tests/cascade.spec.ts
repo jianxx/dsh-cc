@@ -30,8 +30,13 @@ async function tempDir(): Promise<string> {
 }
 
 async function boot(config: Config): Promise<Context> {
+  // Pin every boot to a fresh non-git temp project dir: the default local
+  // settings path now hoists via a git probe from the launch dir, and tests
+  // run inside a git worktree — an unpinned cwd would load the real main
+  // checkout's `.claude/settings.local.json`.
+  const pinned = config.projectDir ?? (await tempDir())
   const ctx = new Context()
-  const fiber = ctx.plugin(SettingsCascadeProvider, config)
+  const fiber = ctx.plugin(SettingsCascadeProvider, { ...config, projectDir: pinned })
   cleanups.push(async () => { await fiber.dispose() })
   await fiber
   return ctx

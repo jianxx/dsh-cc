@@ -75,9 +75,10 @@ one session, not the primary flow.
   Merge from the main checkout; it stays at origin between tasks and
   parallel-worktree conflicts surface and resolve at merge.
 - Worktrees lack gitignored files: `bash scripts/link-worktree-deps.sh`
-  before the first pnpm command. Hooks in `.claude/settings.local.json`
-  and `.serena/` don't load there either — repo-wide behavior must live
-  in tracked files (migration pending).
+  before the first pnpm command. `.claude/settings.local.json` is the
+  exception — settings-cascade and plugin-loader read the main checkout's
+  copy (Claude Code parity). `.serena/` still does not follow worktrees;
+  other repo-wide behavior must live in tracked files.
 
 ### Worktree environment
 Worktrees contain only tracked files, so node_modules is absent and

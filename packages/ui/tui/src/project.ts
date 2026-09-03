@@ -76,6 +76,10 @@ export interface ProjectInfo {
  * `<super>/.git/modules/<name>`, bare, exotic GIT_DIR) is not a linked
  * worktree and keeps `resolve(top)` as its project root — so submodules do
  * not collapse onto their superproject.
+ *
+ * Keep in sync with `isLinkedWorktree` in
+ * `packages/settings/settings-cascade/src/local-root.ts`, which replicates
+ * this detector for local-settings hoisting (see its module doc).
  */
 function isLinkedWorktree(commonDir: string, top: string): boolean {
   if (!commonDir.endsWith(`${sep}.git`)) return false
