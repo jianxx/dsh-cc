@@ -17,14 +17,16 @@ providerless host mounts memory read-only).
   `reference`) frontmatter plus a Markdown body. The parser is independently
   exported.
 - **Per-workspace isolation with a global layer** — memories are scoped to the
-  session's workspace: each session cwd maps to a private directory
-  `<memoryHome>/projects/<slug>/` (the slug is the upstream
-  session-transcript `projectKey` encoding of the cwd, so a workspace's memory
-  directory matches its `sessions/--<slug>--/` grouping), while the home root
-  itself is the global layer shared by every workspace — mirroring Claude
-  Code's per-project `~/.claude/projects/<slug>/memory/` convention. Sessions
-  of different workspaces never see each other's private memories; facts
-  useful everywhere are saved with `scope: "global"`.
+  git repository (Claude Code auto-memory identity): `canonicalMemoryRoot`
+  collapses linked worktrees and subdirectories onto the main checkout, then
+  the slug is the upstream `projectKey` dash-encoding of that root, so the
+  workspace directory is `<memoryHome>/projects/<slug>/`. Worktrees of one
+  repo — and the opt-in `<workspaceDir>/team` layer — share one store. The
+  home root itself is the global layer shared by every workspace. Sessions
+  of different repositories never see each other's private memories; facts
+  useful everywhere are saved with `scope: "global"`. Session transcripts
+  still group by raw cwd (`sessions/--<cwd-slug>--`); memory no longer
+  matches that grouping for worktree sessions.
 - **`memory` system-prompt section** — save-channel guidance, each layer's
   entrypoint content (truncated), a scope-tagged combined index of topic
   files, and grep search guidance. The section ALWAYS renders (a memoryless
@@ -43,7 +45,7 @@ providerless host mounts memory read-only).
   against them are fenced by the fs sandbox and always fail; the section says
   so explicitly. The tool takes structured fields (`name`, `type`,
   `description`, `body`, optional `scope`: `workspace` (default) or `global`),
-  resolves the target directory from the calling agent's session cwd,
+  resolves the target directory from the calling agent's canonical git root,
   generates the frontmatter host-side, upserts the `MEMORY.md` pointer, and
   writes via the `ctx.fs` seam under a per-call policy of
   `{ mode: 'workspace-write', workspaceRoot: <memory dir> }` — confinement is
@@ -74,7 +76,7 @@ Load the plugin with `@jianxx/dsh-cc-memory`. Configuration knobs:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `memoryHome` | harness home `memory/` | memory home root: the global layer, and the parent of each workspace's `projects/<slug>/` directory |
+| `memoryHome` | harness home `memory/` | memory home root: the global layer, and the parent of each repository's `projects/<slug>/` directory |
 | `sectionEnabled` | `true` | register the `memory` system-prompt section |
 | `recallEnabled` | `true` | run dynamic recall on pre-step |
 | `recallProviderName` | `fork` | one-shot subagent provider for the recall query |
@@ -96,7 +98,9 @@ Load the plugin with `@jianxx/dsh-cc-memory`. Configuration knobs:
 > the global layer (visible to every workspace). A pre-isolation team
 > directory at `<memoryHome>/team/` is inert — team memory now lives at
 > `<workspaceDir>/team/`; move its files manually if you had `teamEnabled`
-> on.
+> on. Pre-collapse worktree-cwd slugs (`projects/<slug-of-the-worktree-path>/`)
+> are likewise not migrated: they stay on disk unused; new writes land in the
+> main-checkout bucket.
 
 ```ts
 import memory from '@jianxx/dsh-cc-memory'
@@ -127,8 +131,10 @@ entrypoint truncation caps and the five-file recall ceiling.
   shared with `dsh-memory-consolidation`.
 - `MemoryRecall` — the pre-step recall coordinator.
 - `truncateEntrypointContent(raw)` — apply the line/byte caps.
-- `resolveMemoryHome`, `resolveWorkspaceMemoryDir`, `projectSlug`, `cwdOf`,
-  `resolveProjectMemoryRoot` — memdir root and workspace helpers.
+- `resolveMemoryHome`, `resolveWorkspaceMemoryDir`, `canonicalMemoryRoot`,
+  `projectSlug`, `cwdOf`, `resolveProjectMemoryRoot` — memdir root and
+  workspace helpers. `canonicalMemoryRoot` is the git-repo collapse
+  (worktrees → main checkout); `cwdOf` stays the live working copy.
 - `sanitizePathKey(key)`, `validateTeamMemKey(fs, teamDir, relativeKey)`,
   `resolveTeamMemoryRoot(workspaceDir)` — the team-memory security chain and
   path helpers.

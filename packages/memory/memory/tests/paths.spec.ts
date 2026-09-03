@@ -1,8 +1,30 @@
-import { describe, expect, it } from 'vitest'
-import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { join, resolve } from 'node:path'
 import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { cwdOf, projectSlug, resolveMemoryHome, resolveWorkspaceMemoryDir } from '../src/paths.ts'
+import {
+  __clearMemoryRootCache,
+  canonicalMemoryRoot,
+  cwdOf,
+  projectSlug,
+  resolveMemoryHome,
+  resolveWorkspaceMemoryDir,
+  type MemoryGitExec,
+} from '../src/paths.ts'
+
+/**
+ * Script a git conversation: argv → result (or undefined to simulate
+ * failure). Combined `rev-parse --show-toplevel --git-common-dir` is the
+ * only probe canonicalMemoryRoot issues.
+ */
+function scriptedExec(script: Record<string, { stdout: string } | undefined>): MemoryGitExec {
+  return (argv, _cwd) => {
+    const entry = script[argv.join(' ')]
+    return entry === undefined ? undefined : { stdout: entry.stdout }
+  }
+}
+
+const COMBINED = 'rev-parse --show-toplevel --git-common-dir'
 
 /**
  * Regression coverage for the default memdir resolution: the default must be
@@ -27,8 +49,8 @@ describe('resolveMemoryHome', () => {
 
 /**
  * The workspace slug is ported from upstream `projectKey`
- * (session-persistence-jsonl) minus the `--` wrapper, so a workspace's memory
- * directory matches its session-transcript grouping.
+ * (session-persistence-jsonl) minus the `--` wrapper. The input is the
+ * canonical git root, not the raw session cwd.
  */
 describe('projectSlug', () => {
   it('collapses separators and drive colons to single dashes', () => {
@@ -57,9 +79,78 @@ describe('projectSlug', () => {
   })
 })
 
+describe('canonicalMemoryRoot', () => {
+  afterEach(() => { __clearMemoryRootCache() })
+
+  it('main repo: root is the toplevel', () => {
+    const exec = scriptedExec({
+      [COMBINED]: { stdout: '/repo\n.git\n' },
+    })
+    expect(canonicalMemoryRoot('/repo', exec)).toBe('/repo')
+  })
+
+  it('main repo launched from a subdir maps relative common-dir to the toplevel', () => {
+    const exec = scriptedExec({
+      [COMBINED]: { stdout: '/repo\n../.git\n' },
+    })
+    expect(canonicalMemoryRoot('/repo/subdir', exec)).toBe('/repo')
+  })
+
+  it('linked worktree collapses onto the main checkout root', () => {
+    const exec = scriptedExec({
+      [COMBINED]: { stdout: '/repo/.claude/worktrees/support\n/repo/.git\n' },
+    })
+    expect(canonicalMemoryRoot('/repo/.claude/worktrees/support', exec)).toBe('/repo')
+  })
+
+  it('submodule does not collapse onto the superproject (.git/modules/*)', () => {
+    const exec = scriptedExec({
+      [COMBINED]: { stdout: '/super/sub\n/super/.git/modules/sub\n' },
+    })
+    expect(canonicalMemoryRoot('/super/sub', exec)).toBe('/super/sub')
+  })
+
+  it('nested independent repository keeps its own root', () => {
+    const exec = scriptedExec({
+      [COMBINED]: { stdout: '/outer/nested\n/outer/nested/.git\n' },
+    })
+    expect(canonicalMemoryRoot('/outer/nested', exec)).toBe('/outer/nested')
+  })
+
+  it('non-git directory degrades to the directory identity', () => {
+    expect(canonicalMemoryRoot('/plain/dir', scriptedExec({}))).toBe(resolve('/plain/dir'))
+  })
+
+  it('git failure (undefined result) degrades to the directory identity', () => {
+    expect(canonicalMemoryRoot('/a/b', scriptedExec({ [COMBINED]: undefined }))).toBe(resolve('/a/b'))
+  })
+})
+
 describe('resolveWorkspaceMemoryDir', () => {
+  afterEach(() => { __clearMemoryRootCache() })
+
   it('nests the workspace slug under <home>/projects', () => {
-    expect(resolveWorkspaceMemoryDir('/mem', '/work/repo')).toBe('/mem/projects/work-repo')
+    const exec = scriptedExec({})
+    expect(resolveWorkspaceMemoryDir('/mem', '/work/repo', exec)).toBe('/mem/projects/work-repo')
+  })
+
+  it('collapses a linked worktree onto the same dir as the main checkout', () => {
+    const main = scriptedExec({ [COMBINED]: { stdout: '/repo\n.git\n' } })
+    const worktree = scriptedExec({
+      [COMBINED]: { stdout: '/repo/.claude/worktrees/foo\n/repo/.git\n' },
+    })
+    const fromMain = resolveWorkspaceMemoryDir('/mem', '/repo', main)
+    const fromWorktree = resolveWorkspaceMemoryDir('/mem', '/repo/.claude/worktrees/foo', worktree)
+    expect(fromMain).toBe(`/mem/projects/${projectSlug('/repo')}`)
+    expect(fromWorktree).toBe(fromMain)
+  })
+
+  it('shares the team layer of the collapsed workspace dir', () => {
+    const worktree = scriptedExec({
+      [COMBINED]: { stdout: '/repo/.claude/worktrees/foo\n/repo/.git\n' },
+    })
+    const dir = resolveWorkspaceMemoryDir('/mem', '/repo/.claude/worktrees/foo', worktree)
+    expect(join(dir, 'team')).toBe(`/mem/projects/${projectSlug('/repo')}/team`)
   })
 })
 

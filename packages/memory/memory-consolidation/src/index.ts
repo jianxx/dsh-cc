@@ -211,8 +211,8 @@ async function startMemoryJob(
  */
 export function apply(ctx: Context, config: Config = {}): void {
   // The memory home is the ROOT: extraction/dream write into the turning
-  // agent's own workspace directory (`<home>/projects/<slug>`), never the
-  // shared root, so memories stay isolated per workspace.
+  // agent's repository directory (`<home>/projects/<slug>` of the canonical
+  // git root), never the shared root, so memories stay isolated per repo.
   const home = config.memoryHome ?? join(defaultDshHome(), 'memory')
   const provider = config.subagentProviderName ?? 'fork'
   const minHours = config.minHours ?? 24
@@ -283,7 +283,7 @@ const INDEX_CAP_BYTES = 8 * 1024
 const INDEX_TRUNCATED_MARKER = '(index truncated; rely on MEMORY.md in-dir for the rest)'
 
 async function runExtraction(ctx: Context, agent: Agent, home: string, provider: string): Promise<void> {
-  // The extraction writes into the turning agent's own workspace directory —
+  // The extraction writes into the turning agent's repository directory —
   // the shared home root holds only explicitly-global memories.
   const dir = resolveWorkspaceMemoryDir(home, sessionTranscriptDir(agent))
   // Only model-visible surface events count toward the batch size.

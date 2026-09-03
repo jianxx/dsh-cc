@@ -11,7 +11,7 @@ import {
   renderTopicFile,
   upsertPointer,
 } from '../src/save.ts'
-import { projectSlug } from '../src/paths.ts'
+import { canonicalMemoryRoot, projectSlug } from '../src/paths.ts'
 import type { MemorySection } from '../src/section.ts'
 
 /**
@@ -131,7 +131,7 @@ describe('memory_save tool', () => {
     const result = await call(ctx, VALID)
 
     expect(result.isError).toBeFalsy()
-    const dir = `${HOME}/projects/${projectSlug(process.cwd())}`
+    const dir = `${HOME}/projects/${projectSlug(canonicalMemoryRoot(process.cwd()))}`
     expect(fs.backingText(`${dir}/user-profile.md`)).toBe(renderTopicFile(VALID))
   })
 
