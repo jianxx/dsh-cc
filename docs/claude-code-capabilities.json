@@ -2269,7 +2269,13 @@
       "plane": "preset",
       "upstream": {
         "summary": "Bootstrap a CLAUDE.md for the project.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/commands",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
@@ -3017,7 +3023,13 @@
       "plane": "preset",
       "upstream": {
         "summary": "CLAUDE.md files pull in additional files via @path import syntax.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/memory",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
@@ -3045,7 +3057,18 @@
       "plane": "preset",
       "upstream": {
         "summary": "Auto memory directories (per-project plus global), a save channel, recall with aging by file mtime (memoryAge), and team-shared memory.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/memory",
+            "retrieved": "2026-09-03"
+          },
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/claude-directory",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
@@ -3092,7 +3115,18 @@
       "plane": "preset",
       "upstream": {
         "summary": "SKILL.md skills with frontmatter and conditional paths activation, bundled skills, and slash-menu invocation.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/skills",
+            "retrieved": "2026-09-03"
+          },
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/slash-commands",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
@@ -3134,7 +3168,18 @@
       "plane": "preset",
       "upstream": {
         "summary": "Task tool dispatching subagents from .claude/agents definitions with model aliases, tool filters, background/continuable runs, and TaskOutput collection.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/sub-agents",
+            "retrieved": "2026-09-03"
+          },
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/plugins-reference",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
@@ -3176,7 +3221,23 @@
       "plane": "preset",
       "upstream": {
         "summary": "MCP servers over stdio/HTTP with tools, resources, prompts, and OAuth.",
-        "refs": []
+        "refs": [
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/mcp",
+            "retrieved": "2026-09-03"
+          },
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/mcp-quickstart",
+            "retrieved": "2026-09-03"
+          },
+          {
+            "source": "cc-docs",
+            "path": "/docs/en/claude-directory",
+            "retrieved": "2026-09-03"
+          }
+        ]
       },
       "dimensions": {
         "recognized": {
