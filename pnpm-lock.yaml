@@ -829,6 +829,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
+      '@jianxx/dsh-cc-hook-protocol':
+        specifier: workspace:^
+        version: link:../../hooks/hook-protocol
 
   packages/interaction/command-help:
     devDependencies:

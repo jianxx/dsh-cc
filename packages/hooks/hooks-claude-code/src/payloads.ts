@@ -79,8 +79,15 @@ export function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolE
 export function postToolFailurePayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
   return { ...base(ctx, exec.agent, 'PostToolUseFailure'), tool_name: hookToolName(exec.name), tool_input: exec.arguments, tool_use_id: exec.callId, error: blocksToText(result.content) }
 }
-export function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'Stop'), stop_hook_active: false }
+/**
+ * The Stop payload. `stopHookActive` is the CC `stop_hook_active` loop-guard
+ * flag: `true` while the agent is already continuing BECAUSE of a Stop hook
+ * (the bridge computes it from its consecutive-block counter before
+ * incrementing — block #1 observes `false`). The SubagentStop payload keeps
+ * `stop_hook_active: false` — the bridge never blocks at SubagentStop.
+ */
+export function stopPayload(ctx: Context, agent: Agent, stopHookActive: boolean): Record<string, unknown> {
+  return { ...base(ctx, agent, 'Stop'), stop_hook_active: stopHookActive }
 }
 /**
  * Build a SubagentStart/SubagentStop payload from the CC base (the child's

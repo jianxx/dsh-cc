@@ -9,7 +9,15 @@ import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-llm'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { readHookDiagnostics } from '@jianxx/dsh-cc-hook-protocol'
 import { formatDoctorReport, type DoctorReport, type SeamStatus } from './doctor.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Harness-home path resolver, provided by @deepseek-ai/dsh-app-boot at boot. Optional in tests. */
+    dshHomePath?: (...segments: string[]) => string
+  }
+}
 
 export const name = 'command-doctor'
 export const inject = ['commands']
@@ -33,6 +41,34 @@ export function readVersion(): string {
 
 /** The seam names `/doctor` checks for presence without documentation. */
 const SEAMS = ['shell', 'subprocess', 'fs', 'skills', 'web', 'lsp'] as const
+
+/** How many valid diagnostics lines to read back: 10 for display, and the
+ * same unbounded read counts every valid line for `total`. The writer caps
+ * the file at 256 KB (≈ hundreds of entries), so one large-limit read is
+ * cheap and keeps the gather simple. */
+const HOOK_DIAGNOSTICS_READ_LIMIT = 1_000_000
+
+/**
+ * Read a dsh-home path without throwing when the boot-provided `dshHomePath`
+ * resolver is absent — cordis throws on the property access itself (not a
+ * plain `undefined`), so every read must be guarded. Mirrors the
+ * hooks-claude-code bridge's `dshHomeFile` helper.
+ */
+function dshHomeFile(ctx: Context, ...segments: string[]): string | undefined {
+  try {
+    return ctx.dshHomePath?.(...segments)
+  } catch {
+    return undefined
+  }
+}
+
+/** Read the hook diagnostics JSONL under the dsh home, best-effort. */
+function gatherHooks(ctx: Context): DoctorReport['hooks'] {
+  const path = dshHomeFile(ctx, 'hooks', 'diagnostics.jsonl')
+  if (path === undefined) return { issues: [], total: 0 }
+  const all = readHookDiagnostics(path, HOOK_DIAGNOSTICS_READ_LIMIT)
+  return { issues: all.slice(-10), total: all.length, path }
+}
 
 /** Whether a named capability-seam service is mounted. */
 function mounted(ctx: Context, name: (typeof SEAMS)[number]): boolean {
@@ -63,6 +99,7 @@ function gatherReport(ctx: Context): DoctorReport {
     version: readVersion(),
     settings: ctx.get('settings') !== undefined,
     seams,
+    hooks: gatherHooks(ctx),
   }
 }
 
