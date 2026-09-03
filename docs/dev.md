@@ -164,3 +164,23 @@ tighten the trajectory's `thresholds` (or set the env gate in CI). The full
 bundle-patch composition (preset roster + TUI rows) boots only under a
 deployed dsh installation — deploy with `scripts/sync-cc-preset.sh`, then run
 the bin there; harness-side clients link this package rather than the reverse.
+
+## Capability freshness ritual
+
+Monthly (or per notable Claude Code release):
+
+1. Run `pnpm report:freshness`. It lists capabilities whose newest
+   `upstream.refs` retrieval is older than `baseline.freshness_threshold_days`
+   ("Stale baselines") and capabilities with empty `upstream.refs` ("Backfill
+   queue").
+2. For each stale / backfill-queue area, re-query Context7
+   (`/websites/code_claude`; resolve the library id first if needed) on the
+   relevant topic and update that capability's `upstream.refs` — add or refresh
+   the ref and set `retrieved` to the actual query date.
+3. Run `pnpm docs:parity` so the generated matrix, README block, and
+   `docs/claude-code-capabilities.json` stay in sync.
+4. Open a PR titled `docs(capabilities): freshness refresh YYYY-MM`.
+
+The monthly `parity-freshness` workflow (`.github/workflows/parity-freshness.yml`)
+runs the same report with `--fail-on-stale` and fails when any baseline ages
+past the threshold.

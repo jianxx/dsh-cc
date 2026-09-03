@@ -1,0 +1,46 @@
+# =============================================================================
+# ParityFreshness — monthly capability-manifest freshness gate (Phase 2 Unit A).
+#
+# Runs the freshness report with --fail-on-stale: fails when any capability's
+# newest upstream.refs retrieval ages past baseline.freshness_threshold_days.
+# Repair is the documented ritual in docs/dev.md ("Capability freshness
+# ritual"): re-query Context7, update refs, regenerate, open a PR.
+#
+# No deepseek-harness checkout needed — only js-yaml from root devDependencies.
+# =============================================================================
+name: ParityFreshness
+
+on:
+  schedule:
+    # Monthly, on the 1st at 09:00 UTC.
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install deps
+        env:
+          HUSKY: 0
+        run: pnpm install --frozen-lockfile
+
+      - name: Capability freshness (--fail-on-stale)
+        run: node scripts/report-capability-freshness.mjs --fail-on-stale

@@ -469,7 +469,7 @@ skipped refresh visible. Optional later: emit
   considered and cut (nothing would run it; revisit when the publish workflow
   wants it). The E/W split in §4.4 stands unchanged: E-level invariants
   hard-fail.
-- O1. JSON render for programmatic consumers — deferred to Phase 2.
+- O1. JSON render — DECIDED in Phase 2: shipped as docs/claude-code-capabilities.json (normalized manifest), generated and drift-checked by the same generator.
 - O2. Whether dsh-native extras deserve a *separate* generated table in the
   matrix (from a second, dsh-owned manifest) — deliberately out of scope here.
 
