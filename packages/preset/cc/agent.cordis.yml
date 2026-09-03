@@ -193,9 +193,14 @@
 #
 # `tool-subagent` and `tool-subagent-fork` (the harness spawn/fork Task tools)
 # are DISABLED here — the CC Task tool is provided by the `tool-task` row in
-# the cc-services group instead. That replacement Task is a foreground one-shot
-# (no backgroundMode: continuable); the durable background/continuable workflow
-# (report/send_message) is a follow-up.
+# the cc-services group instead. That replacement Task now implements the
+# continuable loop itself: `run_in_background: true` starts a durable
+# background child on the spawn provider, and report / send_message /
+# list_agents / interrupt_agent operate on its returned agentId. The harness
+# rows stay disabled. Note for future readers: the disabled
+# `tool-subagent-fork` row's `backgroundMode: continuable` config is inert
+# while the row is disabled, and fork children remain foreground one-shot
+# until upstream harness issue #2124 resolves.
 - id: delegation
   name: cordis:group
   group: true

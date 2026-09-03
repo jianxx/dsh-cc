@@ -34,6 +34,48 @@ export {
 /** Cordis plugin id. */
 export const name = 'cc-subagent-task'
 
+/** Section name for the background-subagent contract. */
+const BACKGROUND_SECTION_NAME = 'cc:subagent-background'
+
+/** Order slot beside the catalog section (tool guidance owns 100–199). */
+const BACKGROUND_SECTION_ORDER = 112
+
+const BACKGROUND_SECTION_TEXT = [
+  '## Background subagents',
+  '',
+  '- The Task tool runs foreground by default. Pass `run_in_background: true` for long-running',
+  '  or parallelizable work: the call returns promptly with a durable `agentId` once the child',
+  '  accepts its first turn.',
+  '- A background child\'s report — or its finish notice when it ends without reporting — arrives',
+  '  as a waking message; do not poll.',
+  '- Control the child by that id: `list_agents` for status, `send_message` to continue the same',
+  '  conversation (only the agent that started the child may continue it), `interrupt_agent` to',
+  '  stop its current turn.',
+  '- `subagent_type: "fork"` cannot run in the background (upstream harness issue #2124); use a',
+  '  plain background spawn instead.',
+  '- Exiting your session drains a background child\'s in-flight turn; its persisted session',
+  '  survives and cold-resumes on the next `send_message`.',
+].join('\n')
+
+/**
+ * Register the static background-loop system-prompt section (same contract the
+ * Task tool description teaches, stated once so it survives description
+ * trimming). No-op when the system-prompt seam is absent.
+ * @param ctx - the plug context.
+ * @returns the section disposer, or undefined when the seam is absent.
+ */
+export function mountBackgroundSection(ctx: Context): (() => void) | undefined {
+  const seam = ctx.get('systemPrompt') as {
+    section(def: { name: string; order: number; text: string }): () => void
+  } | undefined
+  if (seam === undefined) return undefined
+  return seam.section({
+    name: BACKGROUND_SECTION_NAME,
+    order: BACKGROUND_SECTION_ORDER,
+    text: BACKGROUND_SECTION_TEXT,
+  })
+}
+
 /**
  * Mount the Task tool, the agents catalog, and the workspace-instruction
  * strip. Safe when either the tools or the system-prompt seam is absent
@@ -45,5 +87,6 @@ export function apply(ctx: Context): void {
   const registry = new AgentRegistry()
   registerTaskTool(ctx, registry)
   mountAgentCatalog(ctx, registry)
+  mountBackgroundSection(ctx)
   mountStripWorkspaceInstructions(ctx)
 }
