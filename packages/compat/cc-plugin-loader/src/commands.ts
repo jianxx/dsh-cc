@@ -3,8 +3,8 @@
  *
  * Translates manifest `commands` entries (inline content or a source file) into
  * typed command definitions registered on the commands seam. Each handler
- * returns the command's rendered content, so invoking `/name` surfaces the
- * plugin author's instructions. Registration is effect-scoped.
+ * substitutes `$ARGUMENTS` and dispatches the rendered body as a user prompt
+ * on the invoking agent; registration is effect-scoped.
  *
  * @module
  */
@@ -28,7 +28,7 @@ export interface CommandsSeam {
 
 /** The minimal typed command definition this loader emits. */
 export interface CommandDefinition {
-  /** `plugin:command` namespaced name, or the bare command name. */
+  /** The bare command name (harness registries reject colon names). */
   readonly name: string
   /** Human-readable command description. */
   readonly description: string
@@ -54,6 +54,29 @@ export type CommandResult =
   | { readonly kind: 'success'; readonly text?: string }
   | { readonly kind: 'error'; readonly text: string }
 
+/** A plugin command's public summary, using the `plugin:command` display name. */
+export interface CcPluginCommandInfo {
+  /** Display name `plugin:command`, even when both parts are identical. */
+  readonly name: string
+  /** The plugin's manifest name. */
+  readonly plugin: string
+  /** Human-readable command description. */
+  readonly description: string
+  /** Argument placeholder hint, when one is known. */
+  readonly argumentHint?: string
+}
+
+/** One mounted plugin command: its public summary plus a direct dispatcher. */
+export interface MountedPluginCommand {
+  /** Public summary (colon display name; served by the host's own channel). */
+  readonly info: CcPluginCommandInfo
+  /**
+   * Dispatch the rendered command body as a user prompt on the given agent —
+   * the same path the harness-registered bare alias uses.
+   */
+  run(invocation: CommandInvocationLike): CommandResult | Promise<CommandResult>
+}
+
 /** Commands live under this directory in a plugin root, when present. */
 export const STANDARD_COMMANDS_DIR = 'commands'
 
@@ -69,22 +92,37 @@ export interface MountCommandsOptions {
 
 /**
  * Register a plugin's manifest commands.
+ *
+ * Only bare command names reach the host commands seam: harness command
+ * registries validate names against `/^[a-z][a-z0-9_-]*$/` and reject the
+ * `plugin:command` colon form. The colon form stays available through the
+ * returned `mounted` list, for hosts that expose plugin commands on their own
+ * channel (e.g. cc-shell's `CcPluginsService.runPluginCommand`).
+ *
+ * A rejected registration (bare name already taken) skips that one command,
+ * never the whole plugin mount.
+ *
  * @param options - plugin root, manifest, and the commands seam.
- * @returns mounted disposers and per-component counts.
+ * @returns mounted disposers, per-component counts, and the mounted commands.
  */
-export function mountCommands(options: MountCommandsOptions): { disposers: (() => void)[]; tally: ComponentTally } {
+export function mountCommands(options: MountCommandsOptions): {
+  disposers: (() => void)[]
+  mounted: MountedPluginCommand[]
+  tally: ComponentTally
+} {
   const tally = new ComponentTally('commands')
   const disposers: (() => void)[] = []
+  const mounted: MountedPluginCommand[] = []
   if (options.commands === undefined) {
     tally.addSkipped('commands seam "commands" is not mounted')
-    return { disposers, tally }
+    return { disposers, mounted, tally }
   }
   const entries = options.manifest.commandsDeclared
     ? [...options.manifest.commands]
     : defaultCommandEntries(options.pluginRoot, tally)
   if (entries.length === 0) {
     tally.addSkipped('plugin ships no commands')
-    return { disposers, tally }
+    return { disposers, mounted, tally }
   }
   for (const entry of entries) {
     const rendered = renderCommand(options.pluginRoot, entry)
@@ -93,35 +131,28 @@ export function mountCommands(options: MountCommandsOptions): { disposers: (() =
       continue
     }
     const hint = entry.argumentHint ?? rendered.argumentHint
-    const definition: CommandDefinition = {
-      name: entry.name,
+    const body = rendered.body ?? ''
+    const info: CcPluginCommandInfo = {
+      name: `${options.manifest.name}:${entry.name}`,
+      plugin: options.manifest.name,
       description: entry.description ?? rendered.description ?? '',
-      ...hint === undefined ? {} : { input: { hint } },
-      handler: invocation => dispatchCommandPrompt(invocation, rendered.body ?? ''),
+      ...hint === undefined ? {} : { argumentHint: hint },
     }
-    // Claude Code exposes plugin commands as `plugin:command`; register that
-    // namespaced form first (primary), then a bare alias for discoverability.
-    // A rejected alias (name already taken) only skips the alias; a rejected
-    // primary fails this command, never the whole plugin mount.
-    const names = options.manifest.name === entry.name
-      ? [entry.name]
-      : [`${options.manifest.name}:${entry.name}`, entry.name]
-    let loaded = false
-    for (const [index, name] of names.entries()) {
-      try {
-        disposers.push(options.commands.register({ ...definition, name }))
-        if (index === 0) loaded = true
-      } catch (error) {
-        if (index === 0) {
-          tally.addFailed(`command "${entry.name}": ${String(error)}`)
-          break
-        }
-        tally.addSkipped(`bare name "${entry.name}" not registered (namespaced form remains): ${String(error)}`)
-      }
+    const run = (invocation: CommandInvocationLike) => dispatchCommandPrompt(invocation, body)
+    try {
+      disposers.push(options.commands.register({
+        name: entry.name,
+        description: info.description,
+        ...hint === undefined ? {} : { input: { hint } },
+        handler: run,
+      }))
+      mounted.push({ info, run })
+      tally.addLoaded()
+    } catch (error) {
+      tally.addSkipped(`bare name "${entry.name}" not registered: ${String(error)}`)
     }
-    if (loaded) tally.addLoaded()
   }
-  return { disposers, tally }
+  return { disposers, mounted, tally }
 }
 
 /**
@@ -184,16 +215,27 @@ function renderCommand(pluginRoot: string, entry: CcCommand): {
  * cross-plane seam the upstream `/plan` command uses. Returning success
  * without `text` keeps the command plane from echoing the body back as a
  * status row: the injected message itself is the visible artifact.
+ *
+ * `Agent.followup` is async upstream, so a thenable return is awaited and a
+ * rejection is folded into `{ kind: 'error' }` instead of surfacing as an
+ * unhandled rejection (a synchronous throw is caught the same way).
  */
-function dispatchCommandPrompt(invocation: CommandInvocationLike, body: string): CommandResult {
+export function dispatchCommandPrompt(invocation: CommandInvocationLike, body: string): CommandResult | Promise<CommandResult> {
   const text = body.split('$ARGUMENTS').join(invocation.rawInput)
+  let scheduled: unknown
   try {
-    invocation.agent.followup(createUserMessage({
+    scheduled = invocation.agent.followup(createUserMessage({
       content: [{ type: 'text', text }],
       source: { kind: 'user' },
     }))
-    return { kind: 'success' }
   } catch (error) {
     return { kind: 'error', text: `could not dispatch command prompt: ${String(error)}` }
   }
+  if (scheduled === null || scheduled === undefined || typeof (scheduled as { then?: unknown }).then !== 'function') {
+    return { kind: 'success' }
+  }
+  return Promise.resolve(scheduled).then(
+    () => ({ kind: 'success' } as const),
+    (error: unknown) => ({ kind: 'error', text: `could not dispatch command prompt: ${String(error)}` }),
+  )
 }

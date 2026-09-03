@@ -16,15 +16,24 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import {
   discoverCcPluginRoots,
   mountCcPlugin,
+  type CcPluginCommandInfo,
   type DiscoveredCcPlugin,
+  type MountedPluginCommand,
   type PluginLoadReport,
   type ResolveModel,
 } from '@jianxx/dsh-cc-plugin-loader'
+
+export type { CcPluginCommandInfo } from '@jianxx/dsh-cc-plugin-loader'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The mounted Claude Code plugin registry, when cc-shell-glue is composed. */
     ccPlugins: CcPluginsService
+  }
+
+  interface Events {
+    /** The mounted plugin set or its command table changed (mount/rescan). */
+    'ccPlugins/change'(): void
   }
 }
 
@@ -63,6 +72,9 @@ export interface CcPluginRescanError {
   error: string
 }
 
+/** A result of running one plugin command through the local channel. */
+export type CcPluginCommandRunResult = { ok: true } | { ok: false; reason: string }
+
 /** Live per-root mount bookkeeping. */
 interface TrackedMount {
   root: string
@@ -79,6 +91,9 @@ type MountResult = { ok: true } | { ok: false; error: string }
 export class CcPluginsService extends Service {
   /** Live mounts keyed by plugin root directory. */
   private readonly mounts = new Map<string, TrackedMount>()
+
+  /** Live plugin commands keyed by their colon display name (`plugin:command`). */
+  private readonly commandTable = new Map<string, MountedPluginCommand>()
 
   constructor(
     ctx: Context,
@@ -111,6 +126,9 @@ export class CcPluginsService extends Service {
         dispose: mounted.dispose,
         report: mounted.report,
       })
+      for (const command of mounted.commands) {
+        this.commandTable.set(command.info.name, command)
+      }
       return { ok: true }
     } catch (error) {
       const message = String(error)
@@ -129,6 +147,7 @@ export class CcPluginsService extends Service {
       const result = await this.mountOne(plugin)
       if (!result.ok) errors.push({ root: plugin.root, error: result.error })
     }
+    this.ctx.emit('ccPlugins/change')
     return errors
   }
 
@@ -144,12 +163,14 @@ export class CcPluginsService extends Service {
   /**
    * Dispose all tracked mounts in reverse mount order, then re-run discovery
    * and mount from the same roots. Individual failures are collected and the
-   * remaining plugins still mount.
+   * remaining plugins still mount. The command table is rebuilt wholesale and
+   * a `ccPlugins/change` event fires when the rescan settles.
    */
   async rescan(): Promise<CcPluginRescanError[]> {
     const errors: CcPluginRescanError[] = []
     const tracked = Array.from(this.mounts.values()).reverse()
     this.mounts.clear()
+    this.commandTable.clear()
     for (const mount of tracked) {
       try {
         mount.dispose()
@@ -161,6 +182,29 @@ export class CcPluginsService extends Service {
       const result = await this.mountOne(plugin)
       if (!result.ok) errors.push({ root: plugin.root, error: result.error })
     }
+    this.ctx.emit('ccPlugins/change')
     return errors
+  }
+
+  /** Enumerate the mounted plugin commands (colon display names). */
+  listPluginCommands(): readonly CcPluginCommandInfo[] {
+    return Array.from(this.commandTable.values(), command => command.info)
+  }
+
+  /**
+   * Run one plugin command by its colon display name: render the command body
+   * with the raw input substituted for `$ARGUMENTS` and dispatch it as a user
+   * prompt on the given agent. This is the local channel for the
+   * `plugin:command` form, which never reaches the harness command registry.
+   */
+  async runPluginCommand(
+    name: string,
+    input: { agent: unknown; rawInput: string },
+  ): Promise<CcPluginCommandRunResult> {
+    const command = this.commandTable.get(name)
+    if (command === undefined) return { ok: false, reason: `unknown plugin command "${name}"` }
+    const result = await command.run(input as { agent: { followup(message: unknown): unknown }; rawInput: string })
+    if (result.kind === 'success') return { ok: true }
+    return { ok: false, reason: result.text }
   }
 }

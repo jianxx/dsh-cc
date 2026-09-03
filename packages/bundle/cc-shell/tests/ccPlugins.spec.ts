@@ -167,3 +167,85 @@ describe('@jianxx/dsh-cc-bundle-shell ccPlugins registry', () => {
     expect(GlueConfig({}).pluginDirs).toBeUndefined()
   })
 })
+
+describe('@jianxx/dsh-cc-bundle-shell plugin command channel', () => {
+  it('lists plugin commands with colon display names, including plugin == command as x:x', async () => {
+    const plain = join(tmpRoot, 'alpha')
+    writePlugin(plain, 'alpha', 'alpha-command')
+    const same = join(tmpRoot, 'x')
+    writePlugin(same, 'x', 'x')
+
+    await apply(ctx, configFor([tmpRoot]))
+
+    const names = ctx.ccPlugins.listPluginCommands().map(info => info.name).sort()
+    expect(names).toEqual(['alpha:alpha-command', 'x:x'])
+    const alpha = ctx.ccPlugins.listPluginCommands().find(info => info.plugin === 'alpha')
+    expect(alpha).toMatchObject({ plugin: 'alpha', description: 'command from alpha' })
+  })
+
+  it('runPluginCommand renders $ARGUMENTS and dispatches a user-prompt followup', async () => {
+    const dir = join(tmpRoot, 'alpha')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({
+      name: 'alpha',
+      commands: { rescue: { description: 'rescue it', content: 'Fix $ARGUMENTS now' } },
+    }))
+    await apply(ctx, configFor([tmpRoot]))
+
+    const sent: unknown[] = []
+    const result = await ctx.ccPlugins.runPluginCommand('alpha:rescue', {
+      agent: { followup: (message: unknown) => { sent.push(message); return undefined } },
+      rawInput: 'the flaky test',
+    })
+    expect(result).toEqual({ ok: true })
+    expect(sent).toHaveLength(1)
+    const message = sent[0] as { content?: Array<{ text?: string }>; source?: { kind?: string } }
+    expect(message.content?.map(part => part.text ?? '').join('')).toBe('Fix the flaky test now')
+    expect(message.source?.kind).toBe('user')
+  })
+
+  it('runPluginCommand folds a failed dispatch into { ok: false, reason }', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    const info = ctx.ccPlugins.listPluginCommands()[0]!
+    const result = await ctx.ccPlugins.runPluginCommand(info.name, {
+      agent: { followup: () => { throw new Error('agent busy') } },
+      rawInput: '',
+    })
+    expect(result).toMatchObject({ ok: false })
+    if (!result.ok) expect(result.reason).toContain('agent busy')
+  })
+
+  it('runPluginCommand returns { ok: false } for an unknown command name', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    const result = await ctx.ccPlugins.runPluginCommand('alpha:missing', {
+      agent: { followup: () => undefined },
+      rawInput: '',
+    })
+    expect(result).toMatchObject({ ok: false })
+  })
+
+  it('rescan clears and rebuilds the command table and fires ccPlugins/change', async () => {
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await apply(ctx, configFor([tmpRoot]))
+    expect(ctx.ccPlugins.listPluginCommands().map(info => info.name)).toEqual(['alpha:alpha-command'])
+
+    const changes: number[] = []
+    ctx.on('ccPlugins/change' as Parameters<typeof ctx.on>[0], () => { changes.push(changes.length) })
+
+    // Remove the plugin from disk, then rescan: the table drains to empty.
+    rmSync(join(tmpRoot, 'alpha'), { recursive: true, force: true })
+    await ctx.ccPlugins.rescan()
+    expect(ctx.ccPlugins.listPluginCommands()).toEqual([])
+
+    // Re-add it (with a second command) and rescan: the table rebuilds.
+    writePlugin(join(tmpRoot, 'alpha'), 'alpha', 'alpha-command')
+    await ctx.ccPlugins.rescan()
+    const names = ctx.ccPlugins.listPluginCommands().map(info => info.name)
+    expect(names).toEqual(['alpha:alpha-command'])
+    // Two change events after the listener registered (the initial mountAll's
+    // event fired before it): one per rescan.
+    expect(changes).toHaveLength(2)
+  })
+})
