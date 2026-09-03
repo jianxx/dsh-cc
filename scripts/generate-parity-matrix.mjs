@@ -11,9 +11,9 @@
  * Exit 0/1 only. Paths resolve against --root (default: the repo root, i.e.
  * the parent of this script's directory) so paired tests can use fixture trees.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadManifest, validateManifest, normalizeDimension } from "./lib/capability-manifest.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -264,6 +264,31 @@ export function replaceReadmeBlock(readmeText, block) {
   return readmeText.slice(0, start) + "\n" + block + readmeText.slice(e);
 }
 
+/**
+ * Unit B (§9 O1, decided in Phase 2): normalized manifest JSON for
+ * programmatic consumers. Dimensions go through the lib's normalizer so they
+ * are always in object form; everything else is the parsed manifest as-is.
+ * Rendered with JSON.stringify(obj, null, 2) + a trailing newline — key order
+ * follows loadManifest's parse order, hence byte-stable for identical input.
+ */
+export function renderManifestJson(manifest) {
+  const normalized = JSON.parse(JSON.stringify(manifest));
+  for (const cap of Object.values(normalized.capabilities ?? {})) {
+    cap.dimensions = {
+      recognized: normalizeDimension(cap.dimensions?.recognized),
+      mounted: normalizeDimension(cap.dimensions?.mounted),
+      behavioral: normalizeDimension(cap.dimensions?.behavioral),
+      ux: normalizeDimension(cap.dimensions?.ux),
+    };
+  }
+  return JSON.stringify(normalized, null, 2) + "\n";
+}
+
+/** JSON lands next to the manifest (docs/claude-code-capabilities.json by default). */
+function jsonRelFor(manifestRel) {
+  return join(dirname(manifestRel), basename(manifestRel).replace(/\.ya?ml$/, ".json"));
+}
+
 function parseArgs(argv) {
   const args = { check: false };
   for (let i = 0; i < argv.length; i++) {
@@ -287,6 +312,7 @@ function main() {
   const manifestRel = args.manifest ?? "docs/claude-code-capabilities.yaml";
   const readmeRel = args.readme ?? "README.md";
   const matrixRel = args.matrix ?? "docs/cc-parity-matrix.md";
+  const jsonRel = jsonRelFor(manifestRel);
 
   let manifest;
   try {
@@ -312,10 +338,14 @@ function main() {
     process.exit(1);
   }
 
+  const jsonOut = renderManifestJson(manifest);
+
   if (args.check) {
     const stale = [];
     if (readFileSync(join(root, matrixRel), "utf8") !== matrixOut) stale.push(matrixRel);
     if (readmeText !== readmeOut) stale.push(readmeRel);
+    if (!existsSync(join(root, jsonRel)) || readFileSync(join(root, jsonRel), "utf8") !== jsonOut)
+      stale.push(jsonRel);
     if (stale.length) {
       console.error(`stale generated output in: ${stale.join(", ")}`);
       console.error("run pnpm docs:parity");
@@ -327,7 +357,8 @@ function main() {
 
   writeFileSync(join(root, matrixRel), matrixOut);
   writeFileSync(join(root, readmeRel), readmeOut);
-  console.log(`wrote ${matrixRel} and the marked block in ${readmeRel}.`);
+  writeFileSync(join(root, jsonRel), jsonOut);
+  console.log(`wrote ${matrixRel}, the marked block in ${readmeRel}, and ${jsonRel}.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();
