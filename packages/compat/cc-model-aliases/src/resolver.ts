@@ -21,7 +21,7 @@
  * @module @jianxx/dsh-cc-model-aliases/resolver
  */
 
-import type { AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
 
 /**
  * Claude Code family aliases. Unconfigured → inherit the parent route.
@@ -117,33 +117,69 @@ export function createModelResolver(
   getAliases: () => ReadonlyMap<string, AliasTarget>,
   options?: { warn?: (message: string) => void },
 ): ModelResolver {
-  const warn = options?.warn ?? ((message: string) => console.warn(message))
+  const inspect = createModelInspector(getAliases, options)
   const resolveDetailed = (model: string | undefined): DetailedRoute => {
-    if (model === undefined || model.trim().length === 0) {
-      return { selector: undefined, via: 'inherit', route: undefined }
+    const verdict: AliasInspection = inspect(model)
+    if (verdict.kind === 'inherit') {
+      return { selector: model === undefined || model.trim().length === 0 ? undefined : model.trim(), via: 'inherit', route: undefined }
     }
-    const selector = model.trim()
-    const folded = selector.toLowerCase()
-    if (folded === 'inherit') {
-      return { selector, via: 'inherit', route: undefined }
+    const selector = model?.trim()
+    if (verdict.kind === 'route') {
+      return { selector, via: 'alias', route: verdict.route }
     }
+    // Upstream's inspector reports the literal passthrough for BOTH a custom
+    // alias name and a followed string-form target; our `DetailedRoute` keeps
+    // the finer split: when the literal route's model differs from the
+    // selector, the selector was a CONFIGURED alias followed to its target,
+    // so the provenance is `alias`, not `literal`.
+    const followed = verdict.route !== undefined && verdict.route.model !== undefined && verdict.route.model !== selector
+    return { selector: followed ? selector : verdict.route?.model, via: followed ? 'alias' : 'literal', route: verdict.route }
+  }
+  // `resolve` is derived from `resolveDetailed` so the classification and the
+  // route always come from the SAME merged map — no double lookup, and the
+  // legacy route behavior stays byte-identical by construction.
+  const resolve = (model: string | undefined) => resolveDetailed(model).route
+  return Object.assign(resolve, { resolveDetailed })
+}
+
+/**
+ * Build an inspector that classifies one frontmatter `model` the same way
+ * {@link createModelResolver} resolves it, additionally reporting provenance
+ * (kind / via / hop) for tooling like `/doctor`. The `route` field is exactly
+ * what `resolve()` returns for the same input.
+ * @param getAliases - returns the effective alias map for this invocation.
+ * @param options - same warning hook as {@link createModelResolver}.
+ * @returns the inspection function mapping a frontmatter `model` to an
+ *   {@link AliasInspection}.
+ */
+export function createModelInspector(
+  getAliases: () => ReadonlyMap<string, AliasTarget>,
+  options?: { warn?: (message: string) => void },
+): (model: string | undefined) => AliasInspection {
+  const warn = options?.warn ?? ((message: string) => console.warn(message))
+  return (model) => {
+    if (model === undefined || model.trim().length === 0) return { kind: 'inherit' }
+    const trimmed = model.trim()
+    const folded = trimmed.toLowerCase()
+    if (folded === 'inherit') return { kind: 'inherit' }
 
     const aliases = getAliases()
     const hit = aliases.get(folded)
     if (hit !== undefined && hit !== null) {
       if (typeof hit === 'string') {
         const followed = followStringTarget(hit, aliases, folded)
-        if (followed.kind === 'route') return { selector, via: 'alias', route: followed.route }
-        if (followed.kind === 'inherit') return { selector, via: 'inherit', route: undefined }
-        return { selector, via: 'alias', route: { model: hit } }
+        const foldedTarget = hit.trim().toLowerCase()
+        if (followed.kind === 'route') return { kind: 'route', via: 'one-hop', hop: foldedTarget, route: followed.route }
+        if (followed.kind === 'inherit') return { kind: 'inherit', via: 'one-hop', hop: foldedTarget }
+        return { kind: 'literal', route: { model: hit } }
       }
       // Object form: forward the route fields that are present. `provider` and
       // `reasoningEffort` are optional (absent = inherit / no stamp); `model`
       // is always set on a schema-valid object entry. Object targets are
       // concrete routes — they are not followed as alias names.
       return {
-        selector,
-        via: 'alias',
+        kind: 'route',
+        via: 'configured',
         route: {
           ...(hit.provider === undefined ? {} : { provider: hit.provider }),
           ...(hit.model === undefined ? {} : { model: hit.model }),
@@ -160,26 +196,21 @@ export function createModelResolver(
     const peer = LANE_PEERS[folded]
     if (peer !== undefined) {
       const followed = followStringTarget(peer, aliases, folded)
-      if (followed.kind === 'route') return { selector, via: 'alias', route: followed.route }
-      return { selector, via: 'inherit', route: undefined }
+      if (followed.kind === 'route') return { kind: 'route', via: 'peer', hop: peer, route: followed.route }
+      return { kind: 'inherit', via: 'peer', hop: peer }
     }
 
     // Unconfigured builtin alias → inherit the parent route ("current model").
-    if (BUILTIN_SET.has(folded)) return { selector, via: 'inherit', route: undefined }
+    if (BUILTIN_SET.has(folded)) return { kind: 'inherit', via: 'builtin' }
 
     // Custom alias that is unconfigured: warn when it looks like an intended
     // alias, then pass through verbatim as a literal model id (no regression
     // for literal ids such as `deepseek-chat`).
     if (/^[a-z]+$/.test(folded)) {
-      warn(`cc-model-aliases: model "${selector}" is not a configured alias and is not builtin; passing through verbatim as a literal model id`)
+      warn(`cc-model-aliases: model "${trimmed}" is not a configured alias and is not builtin; passing through verbatim as a literal model id`)
     }
-    return { selector, via: 'literal', route: { model: selector } }
+    return { kind: 'literal', route: { model: trimmed } }
   }
-  // `resolve` is derived from `resolveDetailed` so the classification and the
-  // route always come from the SAME merged map — no double lookup, and the
-  // legacy route behavior stays byte-identical by construction.
-  const resolve = (model: string | undefined) => resolveDetailed(model).route
-  return Object.assign(resolve, { resolveDetailed })
 }
 
 type FollowedTarget

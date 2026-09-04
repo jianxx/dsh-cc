@@ -99,6 +99,9 @@ export function appendHookResult(session: Session, record: HookResultRecord): vo
     decision: output.decision ?? (output.continue === false ? 'stop' : 'pass'),
     ...output.exitCode !== undefined ? { exitCode: output.exitCode } : {},
     ...stderrSummary !== undefined ? { stderrSummary } : {},
+    // Degradation flags are recorded ONLY when true — absent means healthy.
+    ...output.timedOut ? { timedOut: true } : {},
+    ...output.parseFailure ? { parseFailure: true } : {},
     durationMs: record.durationMs,
   })
 }

@@ -98,3 +98,26 @@ describe('mergeHookOutputs — reasons, stop, context, systemMessages accumulate
     expect(m.systemMessages).toEqual(['warn-A', 'warn-B'])
   })
 })
+
+describe('mergeHookOutputs — updatedToolOutput / updatedMCPToolOutput last-writer-wins (S2)', () => {
+  it('the LAST non-undefined writer wins for each field', () => {
+    const m = mergeHookOutputs([
+      out({ updatedToolOutput: 'first', updatedMCPToolOutput: { n: 1 } }),
+      out({ updatedToolOutput: 'second' }),
+    ])
+    expect(m.updatedToolOutput).toBe('second')
+    expect(m.updatedMCPToolOutput).toEqual({ n: 1 })
+  })
+
+  it('undefined does not clobber an earlier writer; absent stays undefined', () => {
+    const m = mergeHookOutputs([out({ updatedToolOutput: 'kept' }), out()])
+    expect(m.updatedToolOutput).toBe('kept')
+    expect(m.updatedMCPToolOutput).toBeUndefined()
+  })
+
+  it('a neutral empty list yields no replacement fields', () => {
+    const m = mergeHookOutputs([])
+    expect(m.updatedToolOutput).toBeUndefined()
+    expect(m.updatedMCPToolOutput).toBeUndefined()
+  })
+})

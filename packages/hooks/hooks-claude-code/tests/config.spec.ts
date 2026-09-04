@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseClaudeCodeConfig, substituteCommand } from '@jianxx/dsh-cc-hooks-claude-code/src/config.ts'
+import { parseClaudeCodeConfig, substituteCommand, SUPPORTED_CLAUDE_EVENTS } from '@jianxx/dsh-cc-hooks-claude-code/src/config.ts'
 
 describe('substituteCommand', () => {
   it('replaces CLAUDE_PLUGIN_ROOT and CLAUDE_PROJECT_DIR (all occurrences)', () => {
@@ -56,12 +56,13 @@ describe('parseClaudeCodeConfig', () => {
       ] }],
     })
     expect(config.PreToolUse![0]!.hooks.map(h => h.type)).toEqual([undefined, 'http'])
-    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'mcp_tool' }])
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'mcp_tool', reason: 'unknown hook type' }])
   })
 
   it('drops a malformed http hook without a url string', () => {
-    const { config } = parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] })
+    const { config, skipped } = parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] })
     expect(config.PreToolUse).toBeUndefined()
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'http', reason: 'malformed http' }])
   })
 
   it('treats a hook with no `type` as a command (CC default)', () => {
@@ -74,6 +75,19 @@ describe('parseClaudeCodeConfig', () => {
     expect(parseClaudeCodeConfig({ PreToolUse: [42, { hooks: 'no' }, { hooks: [7, { type: 'command' }] }] }).config).toEqual({})
     // a group whose only hook lacks a command string drops the whole (empty) group
     expect(parseClaudeCodeConfig({ Stop: [{ hooks: [{ type: 'command', command: 5 }] }] }).config).toEqual({})
+  })
+
+  it('records a skipped row for every malformed hook, with the matching reason', () => {
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [7] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed hook' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'command' }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed command' }])
+    expect(parseClaudeCodeConfig({ Stop: [{ hooks: [{ type: 'command', command: 5 }] }] }).skipped)
+      .toEqual([{ event: 'Stop', type: 'command', reason: 'malformed command' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'http', reason: 'malformed http' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'mcp_tool' }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'mcp_tool', reason: 'unknown hook type' }])
   })
 
   it('returns empty for a non-object / null / array top level', () => {
@@ -114,6 +128,91 @@ describe('parseClaudeCodeConfig', () => {
     expect(config).toEqual({
       PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'kept.sh' }] }],
     })
+  })
+})
+
+describe('SUPPORTED_CLAUDE_EVENTS', () => {
+  it('exposes the supported event list (readonly strings, matching the parsed keys)', () => {
+    expect(SUPPORTED_CLAUDE_EVENTS).toContain('PreToolUse')
+    expect(SUPPORTED_CLAUDE_EVENTS).toContain('Stop')
+    expect(SUPPORTED_CLAUDE_EVENTS).not.toContain('UserPromptCancel')
+    // Every supported key parses; an unsupported key warns instead.
+    const config = Object.fromEntries(SUPPORTED_CLAUDE_EVENTS.map(e => [e, [{ hooks: [{ command: 'x.sh' }] }]]))
+    expect(parseClaudeCodeConfig(config).config && Object.keys(parseClaudeCodeConfig(config).config).sort())
+      .toEqual([...SUPPORTED_CLAUDE_EVENTS].sort())
+  })
+})
+
+describe('parseClaudeCodeConfig — F6 warnings', () => {
+  it('returns an empty warnings array for a fully-supported config', () => {
+    const { warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'x.sh', timeout: 5 }] }],
+      Stop: [{ hooks: [{ type: 'prompt', prompt: 'ok', model: 'm' }] }],
+    })
+    expect(warnings).toEqual([])
+  })
+
+  it('warns per handler with keys outside the per-type allowlist', () => {
+    const { warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'x.sh', async: true, once: true }] }],
+      Stop: [{ hooks: [{ type: 'agent', prompt: 'v', model: 'm', temperature: 0.5 }] }],
+    })
+    expect(warnings).toEqual([
+      { event: 'PreToolUse', matcher: 'Bash', hookType: 'command', keys: ['async', 'once'] },
+      { event: 'Stop', hookType: 'agent', keys: ['temperature'] },
+    ])
+  })
+
+  it('warns for each executor kind with its own allowlist (prompt/http/agent)', () => {
+    const { warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ hooks: [
+        { type: 'prompt', prompt: 'p', extra: 1 },
+        { type: 'http', url: 'http://x', headers: {}, allowedEnvVars: [], unknownFlag: true },
+        { type: 'agent', prompt: 'a', model: 'm', foobar: 2 },
+        { type: 'command', command: 'c', widget: 3 },
+      ] }],
+    })
+    expect(warnings.map(w => [w.hookType, w.keys])).toEqual([
+      ['prompt', ['extra']],
+      ['http', ['unknownFlag']],
+      ['agent', ['foobar']],
+      ['command', ['widget']],
+    ])
+    expect(warnings.every(w => w.event === 'PreToolUse' && w.matcher === undefined)).toBe(true)
+  })
+
+  it('warns once per unknown event key in the hooks map', () => {
+    const { config, warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ hooks: [{ command: 'x.sh' }] }],
+      PreCompact: [{ hooks: [{ command: 'nope.sh' }] }],
+      UsrPromptSubmit: [{ hooks: [{ command: 'typo.sh' }] }],
+    })
+    expect(Object.keys(config)).toEqual(['PreToolUse'])
+    expect(warnings).toEqual([
+      { event: 'PreCompact', hookType: 'event', keys: [] },
+      { event: 'UsrPromptSubmit', hookType: 'event', keys: [] },
+    ])
+  })
+
+  it('warns per matcher-group with unknown group-level keys (only matcher/hooks are known)', () => {
+    const { config, warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'x.sh' }], background: true }],
+      Stop: [{ hooks: [{ command: 's.sh' }], priority: 1, mode: 'x' }],
+    })
+    expect(config.PreToolUse).toEqual([{ matcher: 'Bash', hooks: [{ command: 'x.sh' }] }])
+    expect(warnings).toEqual([
+      { event: 'PreToolUse', matcher: 'Bash', hookType: 'group', keys: ['background'] },
+      { event: 'Stop', hookType: 'group', keys: ['priority', 'mode'] },
+    ])
+  })
+
+  it('a command hook missing a string command lands in skipped (with its unknown-key warning)', () => {
+    const { config, skipped, warnings } = parseClaudeCodeConfig({
+      PreToolUse: [{ hooks: [{ type: 'command', note: 'missing command' }] }],
+    })
+    expect(config.PreToolUse).toBeUndefined()
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed command' }])
+    expect(warnings).toEqual([{ event: 'PreToolUse', matcher: undefined, hookType: 'command', keys: ['note'] }])
   })
 })
 

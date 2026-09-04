@@ -30,3 +30,5 @@ export { appendHookInvoked, appendHookResult, DEFAULT_STDERR_SUMMARY_MAX_CHARS, 
 export type { HookInvocation, HookResultRecord } from './events.ts'
 export { createDetachedRuns } from './detached.ts'
 export type { DetachedRuns } from './detached.ts'
+export { hookDiagnosticsWriter, readHookDiagnostics } from './diagnostics.ts'
+export type { HookIssue, HookIssueKind } from './diagnostics.ts'

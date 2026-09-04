@@ -2,7 +2,10 @@
  * Merge matched hooks into one most-restrictive outcome. Permission precedence
  * is `deny > ask > allow`; the first `continue:false` stop is sticky; reasons
  * for the winning rank are joined; and context and system messages accumulate
- * in hook order.
+ * in hook order. The tool-result replacement fields (`updatedToolOutput` /
+ * `updatedMCPToolOutput`) fold by LAST writer wins: each non-undefined value
+ * overwrites the previous one (the newest hook's replacement is the one that
+ * would be applied by the reference engine, which applies hooks in order).
  * @module @jianxx/dsh-cc-hook-protocol/merge
  */
 
@@ -29,6 +32,14 @@ export interface MergedHookOutcome {
   additionalContext: string[]
   /** Every hook's `systemMessage`, in hook order. */
   systemMessages: string[]
+  /**
+   * The tool-result replacement (PostToolUse), folded LAST-writer-wins across
+   * hooks: the final non-undefined value wins. `undefined` when no hook asked
+   * for a replacement.
+   */
+  updatedToolOutput?: unknown
+  /** The MCP-tool variant of {@link MergedHookOutcome.updatedToolOutput} (same last-writer-wins fold). */
+  updatedMCPToolOutput?: unknown
 }
 
 /** Rank a single hook's decision for the deny>ask>allow precedence (higher = stricter). */
@@ -67,6 +78,8 @@ export function mergeHookOutputs(outputs: HookOutput[]): MergedHookOutcome {
   let stopReason: string | undefined
   const additionalContext: string[] = []
   const systemMessages: string[] = []
+  let updatedToolOutput: unknown
+  let updatedMCPToolOutput: unknown
 
   for (const out of outputs) {
     const r = rank(out.decision)
@@ -86,6 +99,8 @@ export function mergeHookOutputs(outputs: HookOutput[]): MergedHookOutcome {
     if (out.systemMessage !== undefined && out.systemMessage.length > 0) {
       systemMessages.push(out.systemMessage)
     }
+    if (out.updatedToolOutput !== undefined) updatedToolOutput = out.updatedToolOutput
+    if (out.updatedMCPToolOutput !== undefined) updatedMCPToolOutput = out.updatedMCPToolOutput
   }
 
   const reasons = reasonsByRank.get(maxRank) ?? []
@@ -96,5 +111,7 @@ export function mergeHookOutputs(outputs: HookOutput[]): MergedHookOutcome {
     ...stopReason !== undefined ? { stopReason } : {},
     additionalContext,
     systemMessages,
+    ...updatedToolOutput !== undefined ? { updatedToolOutput } : {},
+    ...updatedMCPToolOutput !== undefined ? { updatedMCPToolOutput } : {},
   }
 }

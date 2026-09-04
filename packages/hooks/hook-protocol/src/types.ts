@@ -35,6 +35,10 @@ declare module '@deepseek-ai/dsh-session/types' {
       decision: string
       exitCode?: number
       stderrSummary?: string
+      /** Present ONLY when the run hit its timeout budget (`HookOutput.timedOut`). */
+      timedOut?: boolean
+      /** Present ONLY when structured stdout looked like JSON but failed to decode (`HookOutput.parseFailure`). */
+      parseFailure?: boolean
       durationMs: number
     }
   }
@@ -204,4 +208,29 @@ export interface HookOutput {
    * bridge logs + warns when this is present.
    */
   updatedInput?: Record<string, unknown>
+  /**
+   * A tool-RESULT replacement a hook requested on PostToolUse (CC
+   * `hookSpecificOutput.updatedToolOutput`). ANY JSON value — the bridge
+   * projects it as text. Meaningful only at PostToolUse; for `mcp__*` tools
+   * the bridge reads {@link updatedMCPToolOutput} instead.
+   */
+  updatedToolOutput?: unknown
+  /**
+   * The MCP variant of {@link updatedToolOutput} (CC `updatedMCPToolOutput`);
+   * applied only when the tool name starts with `mcp__`.
+   */
+  updatedMCPToolOutput?: unknown
+  /**
+   * `true` when the run exceeded its timeout budget (`ShellRunResult.timedOut`,
+   * threaded by `runHook`). Absent (or unset on the executor-fault path) ⇒ the
+   * run was not killed by a timeout.
+   */
+  timedOut?: boolean
+  /**
+   * `true` when a clean exit (code 0) printed stdout that LOOKS like JSON
+   * (trimmed stdout starts with `{`) but could not be decoded into a structured
+   * object — malformed JSON, or a parsed non-object. The raw stdout stays in
+   * {@link stdout}; this flag makes the otherwise-silent decode failure visible.
+   */
+  parseFailure?: boolean
 }

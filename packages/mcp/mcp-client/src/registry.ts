@@ -35,6 +35,10 @@ export interface McpConnectionEntry {
   error?: string
   /** The number of tools this server currently exposes, when known. */
   toolCount?: number
+  /** Number of tools registered eagerly (including resource-bridge tools), when known. */
+  eagerCount?: number
+  /** Number of tools registered deferred (hidden until ToolSearch activation), when known. */
+  deferredCount?: number
   /** Whether interacting with this server requires OAuth authorization. */
   authRequired?: boolean
 }
@@ -93,6 +97,19 @@ export class McpConnectionsService extends Service {
   setToolCount(name: string, toolCount: number): void {
     const managed = this.managed.get(name)
     if (managed) managed.entry.toolCount = toolCount
+  }
+
+  /**
+   * Record the eager/deferred tool breakdown for a registered instance.
+   * Also overwrites `toolCount` with `eager + deferred`, keeping the
+   * invariant `eagerCount + deferredCount === toolCount`.
+   */
+  setToolBreakdown(name: string, breakdown: { eager: number; deferred: number }): void {
+    const managed = this.managed.get(name)
+    if (!managed) return
+    managed.entry.eagerCount = breakdown.eager
+    managed.entry.deferredCount = breakdown.deferred
+    managed.entry.toolCount = breakdown.eager + breakdown.deferred
   }
 
   /** A snapshot of every registered server today. */

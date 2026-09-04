@@ -245,6 +245,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     } else {
       registry!.report(config.serverName, 'ready')
       registry!.setToolCount(config.serverName, handle.toolCount())
+      registry!.setToolBreakdown(config.serverName, handle.toolBreakdown())
     }
     return outcome
   }

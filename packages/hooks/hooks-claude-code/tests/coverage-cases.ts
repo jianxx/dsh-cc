@@ -510,9 +510,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
   })
 
   if (group === 'context') describe('hooks-claude-code coverage — continue:false, context arm, no-cwd', () => {
-    it('a {"continue":false} hook is RECORDED as decision "stop" but does not halt the run (TODO(hook-continue-false))', async () => {
-    // The extension points cannot yet honor `continue:false` as a hard halt. The log must still record the
-    // stop decision while execution and the turn continue normally.
+    it('a {"continue":false} PreToolUse hook HALTS the run: canceled with a hook cause, tool never ran, notice injected', async () => {
       const d = dir()
       const s = sh(d, 'stop.sh', '#!/usr/bin/env bash\necho \'{"continue":false,"stopReason":"halt"}\'\n')
       const path = hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: s }] }] })
@@ -525,9 +523,18 @@ export function defineCoverageCases(group: CoverageGroup): void {
       await waitForIdle(ctx, agent)
       const res = events(agent).find(e => e.type === 'hook/result')
       expect(res?.type === 'hook/result' && res.data.decision).toBe('stop') // recorded
-      expect(ran).toBe(true) // NOT honored: the tool still ran (halt is deferred)
+      expect(ran).toBe(false) // honored: the tool never dispatched
+      // The halt fires at tool pre-execute (after the model's tool call), so
+      // exactly one model request happened and the canceled turn stopped there.
+      expect(adapter.requests).toHaveLength(1)
+      // The turn ended canceled with the hook cause (agent.cancel({kind:'hook'})).
       const turnEnd = events(agent).findLast(e => e.type === 'turn/end')
-      expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind).toBe('completed') // ran to completion
+      expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind === 'aborted'
+        && turnEnd.data.reason.reason.kind === 'hook').toBe(true)
+      // The mandatory F2 notice was injected (it is queued in the inbox — the
+      // canceled turn ends before it becomes a session user/message row).
+      expect(agent.inbox.nextStep.some(m => m.content.some(b => b.type === 'text' && b.text.includes('Halted by PreToolUse hook')))).toBe(true)
+      expect(agent.inbox.nextStep.some(m => m.content.some(b => b.type === 'text' && b.text.includes('any queued input was discarded')))).toBe(true)
     })
 
     it('a PostToolUse hook that BOTH blocks AND attaches additionalContext', async () => {
@@ -819,20 +826,27 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'config') describe('hooks-claude-code coverage — systemMessage is warned, not surfaced', () => {
-    it('a hook emitting a systemMessage is logged as not-yet-surfaced', async () => {
+  if (group === 'config') describe('hooks-claude-code coverage — systemMessage surfaces as a notice (F3)', () => {
+    it('a hook emitting a systemMessage injects a durable notice user-message', async () => {
       const d = dir()
       const s = sh(d, 'sm.sh', '#!/usr/bin/env bash\necho \'{"systemMessage":"heads up"}\'\n')
       const path = hooks(d, { UserPromptSubmit: [{ hooks: [{ type: 'command', command: s }] }] })
       const adapter = new MockAdapter([textResponse('ok')])
       const ctx = await harness(path, adapter)
-      const warn = vi.fn(); ctx.logger.warn = warn as never
       const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('systemMessage'))
-      // Not surfaced: the systemMessage text never reaches the model request.
-      expect(JSON.stringify(adapter.requests[0]!.messages)).not.toContain('heads up')
+      // Surfaced: the notice user-message carries the shaped text with the
+      // plugin notice source the TUI renders as a dim status row.
+      const notice = events(agent).find(e => e.type === 'user/message'
+        && e.data.source.kind === 'plugin' && (e.data.source as { form?: string; summary?: string }).form === 'notice')
+      expect(notice?.type === 'user/message' && notice.data.content.some(b => b.type === 'text' && b.text === 'heads up')).toBe(true)
+      expect(notice?.type === 'user/message' && (notice.data.source as { plugin?: string }).plugin).toBe('hooks-claude-code')
+      expect(notice?.type === 'user/message' && (notice.data.source as { summary?: string }).summary).toBe('heads up')
+      // And it is model-facing per the documented degradation: injected notices
+      // enter session history (delivery to a LATER request; this single-step
+      // turn ended before the notice's next-step delivery, so assert the
+      // durable session record only — the transcript fold has its own contract spec).
     })
   })
 
@@ -902,7 +916,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping unsupported "mcp_tool" hook on PreToolUse'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping \"mcp_tool\" hook on PreToolUse (unknown hook type)'))
     })
   })
 

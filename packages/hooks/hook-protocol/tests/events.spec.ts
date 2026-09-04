@@ -93,6 +93,29 @@ describe('hook/* session events', () => {
     }
   })
 
+  it('timedOut/parseFailure are recorded ONLY when true (absent otherwise)', () => {
+    const session = Session.create(SessionId('s'))
+    appendHookResult(session, {
+      turn: 1, point: 'PreToolUse', handlerId: 'bad',
+      stderrSummaryMaxChars: 500, durationMs: 5,
+      output: output({ timedOut: true, parseFailure: true, stdout: '{ nope' }),
+    })
+    appendHookResult(session, {
+      turn: 1, point: 'PreToolUse', handlerId: 'ok',
+      stderrSummaryMaxChars: 500, durationMs: 5, output: output(),
+    })
+    const results = [...session.events].filter(e => e.type === 'hook/result')
+    if (results[0]?.type === 'hook/result') {
+      expect(results[0].data.timedOut).toBe(true)
+      expect(results[0].data.parseFailure).toBe(true)
+      expect(results[0].data.decision).toBe('pass')
+    }
+    if (results[1]?.type === 'hook/result') {
+      expect('timedOut' in results[1].data).toBe(false)
+      expect('parseFailure' in results[1].data).toBe(false)
+    }
+  })
+
   it('an invoked/result pair correlates by handlerId', () => {
     const session = Session.create(SessionId('s'))
     appendHookInvoked(session, { turn: 1, point: 'PreToolUse', dialect: 'claude-code', handlerId: 'pair-1' })

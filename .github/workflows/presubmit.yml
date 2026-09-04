@@ -136,6 +136,26 @@ jobs:
           HUSKY: 0
         run: pnpm install --frozen-lockfile
 
+      # Capability 门禁(I1–I11、evidence anchor、registry integrity、生成物
+      # 无漂移)依赖 js-yaml,无法进入上方"纯静态、无需 node_modules"车道;
+      # install 后立即运行,仍先于 typecheck/test 提供快速反馈。
+      - name: Capability evidence (check:capabilities)
+        working-directory: dsh-cc
+        run: node scripts/check-capability-evidence.mjs
+
+      - name: Parity matrix freshness (check:parity)
+        working-directory: dsh-cc
+        run: node scripts/generate-parity-matrix.mjs --check
+
+      # 两个 checker 的配对自测(见 docs/plans/2026-09-03-claude-code-capability-manifest.md §5.3)。
+      - name: Capability evidence self-test
+        working-directory: dsh-cc
+        run: node scripts/check-capability-evidence.test.mjs
+
+      - name: Parity matrix generator self-test
+        working-directory: dsh-cc
+        run: node scripts/generate-parity-matrix.test.mjs
+
       - name: Typecheck ≡ Build (tsc -b project references)
         working-directory: dsh-cc
         run: pnpm typecheck

@@ -23,9 +23,9 @@ import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-agent'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ConfigAliasesSchema, SettingsAliasesSchema } from './schema.ts'
-import { createModelResolver, mergeAliasMaps } from './resolver.ts'
+import { createModelInspector, createModelResolver, mergeAliasMaps } from './resolver.ts'
 import { overlayStampedEffort, stampedEffortOf } from './effort.ts'
-import type { AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
 
 /** Plugin configuration: deployment-default alias map. */
 export interface Config {
@@ -49,6 +49,8 @@ export interface ModelRoutes {
    * / inherit) so callers can capture provenance without a second, racy lookup.
    */
   resolveDetailed(model: string | undefined): DetailedRoute
+  /** Inspect one frontmatter `model` with provenance (for `/doctor` reporting). */
+  inspect(model: string | undefined): AliasInspection
 }
 
 /** Cordis plugin id. */
@@ -78,18 +80,19 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     },
   })
-  const resolver = createModelResolver(
-    () => mergeAliasMaps(
-      config.modelAliases,
-      scope?.get?.() as Record<string, AliasTarget | null> | undefined,
-    ),
-    { warn: message => ctx.logger.warn(message) },
+  const aliasSources = () => mergeAliasMaps(
+    config.modelAliases,
+    scope?.get?.() as Record<string, AliasTarget | null> | undefined,
   )
+  const warnOptions = { warn: (message: string) => ctx.logger.warn(message) }
+  const resolver = createModelResolver(aliasSources, warnOptions)
+  const inspect = createModelInspector(aliasSources, warnOptions)
   const resolveDetailed = resolver.resolveDetailed
   // Both consumption shapes must be published: the Task tool's resume-pin
   // capture calls `resolveDetailed` — publishing only `resolve` makes every
-  // captured background spawn throw TypeError at spawn time.
-  ctx.provide('ccModelRoutes', { resolve: resolver, resolveDetailed } satisfies ModelRoutes)
+  // captured background spawn throw TypeError at spawn time. `inspect` keeps
+  // the upstream provenance form (`/doctor`) available alongside.
+  ctx.provide('ccModelRoutes', { resolve: resolver, resolveDetailed, inspect } satisfies ModelRoutes)
 
   // Host-side effort overlay: a child spawned through an alias whose route
   // declared `reasoningEffort` carries it on its options as an undeclared

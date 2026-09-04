@@ -7,7 +7,8 @@
  * It owns Claude payloads, environment, substitution, and decision
  * mapping; shared execution and parsing live in `dsh-hook-protocol`.
  * Payload construction, hook dispatch/decoding, and the hook runner live in the
- * payloads / dispatch / hook-output / run-point modules.
+ * payloads / dispatch / hook-output / run-point modules; turn-safety state and
+ * shaping live in the turn-safety module.
  * `updatedInput` is logged and warned but not honored. `prompt` and `agent`
  * executors fork a one-shot subagent when their enable flags are set. Bespoke
  * behavior should use typed native plugins on the same extension points; see the
@@ -18,46 +19,22 @@
 import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
-// Type-seam imports: also pull in the declaration-merged `events` interfaces so the
-// `approval/*` (user-approval) and `jobs` (dsh-jobs) events below typecheck.
-import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
-import type { JobId } from '@deepseek-ai/dsh-jobs'
-// Pulls in the declaration-merged subagent events and the identity pairing their
-// start/end edges.
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SubagentRunId } from '@deepseek-ai/dsh-subagent'
-import type { PostToolDecision, PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import {
   createDetachedRuns,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_STDERR_SUMMARY_MAX_CHARS,
-  type MergedHookOutcome,
+  hookDiagnosticsWriter,
 } from '@jianxx/dsh-cc-hook-protocol'
 import { parseClaudeCodeConfig, type ClaudeCodeHookConfig } from './config.ts'
-import {
-  notificationPayload,
-  permissionDeniedPayload,
-  permissionRequestPayload,
-  postCompactPayload,
-  postToolFailurePayload,
-  postToolPayload,
-  preToolPayload,
-  promptPayload,
-  sessionEndPayload,
-  sessionResumePayload,
-  sessionStartPayload,
-  setupPayload,
-  stopFailurePayload,
-  stopPayload,
-  subagentPayload,
-  SUBAGENT_TYPE,
-  taskCreatedPayload,
-  teammateIdlePayload,
-} from './payloads.ts'
+import { failedStatus, loadedStatus } from './status.ts'
+import { registerEvents } from './register-events.ts'
+
+export type { HookBridgeStatus } from './status.ts'
 import { createRunPoint } from './run-point.ts'
+import { createTurnSafety } from './turn-safety.ts'
+import { sessionStartPayload, setupPayload, sessionResumePayload } from './payloads.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -133,13 +110,23 @@ export const Config: z<Config> = z.object({
   enableAgentHooks: z.boolean().default(false),
 })
 
-/** The `{kind:'plugin'}` source stamped on every context this bridge injects. */
-const PLUGIN_SOURCE: MessageSource = { kind: 'plugin', plugin: 'hooks-claude-code' }
-
 /** The summary cap bounds a persisted event field — a positive integer or the slice misbehaves silently. */
 function assertPositiveInteger(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`hooks-claude-code: ${name} must be a positive integer`)
+  }
+}
+
+/**
+ * Read a dsh-home path without throwing when the boot-provided `dshHomePath`
+ * resolver is absent — cordis throws on the property access itself (not a
+ * plain `undefined`), so every read must be guarded.
+ */
+function dshHomeFile(ctx: Context, ...segments: string[]): string | undefined {
+  try {
+    return ctx.dshHomePath?.(...segments)
+  } catch {
+    return undefined
   }
 }
 
@@ -148,9 +135,11 @@ export function apply(ctx: Context, config: Config): void {
   // default to $DSH_HOME/hooks.json via ctx.dshHomePath. With neither available
   // (e.g. an app-boot that does not provide dshHomePath), register nothing and
   // log, rather than relying on a read error below to degrade silently.
-  const configPath = config.configPath || ctx.dshHomePath?.('hooks.json')
+  const configPath = config.configPath || dshHomeFile(ctx, 'hooks.json')
   if (!configPath) {
     ctx.logger.info('no hooks config path; hooks disabled')
+    // Instance-scoped status for /doctor: no module-level singleton.
+    ctx.provide('hookBridgeStatus', failedStatus('', 'no hooks config path', config))
     return
   }
   // Validate before config parsing so a bad value cannot be hidden by its early return.
@@ -158,6 +147,10 @@ export function apply(ctx: Context, config: Config): void {
   assertPositiveInteger('stderrSummaryMaxChars', stderrSummaryMaxChars)
   const defaultTimeoutMs = config.defaultTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS
   // Parse once at load. A read or parse failure logs and registers nothing.
+  // F5: hook issues (config warnings among them) append to the dsh-home
+  // diagnostics JSONL; without a dshHomePath the writer is a no-op.
+  const diagnosticsPath = dshHomeFile(ctx, 'hooks', 'diagnostics.jsonl')
+  const recordIssue = diagnosticsPath !== undefined ? hookDiagnosticsWriter(diagnosticsPath) : undefined
   let parsed: ClaudeCodeHookConfig = {}
   try {
     const raw: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
@@ -167,10 +160,18 @@ export function apply(ctx: Context, config: Config): void {
     })
     parsed = result.config
     for (const s of result.skipped) {
-      ctx.logger.warn(`hooks-claude-code: skipping unsupported "${s.type}" hook on ${s.event} (unknown hook type)`)
+      ctx.logger.warn(`hooks-claude-code: skipping "${s.type}" hook on ${s.event} (${s.reason})`)
     }
+    // F6: every parse warning is logged AND recorded as a `config` diagnostic.
+    for (const w of result.warnings) {
+      const detail = `unsupported ${w.hookType} on ${w.event}${w.matcher !== undefined ? ` (matcher "${w.matcher}")` : ''}: ${w.keys.length > 0 ? w.keys.join(', ') : 'unknown event key'}`
+      ctx.logger.warn(`hooks-claude-code: ${detail}`)
+      recordIssue?.({ ts: new Date().toISOString(), dialect: 'claude-code', point: w.event, kind: 'config', detail })
+    }
+    ctx.provide('hookBridgeStatus', loadedStatus(configPath, parsed, result.skipped, config))
   } catch (error: unknown) {
     ctx.logger.warn(`hooks-claude-code: could not load hook config "${configPath}": ${String(error)} — no hooks registered`)
+    ctx.provide('hookBridgeStatus', failedStatus(configPath, String(error), config))
     return
   }
 
@@ -192,21 +193,11 @@ export function apply(ctx: Context, config: Config): void {
   // configured names resolved once (a deployment's fixed allowlist, not a
   // per-run knob).
   const httpAllowedEnvVars = (): ReadonlySet<string> => new Set(config.httpAllowedEnvVars ?? [])
-  const runPoint = createRunPoint({ ctx, parsed, config, defaultTimeoutMs, stderrSummaryMaxChars, httpAllowedEnvVars })
+  const runPoint = createRunPoint({ ctx, parsed, config, defaultTimeoutMs, stderrSummaryMaxChars, httpAllowedEnvVars, ...recordIssue !== undefined ? { recordIssue } : {} })
 
-  // TODO(hook-continue-false): `merged.stop` is logged but needs a run-level halt mechanism.
-
-  /** Build additional model context from hook output, or return undefined when empty. */
-  function contextFrom(merged: MergedHookOutcome): UserMessage | undefined {
-    if (merged.additionalContext.length === 0) return undefined
-    const content: ContentBlock[] = merged.additionalContext.map(text => ({ type: 'text', text }))
-    return createUserMessage({ content, source: PLUGIN_SOURCE })
-  }
-
-  /** Prepend one context without flattening source fields or other downstream metadata. */
-  function prependContext(ours: UserMessage, theirs: UserMessage[] | undefined): UserMessage[] {
-    return [ours, ...theirs ?? []]
-  }
+  // F1/F2/F3 turn-safety cluster (stop-block counters, cap override, halt and
+  // notice shaping), built once like the run point.
+  const turnSafety = createTurnSafety({ ctx, ...recordIssue !== undefined ? { recordIssue } : {} })
 
   // SessionStart injects context when its detached hook resolves; a slow hook
   // may miss the first request.
@@ -214,7 +205,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('agent/session-start', ({ agent, source }) => {
     detached.track(runPoint('SessionStart', source, sessionStartPayload(ctx, agent, source), { agent, signal: detached.signal })
       .then((merged) => {
-        const context = contextFrom(merged)
+        turnSafety.detachedOutcome('SessionStart', merged, agent)
+        const context = turnSafety.contextFrom(merged)
         if (context) agent.inject(context)
       })
       .catch((error: unknown) => {
@@ -225,6 +217,7 @@ export function apply(ctx: Context, config: Config): void {
     // to Claude Code's initial boot. resume/clear/compact sources skip it.
     if (source === 'startup') {
       detached.track(runPoint('Setup', 'init', setupPayload(ctx, agent), { agent, signal: detached.signal })
+        .then((merged) => { turnSafety.detachedOutcome('Setup', merged, agent) })
         .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: Setup hook failed: ${String(error)}`) }))
     }
     // SessionResume: a session resuming prior history. Only the `resume` source
@@ -232,188 +225,16 @@ export function apply(ctx: Context, config: Config): void {
     // unimplemented (see docs).
     if (source === 'resume') {
       detached.track(runPoint('SessionResume', '', sessionResumePayload(ctx, agent, source), { agent, signal: detached.signal })
+        .then((merged) => { turnSafety.detachedOutcome('SessionResume', merged, agent) })
         .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: SessionResume hook failed: ${String(error)}`) }))
     }
   })
 
-  // --- UserPromptSubmit → PreStepDecision. The prompt text is the payload; no
-  // matcher subject (CC ignores matchers for this event). ---
-  ctx.on('agent/pre-step', async ({ agent, messages, turn, signal }, next): Promise<PreStepDecision> => {
-    if (messages.length === 0) return next()
-    const content = messages.flatMap(message => message.content)
-    const merged = await runPoint('UserPromptSubmit', '', promptPayload(ctx, agent, content), { agent, turn, signal })
-    if (merged.decision === 'deny') {
-      return { kind: 'reject' }
-    }
-    // Delegate so later listeners may still rewrite or reject, then prepend our
-    // context only to a downstream enter decision.
-    const downstream = await next()
-    const ours = contextFrom(merged)
-    if (!ours || downstream.kind !== 'enter') return downstream
-    return {
-      kind: 'enter',
-      messages: [...downstream.messages, ours],
-    }
-  })
-
-  // --- PreToolUse → PreToolDecision. Matcher subject is the tool name. ---
-  ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-    const turn = lastTurn(exec.agent)
-    // `exec` is typed in both worlds (the in-box registry's interface merge and
-    // the vendored one share the event name); at runtime the vendored registry
-    // is the only `tools` service, so the value is always ours. See package README.
-    const ccExec = exec as ToolExecution
-    const merged = await runPoint('PreToolUse', ccExec.name, preToolPayload(ctx, ccExec), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
-    if (merged.decision === 'deny') return { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
-    if (merged.decision === 'ask') return { kind: 'ask', ...merged.reason !== undefined ? { reason: merged.reason } : {} }
-    return next()
-  })
-
-  // --- PostToolUse → PostToolDecision. Matcher subject is the tool name. ---
-  // PostToolUseFailure rides the same seam as an observe-only emit when the
-  // tool result is an error (`result.isError`), matching CC where the two are
-  // mutually exclusive on a single tool call. Matcher subject is also the tool
-  // name.
-  ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
-    const turn = lastTurn(exec.agent)
-    // Same boundary cast as the PreToolUse listener above.
-    const ccExec = exec as ToolExecution
-    if (result.isError) {
-      detached.track(runPoint('PostToolUseFailure', ccExec.name, postToolFailurePayload(ctx, ccExec, result), { ...exec.agent ? { agent: exec.agent } : {}, signal: exec.signal ?? detached.signal })
-        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: PostToolUseFailure hook failed: ${String(error)}`) }))
-    }
-    const merged = await runPoint('PostToolUse', ccExec.name, postToolPayload(ctx, ccExec, result), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
-    const context = contextFrom(merged)
-    if (merged.decision === 'deny') {
-      return { kind: 'block', feedback: [{ type: 'text', text: merged.reason ?? 'blocked by PostToolUse hook' }], ...context ? { additionalContexts: [context] } : {} }
-    }
-    // Our hooks did not block. DELEGATE so a later listener can still block/replace,
-    // then fold our context onto its decision (a downstream block carries it too).
-    const downstream = await next()
-    if (!context) return downstream
-    if (downstream.kind === 'block') {
-      return { ...downstream, additionalContexts: prependContext(context, downstream.additionalContexts) }
-    }
-    return {
-      ...downstream,
-      additionalContexts: prependContext(context, downstream.additionalContexts),
-    }
-  })
-
-  // A blocking Stop hook steers at the stopping boundary, which makes the
-  // machine observe pending input and run another step.
-  // TODO(stop-loop-guard): cap consecutive forced continuations; hooks must self-limit meanwhile.
-  ctx.on('agent/turn-stopping', async ({ agent, turn, signal }): Promise<void> => {
-    const merged = await runPoint('Stop', '', stopPayload(ctx, agent), { agent, turn, signal })
-    if (merged.decision === 'deny') {
-      // A blocking Stop hook forces continuation.
-      const text = merged.reason ?? 'continue: blocked by Stop hook'
-      agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: PLUGIN_SOURCE }))
-    }
-  })
-
-  // SubagentStart may inject child context; SubagentStop only observes. Both
-  // use the live child's workspace and the generic agent-type matcher subject.
-  ctx.on('subagent/start', (info) => {
-    const child = ctx.get('agents')?.get(info.id)
-    subagentIds.add(info.id)
-    if (child !== undefined) subagentChildren.set(info.runId, child)
-    detached.track(runPoint('SubagentStart', SUBAGENT_TYPE, subagentPayload(ctx, 'SubagentStart', info, child), { ...child ? { agent: child } : {}, signal: detached.signal })
-      .then((merged) => {
-        const context = contextFrom(merged)
-        if (context && child) child.inject(context)
-      })
-      .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: SubagentStart hook failed: ${String(error)}`) }))
-  })
-  ctx.on('subagent/end', (info) => {
-    const child = subagentChildren.get(info.runId) ?? ctx.get('agents')?.get(info.id)
-    subagentChildren.delete(info.runId)
-    subagentIds.add(info.id)
-    detached.track(runPoint('SubagentStop', SUBAGENT_TYPE, subagentPayload(ctx, 'SubagentStop', info, child), { ...child ? { agent: child } : {}, signal: detached.signal }))
-  })
-
-  // --- The expanded observe/interception event set (9 of Claude Code's 30). ---
-
-  // PermissionRequest → interception on the approval waterfall. `deny` rejects the
-  // request; `allow`/`approve` pre-approves it; otherwise the downstream answerer
-  // chain decides (`ask`/no-decision delegate to `next()`).
-  ctx.on('approval/request', async (req: ApprovalRequest, next): Promise<ApprovalOutcome> => {
-    const merged = await runPoint('PermissionRequest', '', permissionRequestPayload(ctx, req), { ...req.agent ? { agent: req.agent } : {}, signal: req.signal ?? detached.signal })
-    if (merged.decision === 'deny') return 'rejected'
-    if (merged.decision === 'allow') return 'allowed-once'
-    return next()
-  })
-
-  // The three observe events that ride the session event firehose share one
-  // observer and dispatch on the recorded event type (all emit-shaped).
-  ctx.on('session/event', (session: Session, event: SessionEvent) => {
-    if (event.type === 'approval/decided' && event.data.outcome === 'rejected') {
-      detached.track(runPoint('PermissionDenied', '', permissionDeniedPayload(ctx, session), { signal: detached.signal })
-        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: PermissionDenied hook failed: ${String(error)}`) }))
-      return
-    }
-    if (event.type === 'approval/asked') {
-      detached.track(runPoint('Notification', 'permission_prompt', notificationPayload(ctx, session, event), { signal: detached.signal })
-        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: Notification hook failed: ${String(error)}`) }))
-      return
-    }
-    // `compaction/end` is declared by the compaction plugin's augmentation (not the
-    // core session map), so compare the type as a widened string; the payload here
-    // only needs the session.
-    if ((event.type as string) === 'compaction/end') {
-      detached.track(runPoint('PostCompact', '', postCompactPayload(ctx, session), { signal: detached.signal })
-        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: PostCompact hook failed: ${String(error)}`) }))
-    }
-  })
-
-  // SessionEnd → a disposed session. CC's `reason` is not derivable from the
-  // harness seam, so it is reported as `'other'`.
-  ctx.on('session/disposed', (session: Session) => {
-    detached.track(runPoint('SessionEnd', '', sessionEndPayload(ctx, session), { signal: detached.signal })
-      .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: SessionEnd hook failed: ${String(error)}`) }))
-  })
-
-  // StopFailure → an agent/error, with the error mapped onto CC's error-code
-  // vocabulary where possible (default `unknown`).
-  ctx.on('agent/error', ({ agent, error }) => {
-    detached.track(runPoint('StopFailure', '', stopFailurePayload(ctx, agent, error), { agent, signal: detached.signal })
-      .catch((failure: unknown) => { ctx.logger.warn(`hooks-claude-code: StopFailure hook failed: ${String(failure)}`) }))
-  })
-
-  // TaskCreated → bridge-side diff of the jobs registry: subscribe to changes,
-  // re-read the visible snapshot, and emit once per newly-appeared job id. Reads
-  // with no owner (unowned-only visible set); priming suppresses pre-existing jobs.
-  const jobs = ctx.get?.('jobs')
-  if (jobs) {
-    const seenJobs = new Set<JobId>()
-    const diffJobs = (owner: Agent | undefined): void => {
-      for (const job of jobs.list(owner)) {
-        if (seenJobs.has(job.id)) continue
-        seenJobs.add(job.id)
-        detached.track(runPoint('TaskCreated', '', taskCreatedPayload(ctx, job), { signal: detached.signal })
-          .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: TaskCreated hook failed: ${String(error)}`) }))
-      }
-    }
-    for (const job of jobs.list(undefined)) seenJobs.add(job.id) // prime
-    jobs.onJobsChanged(diffJobs)
-  }
-
-  // TeammateIdle → a subagent (non-root) transitioning to idle. `agent/status`
-  // does not distinguish root from child, so only agents seen as subagents fire.
-  ctx.on('agent/status', ({ agent, status }) => {
-    if (status === 'idle' && subagentIds.has(agent.id)) {
-      detached.track(runPoint('TeammateIdle', '', teammateIdlePayload(ctx, agent), { agent, signal: detached.signal })
-        .catch((error: unknown) => { ctx.logger.warn(`hooks-claude-code: TeammateIdle hook failed: ${String(error)}`) }))
-    }
-  })
-}
-
-/** The last open turn number in the agent's log, or 0 without an agent. */
-function lastTurn(agent: Agent | undefined): number {
-  if (!agent) return 0
-  const last = [...agent.session.events].findLast(e => e.type === 'turn/start')
-  /* v8 ignore next -- agent-present callers are tool/stop extension points inside an open turn. */
-  return last?.type === 'turn/start' ? last.data.turn : 0
+  // All event listeners (UserPromptSubmit, Pre/PostToolUse, Stop, subagent
+  // lifecycle, approval, observe, SessionEnd, StopFailure, TaskCreated,
+  // TeammateIdle) live in register-events.ts, extracted to keep this entry
+  // under the 500-line source budget.
+  registerEvents({ ctx, detached, runPoint, turnSafety, subagentChildren, subagentIds })
 }
 
 // Public surface preserved from the pre-split monolith: prompt interpolation and

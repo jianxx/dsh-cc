@@ -6,21 +6,23 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as commandDoctor from '@jianxx/dsh-cc-command-doctor'
-import { formatDoctorReport, type DoctorReport } from '@jianxx/dsh-cc-command-doctor/doctor'
+import type { DoctorReport } from '@jianxx/dsh-cc-command-doctor/doctor'
 
-function baseReport(): DoctorReport {
+function makeAgent(ctx: Context, session = ctx.sessions.create(SessionId(`doctor-${Math.random()}`))): Agent {
   return {
-    version: '0.1.0-rc.5',
-    settings: false,
-    seams: [
-      { name: 'shell', mounted: false },
-      { name: 'subprocess', mounted: false },
-      { name: 'fs', mounted: false },
-      { name: 'skills', mounted: false },
-      { name: 'web', mounted: false },
-      { name: 'lsp', mounted: false },
-      { name: 'llm', mounted: false },
-    ],
+    id: session.id,
+    options: {},
+    session,
+    inbox: null as never,
+    ctx: new Context(),
+    get status(): 'idle' { return 'idle' },
+    send: () => {},
+    followup: () => {},
+    steer: () => {},
+    inject: () => {},
+    cancel: () => {},
+    runMaintenance: task => task(new AbortController().signal),
+    whenIdle: () => Promise.resolve(),
   }
 }
 
@@ -35,99 +37,59 @@ describe('@jianxx/dsh-cc-command-doctor registration', () => {
     await ctx.plugin(CommandRuntime)
     await ctx.plugin(AgentRegistry)
     const plugin = await ctx.plugin(commandDoctor)
-    const session = ctx.sessions.create(SessionId(`command-doctor-${Math.random()}`))
-    const agent: Agent = {
-      id: session.id,
-      options: {},
-      session,
-      inbox: null as never,
-      ctx: new Context(),
-      get status(): 'idle' { return 'idle' },
-      send: () => {},
-      followup: () => {},
-      steer: () => {},
-      inject: () => {},
-      cancel: () => {},
-      runMaintenance: task => task(new AbortController().signal),
-      whenIdle: () => Promise.resolve(),
-    }
+    const agent = makeAgent(ctx)
     ctx.agents.register(agent)
     expect(ctx.commands.find(agent, 'doctor')).toBeDefined()
     const execution = await ctx.commands.execute(agent, '/doctor', [], new AbortController().signal)
     expect(execution?.result.kind).toBe('success')
-    expect(execution?.result.text).toContain('Seams:')
+    expect(execution?.result.text).toMatch(/seams\.fs|summary:/)
     await plugin.dispose()
     expect(ctx.commands.find(agent, 'doctor')).toBeUndefined()
   })
-})
 
-describe('/doctor version', () => {
-  it('reads a version from the package manifest', () => {
-    // The manifest lives beside the package; a version is always returned.
-    expect(commandDoctor.readVersion().length).toBeGreaterThan(0)
-  })
-})
-
-describe('/doctor formatting snapshot', () => {
-  it('renders version, settings, and every seam line', () => {
-    const report: DoctorReport = {
-      ...baseReport(),
-      version: '0.1.0-rc.5',
-      settings: true,
-    }
-    const text = formatDoctorReport(report)
-    expect(text).toContain('Version: 0.1.0-rc.5')
-    expect(text).toContain('Settings: reachable')
-    expect(text).toContain('Seams:')
-    expect(text).toContain('  fs: not mounted')
-    expect(text).toContain('  llm: not mounted')
-  })
-  it('renders mounted seams with their provider detail', () => {
-    const report: DoctorReport = {
-      ...baseReport(),
-      seams: [
-        { name: 'shell', mounted: true },
-        { name: 'llm', mounted: true, detail: 'deepseek, openai' },
-      ],
-    }
-    const text = formatDoctorReport(report)
-    expect(text).toContain('  shell: mounted')
-    expect(text).toContain('  llm: mounted (deepseek, openai)')
-  })
-  it('renders an explicit placeholder when no seams are reported', () => {
-    const text = formatDoctorReport({ version: 'v', settings: false, seams: [] })
-    expect(text).toContain('  (none)')
-  })
-})
-
-describe('/doctor gather', () => {
   it('runs through the registry against a bare composition', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(CommandRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(commandDoctor)
-    const session = ctx.sessions.create(SessionId('session-doctor'))
-    const agent: Agent = {
-      id: session.id,
-      options: {},
-      session,
-      inbox: null as never,
-      ctx: new Context(),
-      get status(): 'idle' { return 'idle' },
-      send: () => {},
-      followup: () => {},
-      steer: () => {},
-      inject: () => {},
-      cancel: () => {},
-      runMaintenance: task => task(new AbortController().signal),
-      whenIdle: () => Promise.resolve(),
-    }
+    const agent = makeAgent(ctx)
     ctx.agents.register(agent)
     const execution = await ctx.commands.execute(agent, '/doctor', [], new AbortController().signal)
+    expect(execution?.result.kind).toBe('success')
     const text = (execution?.result as { text: string }).text
-    expect(text).toContain('Settings: not mounted')
-    expect(text).toContain('  fs: not mounted')
-    expect(text).toContain('  llm: not mounted')
+    expect(text).toContain('seams.fs')
+    expect(text).toMatch(/summary: \d+ ok/)
+    // Bare composition: every optional seam skips rather than failing.
+    expect(text).not.toContain('  fail ')
+  })
+
+  it('reads a version from the package manifest', () => {
+    expect(commandDoctor.readVersion().length).toBeGreaterThan(0)
+  })
+
+  it('renders a structured report', async () => {
+    const { formatDoctorReport } = await import('../src/render.ts')
+    const report: DoctorReport = {
+      schemaVersion: 1,
+      generatedAt: '2026-09-03T00:00:00.000Z',
+      durationMs: 0,
+      env: {
+        dshCc: '0.4.0', harness: '0.1.0-rc.5', node: 'v22.19.0',
+        os: 'darwin', arch: 'arm64', cwd: '/repo',
+      },
+      checks: [
+        { id: 'env.dsh-cc', group: 'env', status: 'ok', summary: 'dsh-cc 0.4.0' },
+        { id: 'env.node', group: 'env', status: 'fail', summary: 'node v20 bad', fix: 'upgrade node' },
+      ],
+      summary: { ok: 1, warn: 0, fail: 1, skip: 0, info: 0 },
+    }
+    const text = formatDoctorReport(report)
+    expect(text).toContain('dsh-cc 0.4.0')
+    expect(text).toContain('harness 0.1.0-rc.5')
+    expect(text).toContain('  ok   env.dsh-cc: dsh-cc 0.4.0')
+    expect(text).toContain('  fail env.node: node v20 bad')
+    expect(text).toContain('    fix: upgrade node')
+    expect(text).toContain('summary: 1 ok, 0 warn, 1 fail, 0 skip, 0 info')
   })
 })

@@ -13,7 +13,7 @@
  * @module @jianxx/dsh-cc-model-aliases
  */
 
-export { BUILTIN_ALIASES, CC_ALIASES, LANE_ALIASES, LANE_PEERS, mergeAliasMaps, createModelResolver, type ModelResolver } from './resolver.ts'
+export { BUILTIN_ALIASES, CC_ALIASES, LANE_ALIASES, LANE_PEERS, mergeAliasMaps, createModelResolver, createModelInspector, type ModelResolver } from './resolver.ts'
 export { toAgentOptions, toOneShotRoute, type OneShotParentRoute } from './agentOptions.ts'
 export { overlayStampedEffort, stampedEffortOf } from './effort.ts'
 export {
@@ -24,6 +24,6 @@ export {
   type ConfigAliasEntry,
   type SettingsAliasEntry,
 } from './schema.ts'
-export type { AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
+export type { AliasTarget, DetailedRoute, ResolvedRoute, AliasInspectKind, AliasInspectVia, AliasInspection } from './types.ts'
 export { apply as applyRoutes, name as routesPluginName, MODEL_ALIASES_NAMESPACE, resolveAlias, resolveDetailedAlias, type ModelRoutes } from './service.ts'
 export { apply, name } from './service.ts'

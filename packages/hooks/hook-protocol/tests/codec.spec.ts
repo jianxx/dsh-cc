@@ -152,10 +152,26 @@ describe('parseHookOutput — structured stdout (exit 0 only)', () => {
     expect(out.stopReason).toBe('halt')
   })
 
-  it('malformed JSON on a clean exit is lenient (no structured output, no throw)', () => {
+  it('flags parseFailure for malformed JSON that starts with { on a clean exit', () => {
     const out = parseHookOutput(0, '{ not valid json', '')
+    expect(out.parseFailure).toBe(true)
     expect(out.decision).toBeUndefined()
     expect(out.continue).toBeUndefined()
+  })
+
+  it('a clean exit with valid JSON-object stdout sets NO parseFailure', () => {
+    expect(parseHookOutput(0, JSON.stringify({ decision: 'block' }), '').parseFailure).toBeUndefined()
+    expect(parseHookOutput(0, '{"a":1}', '').parseFailure).toBeUndefined()
+  })
+
+  it('plain (non-{) stdout on exit 0 sets NO parseFailure (not a JSON attempt)', () => {
+    const out = parseHookOutput(0, 'just some text output', '')
+    expect(out.parseFailure).toBeUndefined()
+    expect(out.stdout).toBe('just some text output')
+  })
+
+  it('malformed-looking stdout on a NON-zero exit sets NO parseFailure (JSON only parsed on exit 0)', () => {
+    expect(parseHookOutput(1, '{ not valid json', 'boom').parseFailure).toBeUndefined()
   })
 
   it('non-object stdout (plain text) on exit 0 is left for the bridge (no JSON attempt)', () => {
@@ -189,5 +205,46 @@ describe('parseHookOutput — structured stdout (exit 0 only)', () => {
     // exit 2 forces block regardless of what stdout claims
     expect(out.decision).toBe('block')
     expect(out.reason).toBe('blocked')
+  })
+})
+
+describe('parseHookOutput — updatedToolOutput / updatedMCPToolOutput (S2)', () => {
+  it('parses hookSpecificOutput.updatedToolOutput as any JSON value (object)', () => {
+    const out = parseHookOutput(0, JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: { rows: 3 } },
+    }), '', 'PostToolUse')
+    expect(out.updatedToolOutput).toEqual({ rows: 3 })
+  })
+
+  it('parses updatedToolOutput as a NON-object JSON value (string, number, null)', () => {
+    expect(parseHookOutput(0, '{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"plain text"}}', '', 'PostToolUse').updatedToolOutput).toBe('plain text')
+    expect(parseHookOutput(0, '{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":42}}', '', 'PostToolUse').updatedToolOutput).toBe(42)
+    expect(parseHookOutput(0, '{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":null}}', '', 'PostToolUse').updatedToolOutput).toBeNull()
+  })
+
+  it('parses updatedMCPToolOutput when present; both may coexist', () => {
+    const out = parseHookOutput(0, JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: 'a', updatedMCPToolOutput: { b: 1 } },
+    }), '', 'PostToolUse')
+    expect(out.updatedToolOutput).toBe('a')
+    expect(out.updatedMCPToolOutput).toEqual({ b: 1 })
+  })
+
+  it('fields are absent when not sent', () => {
+    const out = parseHookOutput(0, '{"hookSpecificOutput":{"hookEventName":"PostToolUse","permissionDecision":"allow"}}', '', 'PostToolUse')
+    expect(out.updatedToolOutput).toBeUndefined()
+    expect(out.updatedMCPToolOutput).toBeUndefined()
+  })
+
+  it('event-scoped: discarded on a hookEventName mismatch', () => {
+    const out = parseHookOutput(0, JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', updatedToolOutput: 'x' },
+    }), '', 'PostToolUse')
+    expect(out.updatedToolOutput).toBeUndefined()
+  })
+
+  it('an updatedToolOutput on a blocking (exit 2) run is never parsed (stdout ignored)', () => {
+    const out = parseHookOutput(2, '{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"x"}}', 'no')
+    expect(out.updatedToolOutput).toBeUndefined()
   })
 })

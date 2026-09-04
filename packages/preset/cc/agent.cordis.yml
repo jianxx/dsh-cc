@@ -320,6 +320,7 @@
     ccModelRoutes: true
     resumePinStore: true
     mcpConnections: true
+    hookBridgeStatus: true
   config:
     # ToolSearch: model-called search that activates deferred tools per scope.
     - id: tool-search
@@ -339,6 +340,11 @@
 
     - id: command-mcp
       name: '@jianxx/dsh-cc-command-mcp'
+
+    # /doctor reads ccModelRoutes, mcpConnections, and hookBridgeStatus, so it
+    # shares the group realm.
+    - id: command-doctor
+      name: '@jianxx/dsh-cc-command-doctor'
 
     # cc-model-routes owns the model-aliases settings namespace and resolver;
     # tool-task provides the CC Task tool (subagent_type dispatch over
@@ -366,8 +372,10 @@
     # Memory and the hook bridge consume `ctx.get('ccModelRoutes')` at spawn
     # time (recall small-fast lane / hook model resolution), so they share this
     # realm. memory-consolidation stays OUTSIDE: its forks must keep inheriting
-    # the parent route. Both rows publish no cordis Service, so group
-    # membership stays mount-legal under the leakedServices gate.
+    # the parent route. memory still publishes no cordis Service;
+    # hooks-claude-code now provides `hookBridgeStatus` (for /doctor), which is
+    # isolated on this group's isolate map — both stay mount-legal under the
+    # leakedServices gate only because they sit INSIDE the group.
     - id: memory
       name: '@jianxx/dsh-cc-memory'
 
@@ -441,9 +449,6 @@
 
 - id: command-status
   name: '@jianxx/dsh-cc-command-status'
-
-- id: command-doctor
-  name: '@jianxx/dsh-cc-command-doctor'
 
 - id: command-memory
   name: '@jianxx/dsh-cc-command-memory'

@@ -33,6 +33,7 @@ class MemorySettings extends SettingsProvider {
 
 interface Routes {
   resolve(model: string | undefined): ResolvedRoute | undefined
+  inspect(model: string | undefined): { kind: string; via?: string; hop?: string; route?: ResolvedRoute }
 }
 
 async function boot(
@@ -104,5 +105,14 @@ describe('ccModelRoutes service', () => {
       modelAliases: { sonnet: { model: 'glm-5.3-flash', reasoningEffort: 'max' } },
     })
     expect(routes.resolve('sonnet')).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
+  })
+
+  it('exposes inspect with provenance alongside resolve', async () => {
+    const { routes } = await boot({ modelAliases: { opus: { provider: 'p', model: 'm' } } })
+    expect(typeof routes.inspect).toBe('function')
+    const inspection = routes.inspect('opus')
+    expect(inspection.kind).toBe('route')
+    expect(inspection.via).toBe('configured')
+    expect(inspection.route).toEqual(routes.resolve('opus'))
   })
 })

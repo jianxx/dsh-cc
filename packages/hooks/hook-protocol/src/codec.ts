@@ -81,7 +81,14 @@ export function parseHookOutput(exitCode: number | undefined, stdout: string, st
         // reference engines are). The plain stdout remains the bridge's to use.
         parsed = undefined
       }
-      if (parsed) applyStructured(output, parsed, expectedEventName)
+      if (parsed) {
+        applyStructured(output, parsed, expectedEventName)
+      } else {
+        // Stdout claimed to be JSON but could not be decoded into a plain
+        // object — surfaced instead of silently dropped (see the safety-loop
+        // plan F5); the raw stdout stays in `output.stdout`.
+        output.parseFailure = true
+      }
     }
   }
 
@@ -130,5 +137,8 @@ function applyStructured(output: HookOutput, parsed: Record<string, unknown>, ex
     if (addCtx !== undefined) output.additionalContext = addCtx
     const updated = obj(hso.updatedInput)
     if (updated !== undefined) output.updatedInput = updated
+    // S2 result replacements: any JSON value (not restricted to objects).
+    if (hso.updatedToolOutput !== undefined) output.updatedToolOutput = hso.updatedToolOutput
+    if (hso.updatedMCPToolOutput !== undefined) output.updatedMCPToolOutput = hso.updatedMCPToolOutput
   }
 }
