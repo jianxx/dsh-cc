@@ -1,5 +1,7 @@
-# 本地门禁 = 下方列出的命令;.github/workflows/presubmit.yml 在此之外还运行
-#   check:publish、check:exports、check:tui-boundary——两侧并非一一对应。
+# 本地门禁 = 下方列出的命令,与 .github/workflows/presubmit.yml 一一对应。
+#   presubmit 在 CI 上额外跑 check:exports(需要 lib/client.js,由 bundle:client
+#   产 tsdown 产物——本地 typecheck 不产 lib/,单独跑无意义,等 bundle:client 后
+#   再补;presubmit CI 里也是 bundle:client 之后才跑)。
 #   typecheck ≡ build 的 tsc -b 部分(同 tsconfig.packages.json);build 另在其后
 #   跑 bundle:client 产 lib/client.js(tsdown,当仓 gitignore lib/,不改 typecheck,
 #   仅 commit 前补跑,使本地 profile sync 能带上浏览器 bundle)
@@ -30,13 +32,22 @@ lockfile_guard before-gates
 
 if [ ! -e node_modules ]; then bash scripts/link-worktree-deps.sh; fi
 
+# --- 纯静态门禁(无需 node_modules;与 presubmit 顺序一致) ---
 pnpm check:spec-deps
+pnpm check:publish
+pnpm check:size
+pnpm check:tui-boundary
 pnpm check:deep-imports
+pnpm check:vendor-purity
+
+# --- 需 js-yaml 的门禁(node_modules 已 link) ---
 # capability manifest 校验 + README/matrix 生成产物无漂移(改 manifest 后跑 pnpm docs:parity)
 pnpm check:capabilities
 pnpm check:parity
-# 一手 .ts 硬门 ≤500 行(空基线);pi-tui 与 tests/ 豁免,见 scripts/check-file-size.mjs
-pnpm check:size
+# 两个 checker 的配对自测(presubmit 也在 capabilities/parity 之后跑)
+pnpm test:capabilities
+
+# --- 构建 + 测试 ---
 pnpm typecheck
 pnpm run bundle:client
 pnpm test
