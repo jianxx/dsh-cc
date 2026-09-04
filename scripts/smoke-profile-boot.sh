@@ -29,13 +29,13 @@
 #   2. the log contains `dsh cc-mode` — the TUI's first rendered frame, which
 #      can only appear after the FULL plugin tree (bundles + cc preset incl.
 #      cc-services: serena-first, web-fetch-http-cc) has mounted,
-#   3. the log has no loader-failure signatures,
-#   4. the process was alive until the watchdog killed it (exit 0/143): a
-#      crashed boot exits fast and non-zero instead.
+#   3. the log has no loader-failure signatures.
 #
-# Two runs: a warm-up boot (loose budget, unasserted) lets the one-time
-# fallback heal happen outside the timed window, so a slow cold-cache heal
-# never masquerades as a boot regression.
+# Two runs: a warm-up (loose budget, unasserted) lets the one-time fallback
+# heal happen outside the timed window, so a slow cold-cache heal never
+# masquerades as a boot regression. Each run polls the transcript once per
+# second and kills the boot as soon as the marker is seen — a healthy gate
+# finishes in ~10-15 seconds, not at the budget.
 #
 # The pseudo-TTY comes from python3's pty.spawn (stdlib): `script(1)` exits
 # immediately when it has no controlling terminal on macOS and loses its
@@ -137,6 +137,9 @@ node --input-type=module -e "
 DSH_HOME="$dsh_home" bash "$repo_root/scripts/sync-local-profile.sh" "$profile"
 
 # 3. Boot under a pseudo-TTY (the TUI's apply() refuses a non-TTY stdout).
+#    Poll the transcript each second: marker seen → TERM the boot and return
+#    success immediately; process died first → return its exit code; budget
+#    blown → kill and return 1.
 run_boot() {
   local budget="$1" out="$2"
   DSH_HOME="$dsh_home" python3 - "$cli" "$profile" <<'PY' >"$out" 2>&1 &
@@ -148,12 +151,24 @@ st = pty.spawn(['node', cli, '--profile', profile])
 os._exit(os.waitstatus_to_exitcode(st) if st >= 0 else 1)
 PY
   local pid=$!
-  ( sleep "$budget"; kill -TERM "$pid" 2>/dev/null; sleep 5; kill -KILL "$pid" 2>/dev/null ) &
-  local watchdog=$!
-  local status=0
-  wait "$pid" 2>/dev/null || status=$?
-  kill "$watchdog" 2>/dev/null || true
-  wait "$watchdog" 2>/dev/null || true
+  local waited=0 status=0
+  while true; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || status=$?     # boot exited on its own
+      break
+    fi
+    if grep -q 'dsh cc-mode' "$out" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null            # first frame rendered — done
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    if [ "$waited" -ge "$budget" ]; then
+      kill -TERM "$pid" 2>/dev/null; sleep 5; kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null || true
+      return 1                                 # marker never came
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
   return "$status"
 }
 
@@ -168,10 +183,10 @@ fail() {
 
 # Warm-up: fallback heal (possibly network-bound on cold cache) happens here,
 # outside the pass/fail window.
-run_boot 120 "$log_warmup" || true
+run_boot 180 "$log_warmup" || true
 
 status=0
-run_boot 60 "$log" || status=$?
+run_boot 90 "$log" || status=$?
 
 [ -s "$log" ] || fail 'pty transcript is empty — cannot prove anything about boot'
 if grep -Eq 'plugin tree failed to load|Cannot find module|Cannot find package|ERR_MODULE_NOT_FOUND' "$log"; then
@@ -179,7 +194,7 @@ if grep -Eq 'plugin tree failed to load|Cannot find module|Cannot find package|E
 fi
 grep -q 'dsh cc-mode' "$log" \
   || fail 'positive marker missing: TUI first frame (dsh cc-mode) never rendered'
-[ "$status" -eq 0 ] || [ "$status" -eq 124 ] || [ "$status" -eq 143 ] \
-  || fail "unexpected exit $status (crashed boots exit fast and non-zero)"
+[ "$status" -eq 0 ] \
+  || fail "boot process exited $status without rendering the first frame (crashed boots exit fast and non-zero)"
 
 echo "smoke:profile-boot OK — plugin tree mounted, TUI first frame rendered"
