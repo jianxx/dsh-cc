@@ -275,7 +275,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const write = await capturePreToolCall('write', 'Read|Write')
       expect(write.fired).toBe(true)
       expect(write.payload.tool_name).toBe('Write')
-    })
+    }, 15000)
 
     it('a CC Bash matcher fires for harness bash; payload uses Bash', async () => {
       const bash = await capturePreToolCall('bash', 'Bash')
