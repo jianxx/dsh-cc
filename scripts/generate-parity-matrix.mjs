@@ -221,18 +221,11 @@ export function renderReadmeBlock(manifest, { readmeDir = "." } = {}) {
     "| --- | --- | --- | --- | --- |",
   );
   for (const cat of categories) out.push(categoryRollupRow(manifest, cat));
-  out.push("", "### Known deviations", "");
-  let any = false;
-  for (const [id, cap] of Object.entries(manifest.capabilities ?? {})) {
-    if (!isLive(cap)) continue;
-    const dev = cap.deviation ?? {};
-    const kind = dev.kind ?? "none";
-    if (kind === "none") continue;
-    any = true;
-    out.push(`- \`${id}\` — ${kind}: ${esc(dev.summary ?? "")}`);
-  }
-  if (!any) out.push("_None._");
-  out.push("");
+  // Deliberately NO "Known deviations" list here: the README block stays
+  // lean (rollup table + freshness + link); per-cap deviation detail lives
+  // only in docs/cc-parity-matrix.md, which the link below points at.
+  // Hand-deleting this section from README.md instead was rejected by
+  // --check (generated-block drift, the #108 incident).
   const newest = newestRetrieval(manifest);
   const threshold = manifest.baseline?.freshness_threshold_days;
   if (newest)

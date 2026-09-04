@@ -34,7 +34,7 @@
     "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
-    "@jianxx/dsh-cc-tools": "link:../../../core/tools"
+    "@jianxx/dsh-cc-tools": "link:../../core/tools"
   },
   "publishConfig": {
     "access": "public"

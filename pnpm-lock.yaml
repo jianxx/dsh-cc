@@ -1220,8 +1220,8 @@ importers:
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-session-cwd':
-        specifier: link:../session-cwd
-        version: link:../session-cwd
+        specifier: link:../../workspace/session-cwd
+        version: link:../../workspace/session-cwd
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -1959,8 +1959,8 @@ importers:
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
       '@jianxx/dsh-cc-tools':
-        specifier: link:../../../core/tools
-        version: link:../../../core/tools
+        specifier: link:../../core/tools
+        version: link:../../core/tools
 
   packages/workspace/tool-git-worktree:
     devDependencies:

@@ -79,7 +79,6 @@ The `tui` profile boots directly into the CC preset.
 | Models | 0 | 1 | 0 | 0 |
 | Workspace | 1 | 0 | 0 | 0 |
 | Interactive UX | 1 | 0 | 1 | 0 |
-
 Statuses were verified against upstream documentation retrieved as of 2026-09-04 (freshness threshold: 120 days).
 
 For the exact feature-by-feature status and known gaps, see the **[Claude Code parity matrix](docs/cc-parity-matrix.md)**.

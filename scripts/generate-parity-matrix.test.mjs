@@ -276,7 +276,7 @@ case_("byte stability: two consecutive runs produce identical bytes", () => {
   assert.equal(readFileSync(join(root, "README.md"), "utf8"), r1);
 });
 
-case_("readme: marked region replaced, outside untouched, rollup counts + deviations + freshness + link", () => {
+case_("readme: marked region replaced, outside untouched, rollup counts + freshness + link (no deviations)", () => {
   const start = "<!-- parity:matrix:start -->";
   const end = "<!-- parity:matrix:end -->";
   const before = FIXTURE_README_BEFORE;
@@ -291,9 +291,11 @@ case_("readme: marked region replaced, outside untouched, rollup counts + deviat
   // rollup counts: engine = 🔶1 (hooks: ux partial; legacy stub excluded), 🚫1 (ask-user); sessions = ❌1
   assert.ok(region.includes("| Engine subsystems | 0 | 1 | 0 | 1 |"), `engine rollup row missing:\n${region}`);
   assert.ok(region.includes("| Sessions and context | 0 | 0 | 1 | 0 |"), `sessions rollup row missing:\n${region}`);
-  assert.ok(region.includes("### Known deviations"), "deviations heading missing");
-  assert.ok(region.includes("- `engine.hooks` — downgrade: prompt/agent executors sit behind default-off flags."), "deviation bullet format");
-  assert.ok(region.includes("- `engine.ask-user` — non-goal: dsh-native ask_user_question modal is the local equivalent."), "non-goal bullet");
+  // README stays lean: per-cap deviation detail lives only in the matrix
+  // doc, which the link below points at. The block must NOT inline the
+  // "Known deviations" list (the v0.4.1 hand-edit incident).
+  assert.ok(!region.includes("### Known deviations"), "deviations heading must NOT be in the README block");
+  assert.ok(!region.includes("engine.hooks` — downgrade"), "deviation bullets must NOT be in the README block");
   assert.ok(region.includes("2026-09-03") && region.includes("120"), "freshness note missing");
   assert.ok(region.includes("[Claude Code parity matrix](docs/cc-parity-matrix.md)"), "matrix link missing");
 });
@@ -323,7 +325,10 @@ case_("check: stale matrix → exit 1 naming the file", () => {
 case_("check: stale README region → exit 1 naming the file", () => {
   const p = join(root, "README.md");
   const cur = readFileSync(p, "utf8");
-  writeFileSync(p, cur.replace("- `engine.hooks` — downgrade", "- `engine.hooks` — hand-edited"));
+  // robust corruption: inject stale content right after the start marker
+  // (the old probe string `- \`engine.hooks\` — downgrade` no longer exists
+  // in the README block now that the deviations list moved out)
+  writeFileSync(p, cur.replace("<!-- parity:matrix:start -->", "<!-- parity:matrix:start -->\nSTALE HAND-WRITTEN TABLE\n"));
   const r = run(root, ["--check"]);
   assert.equal(r.status, 1, `expected 1, got ${r.status}`);
   assert.ok(r.stderr.includes("README.md"), r.stderr);
