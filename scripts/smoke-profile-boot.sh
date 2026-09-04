@@ -160,7 +160,9 @@ PY
 fail() {
   echo "smoke:profile-boot FAIL: $1" >&2
   echo '--- boot log tail ---' >&2
-  tail -c 4000 "$log" 2>/dev/null >&2   # byte tail: crash dumps contain control-heavy long lines that confuse `tail -n`
+  # NOTE: `2>/dev/null >&2` would bind stdout to the ALREADY-redirected
+  # stderr (/dev/null) and print nothing — order matters; route stdout first.
+  tail -c 4000 "$log" >&2 2>/dev/null || true
   exit 1
 }
 
