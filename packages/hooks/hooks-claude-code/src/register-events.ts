@@ -6,12 +6,12 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, PostToolDecision, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type { JobId } from '@deepseek-ai/dsh-jobs'
 import type { SubagentRunId } from '@deepseek-ai/dsh-subagent'
-import type { ToolExecution } from '@jianxx/dsh-cc-tools'
+import type { PostToolDecision, PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import type { DetachedRuns } from '@jianxx/dsh-cc-hook-protocol'
 import {
   notificationPayload,
@@ -23,9 +23,6 @@ import {
   preToolPayload,
   promptPayload,
   sessionEndPayload,
-  sessionResumePayload,
-  sessionStartPayload,
-  setupPayload,
   stopFailurePayload,
   stopPayload,
   subagentPayload,
