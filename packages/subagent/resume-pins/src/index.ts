@@ -51,4 +51,7 @@ export {
   name as resumePinsPluginName,
   type ResumePinsPluginConfig,
 } from './plugin.ts'
+// cordis-plugin-loader unwrapExports mounts the package root: it needs the
+// canonical `apply`/`name`, not just the aliases above.
+export { apply, name } from './plugin.ts'
 export type { OverlayTuple } from './pin.ts'
