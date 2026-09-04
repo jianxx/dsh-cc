@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-tool-web-fetch",
   "description": "CC-style web_fetch replacement with an optional prompt: summarize the fetched page on the cheap lane (haiku alias) when configured, otherwise return the raw converted text",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc.git",
