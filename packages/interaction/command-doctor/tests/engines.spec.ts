@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { nodeSatisfiesEngines, readEngines, readVersion } from '../src/version.ts'
 
@@ -26,7 +27,13 @@ describe('nodeSatisfiesEngines', () => {
 
 describe('manifest reads', () => {
   it('reads a version and the engines range from this package manifest', () => {
-    expect(readVersion()).toBe('0.4.0')
+    // The version moves every release, so assert it against the manifest
+    // itself (read independently) instead of pinning a literal.
+    const manifest = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { version?: string }
+    expect(manifest.version).toBeTruthy()
+    expect(readVersion()).toBe(manifest.version)
     expect(readEngines()).toBe('^22.19 || >=24')
   })
 })
