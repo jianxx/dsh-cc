@@ -49,6 +49,7 @@
     "@jianxx/dsh-cc-output-styles": "workspace:^",
     "@jianxx/dsh-cc-skill-loader": "workspace:^",
     "@jianxx/dsh-cc-session-cwd": "workspace:^",
+    "@jianxx/dsh-cc-serena-first": "workspace:^",
     "@jianxx/dsh-cc-subagent-resume-pins": "workspace:^",
     "@jianxx/dsh-cc-subagent-task": "workspace:^",
     "@jianxx/dsh-cc-tool-append-order": "workspace:^",

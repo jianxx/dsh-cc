@@ -340,6 +340,18 @@
     - id: command-mcp
       name: '@jianxx/dsh-cc-command-mcp'
 
+    # Serena-first prompt steering: while a serena MCP server is ready
+    # (registry-only, live detection over the isolated `mcpConnections`
+    # above), the registered `serena-first` section (order 105) renders the
+    # policy paragraph and the assemble waterfall rewrites the upstream
+    # `tool:read` / `tool:grep` texts (replace-not-mutate, `{ prepend: true }`).
+    # Publishes no Service, so it needs no isolate key of its own;
+    # `systemPrompt` resolves through the group via the prototype chain.
+    # `serverName` config (default 'serena') drives detection and every
+    # emitted `mcp__<serverName>__*` name.
+    - id: serena-first
+      name: '@jianxx/dsh-cc-serena-first'
+
     # /doctor reads ccModelRoutes, mcpConnections, and hookBridgeStatus, so it
     # shares the group realm.
     - id: command-doctor

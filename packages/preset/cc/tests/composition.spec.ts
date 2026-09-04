@@ -167,6 +167,12 @@ describe('agent.cordis.yml composition', () => {
     const topIds = doc.map((r) => r.id)
     expect(configIds).toContain('command-plugin')
     expect(configIds).toContain('command-mcp')
+    // The serena-first steering row consumes the isolated `mcpConnections`
+    // realm and must sit inside the group, right after command-mcp (plan
+    // docs/plans/2026-09-16-serena-first-prompt-sections.md).
+    expect(configIds).toContain('serena-first')
+    expect(topIds).not.toContain('serena-first')
+    expect(configIds.indexOf('serena-first')).toBeGreaterThan(configIds.indexOf('command-mcp'))
     // The resume-pins plugin row publishes the `resumePinStore` service and
     // must sit inside the group, between cc-model-routes and tool-task (§4.10).
     expect(configIds.indexOf('cc-resume-pins')).toBeGreaterThan(configIds.indexOf('cc-model-routes'))
