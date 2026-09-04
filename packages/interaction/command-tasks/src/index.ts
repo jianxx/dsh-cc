@@ -9,10 +9,19 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobSnapshot } from '@deepseek-ai/dsh-jobs'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { formatJobs, type JobLine } from './tasks.ts'
+import { formatAgentsFooter, formatJobs, type JobLine } from './tasks.ts'
 
 export const name = 'command-tasks'
 export const inject = ['commands', 'jobs']
+
+/**
+ * Duck-typed read-only snapshot surface published by command-agents on the
+ * root realm (`ccAgents`). Optional: absent service or a failed listing
+ * degrades to no footer, never a failed /tasks.
+ */
+interface AgentsSnapshotLike {
+  list(parentSessionId: string): Promise<readonly unknown[]>
+}
 
 /** Map a background-job snapshot to the fields this command renders. */
 function toLine(job: JobSnapshot): JobLine {
@@ -26,9 +35,22 @@ function toLine(job: JobSnapshot): JobLine {
 }
 
 /** Execute `/tasks`: list the caller-visible background jobs. */
-function executeTasks(ctx: Context, invocation: CommandInvocation): CommandResult {
+async function executeTasks(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
   const jobs = ctx.jobs.list(invocation.agent)
-  return { kind: 'success', text: formatJobs(jobs.map(toLine)) }
+  const lines = [formatJobs(jobs.map(toLine))]
+  // Cross-link footer: count this session's background agents from the same
+  // read-only snapshot /agents consumes (plan §3.2). Best-effort.
+  const snapshot = (ctx as unknown as { get(key: string, optional?: boolean): unknown })
+    .get('ccAgents', true) as AgentsSnapshotLike | undefined
+  if (snapshot !== undefined && typeof snapshot.list === 'function') {
+    try {
+      const agents = await snapshot.list(String(invocation.agent.session.id))
+      if (agents.length > 0) lines.push(formatAgentsFooter(agents.length))
+    } catch {
+      // No footer on a snapshot failure — /tasks must still list jobs.
+    }
+  }
+  return { kind: 'success', text: lines.join('\n') }
 }
 
 /**

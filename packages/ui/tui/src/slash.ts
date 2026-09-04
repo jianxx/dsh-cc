@@ -32,7 +32,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: 'resume', description: 'Switch to a resumed session (picker or /resume <id>)', argumentHint: '<sessionId>' },
   { name: 'model', description: 'List or switch the active model', argumentHint: '<n|provider/id>' },
   { name: 'effort', description: 'Set reasoning effort for the current model', argumentHint: '<level|default>' },
-  { name: 'agents', description: 'List subagent activity' },
+  { name: 'agents', description: 'List, inspect, or stop background agents', argumentHint: '[<id>|stop <id>]' },
   { name: 'cost', description: 'Show token usage' },
   { name: 'usage', description: 'Open the live token and context usage panel' },
   {

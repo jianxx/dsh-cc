@@ -369,6 +369,16 @@
     - id: tool-task
       name: '@jianxx/dsh-cc-subagent-task'
 
+    # /agents: query/control surface for continuable background children
+    # (plan docs/plans/2026-09-10-continuable-background-ux.md §3.2). Mounts
+    # INSIDE cc-services (F8): the read-only snapshot joins the realm-interior
+    # resumePinStore with the host-plane subagents/agents registries, then
+    # republishes the snapshot as the ROOT-realm `ccAgents` service (CcPlugins
+    # pattern) so the TUI local-slash path consumes the SAME snapshot. Must
+    # mount AFTER cc-resume-pins.
+    - id: command-agents
+      name: '@jianxx/dsh-cc-command-agents'
+
     # Memory and the hook bridge consume `ctx.get('ccModelRoutes')` at spawn
     # time (recall small-fast lane / hook model resolution), so they share this
     # realm. memory-consolidation stays OUTSIDE: its forks must keep inheriting

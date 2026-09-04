@@ -46,3 +46,12 @@ export function formatJobs(jobs: readonly JobLine[]): string {
   for (const job of jobs) lines.push(formatJobLine(job))
   return lines.join('\n')
 }
+
+/**
+ * `/tasks` footer cross-link to `/agents` (plan §3.2 Slice 0): one line
+ * pointing at the background-agents surface. Rendered only when the count is
+ * known (a resolvable snapshot service) and non-zero.
+ */
+export function formatAgentsFooter(count: number): string {
+  return `${count} background agents — /agents for details`
+}

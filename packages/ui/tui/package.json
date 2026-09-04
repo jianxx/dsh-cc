@@ -45,6 +45,7 @@
     "@deepseek-ai/schemastery": ">=3.18.1"
   },
   "dependencies": {
+    "@jianxx/dsh-cc-command-agents": "workspace:^",
     "@jianxx/dsh-cc-command-permissions": "workspace:^",
     "@jianxx/dsh-cc-permission-rules": "workspace:^",
     "@jianxx/dsh-cc-pi-tui": "workspace:^",

@@ -1023,6 +1023,33 @@ capabilities:
   # plan-mode, /output-style via cc-output-styles, /reload-plugins via
   # cc-shell-glue). The legacy matrix also said "21" but enumerated a
   # different set (it omitted /compact).
+  commands.agents:
+    title: /agents
+    category: commands
+    plane: preset
+    upstream:
+      summary: List, inspect, and stop background subagents.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-agents" }
+      - { type: test, path: packages/interaction/command-agents/tests/command-agents.spec.ts }
+    deviation:
+      kind: downgrade
+      summary: >-
+        Slice 0 MVP: thin snapshot (list/detail/stop) over listChildren +
+        agents + resumePinStore; groups are residency-only (Working / Idle /
+        Ready — no Blocked/Done); /agents attach is a reserved, unimplemented
+        namespace. The TUI local-slash surface consumes the same ccAgents
+        snapshot and ADDS fold-derived decorations (provider, prompt excerpt,
+        last stopReason) to the detail view; the thin preset surface vs the
+        decorated TUI surface is a deliberate divergence, never different
+        ids or ordering.
+
   commands.branch:
     title: /branch
     category: commands
@@ -1496,7 +1523,9 @@ capabilities:
       summary: >-
         Human-facing /tasks lists background jobs only; the todo-list seam is
         pending. The model-facing dsh-tool-todo and the TUI Ctrl+T todo panel
-        cover the rest of the workflow.
+        cover the rest of the workflow. The footer cross-links to /agents
+        (N background agents — /agents for details) when the ccAgents snapshot
+        service resolves.
 
   commands.version:
     title: /version

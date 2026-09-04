@@ -25,8 +25,8 @@ import {
 } from './usage-view.ts'
 import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
-import { shortenSession } from '../statusline.ts'
 import { shouldEchoCommandResult } from '../compact-fold.ts'
+import { createAgentsSection } from './driver-agents.ts'
 import { enqueue, moveWorktreeExitFocus, openUsagePanel, setBusy, setTurnActive, setWorktreeExit, upsertRow } from '../store.ts'
 import {
   createWorktreeExitHooks,
@@ -84,6 +84,7 @@ export interface RunLocalSection {
 
 export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
   const { emit, showNotice } = rt
+  const { agentsSlash } = createAgentsSection(rt)
   const worktreeExit = rt.config.worktreeExit ?? createWorktreeExitHooks()
 
   // The section owns the quit finalizer: after a `/quit` decision settles it
@@ -98,6 +99,7 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
     await rt.current.handle.dispose()
     rt.config.onQuit?.()
   }
+
 
   // --- /export-md: local transcript utilities --------------------------------
   // /export-md serializes the live rows via rowsToMarkdown — an explicit path
@@ -170,7 +172,7 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
     if (name === 'tui-help') {
       emit(upsertRow(rt.state(), {
         kind: 'status',
-        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists subagent activity. /resume lists sessions. /clear starts a new conversation. /quit exits.',
+        text: 'Shift+Tab cycles permission modes. /permissions opens the mode picker. /model lists adapters. /agents lists background agents. /resume lists sessions. /clear starts a new conversation. /quit exits.',
       }))
       return
     }
@@ -266,22 +268,7 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       return
     }
     if (name === 'agents') {
-      const runs = rt.state().subagents
-      if (runs.length === 0) {
-        emit(upsertRow(rt.state(), { kind: 'status', text: 'No subagent activity this session.' }))
-        return
-      }
-      const lines = ['Subagent activity:']
-      for (const run of runs) {
-        // `●` running, `○` parked (continuable epoch — session lives), `✓` done.
-        const marker = run.status === 'running' ? '●' : run.status === 'parked' ? '○' : '✓'
-        const short = shortenSession(run.sessionId)
-        const reason = run.status === 'parked'
-          ? ' [parked]'
-          : run.stopReason === undefined ? '' : ` [${run.stopReason}]`
-        lines.push(`  ${marker} ${run.provider} · ${short}${reason}`)
-      }
-      emit(upsertRow(rt.state(), { kind: 'status', text: lines.join('\n') }))
+      emit(upsertRow(rt.state(), { kind: 'status', text: await agentsSlash(rawInput) }))
       return
     }
     if (name === 'export-md') {

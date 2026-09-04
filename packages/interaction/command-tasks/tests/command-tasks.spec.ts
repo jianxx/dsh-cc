@@ -7,6 +7,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as commandTasks from '@jianxx/dsh-cc-command-tasks'
 import {
+  formatAgentsFooter,
   formatJobs,
   formatJobLine,
   type JobLine,
@@ -33,13 +34,17 @@ describe('@jianxx/dsh-cc-command-tasks rendering (pure)', () => {
 })
 
 describe('/tasks human command', () => {
-  async function harness(jobs?: { list(caller?: Agent): { id: unknown; kind: string; status: string; startedAt: number; label: string }[] }) {
+  async function harness(
+    jobs?: { list(caller?: Agent): { id: unknown; kind: string; status: string; startedAt: number; label: string }[] },
+    agentsSnapshot?: { list(parent: string): Promise<readonly unknown[]> },
+  ) {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     await ctx.plugin(CommandRuntime)
     await ctx.plugin(AgentRegistry)
     if (jobs) ctx.provide('jobs', jobs)
     await ctx.plugin(commandTasks)
+    if (agentsSnapshot !== undefined) (ctx as unknown as { root: { provide(key: string, value: unknown): void } }).root.provide('ccAgents', agentsSnapshot)
     const session = ctx.sessions.create(SessionId(`command-tasks-human-${Math.random()}`))
     const agent: Agent = {
       id: session.id,
@@ -84,5 +89,22 @@ describe('/tasks human command', () => {
     const { ctx, agent } = await harness({ list: () => [] })
     const execution = await ctx.commands.execute(agent, '/tasks', [], new AbortController().signal)
     expect((execution?.result as { text: string }).text).toContain('No background jobs are running.')
+  })
+
+  it('appends the /agents cross-link footer when the snapshot service is present', async () => {
+    const { ctx, agent } = await harness(
+      { list: () => [] },
+      { list: async () => [{ id: 'child-1' }, { id: 'child-2' }] },
+    )
+    const execution = await ctx.commands.execute(agent, '/tasks', [], new AbortController().signal)
+    const text = (execution?.result as { text: string }).text
+    expect(text).toContain('No background jobs are running.')
+    expect(text).toContain('2 background agents — /agents for details')
+  })
+
+  it('omits the footer when no snapshot service resolves', async () => {
+    const { ctx, agent } = await harness({ list: () => [] })
+    const execution = await ctx.commands.execute(agent, '/tasks', [], new AbortController().signal)
+    expect((execution?.result as { text: string }).text).not.toContain('/agents')
   })
 })

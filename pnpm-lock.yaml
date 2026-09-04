@@ -700,6 +700,30 @@ importers:
         specifier: workspace:^
         version: link:../../core/tools
 
+  packages/interaction/command-agents:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../../../../deepseek-harness/vendor/loader
+        version: link:../../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../../../../deepseek-harness/packages/interaction/commands
+        version: link:../../../../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+      '@jianxx/dsh-cc-subagent-resume-pins':
+        specifier: workspace:^
+        version: link:../../subagent/resume-pins
+
   packages/interaction/command-branch:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -1381,6 +1405,9 @@ importers:
       '@jianxx/dsh-cc-bundle-shell':
         specifier: workspace:^
         version: link:../../bundle/cc-shell
+      '@jianxx/dsh-cc-command-agents':
+        specifier: workspace:^
+        version: link:../../interaction/command-agents
       '@jianxx/dsh-cc-command-branch':
         specifier: workspace:^
         version: link:../../interaction/command-branch
@@ -1888,6 +1915,9 @@ importers:
 
   packages/ui/tui:
     dependencies:
+      '@jianxx/dsh-cc-command-agents':
+        specifier: workspace:^
+        version: link:../../interaction/command-agents
       '@jianxx/dsh-cc-command-permissions':
         specifier: workspace:^
         version: link:../../interaction/command-permissions

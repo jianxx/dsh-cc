@@ -10,6 +10,9 @@
   ],
   "references": [
     {
+      "path": "../../interaction/command-agents"
+    },
+    {
       "path": "../../interaction/command-permissions"
     },
     {

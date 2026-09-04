@@ -18,6 +18,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@jianxx/dsh-cc-bundle-shell": "workspace:^",
+    "@jianxx/dsh-cc-command-agents": "workspace:^",
     "@jianxx/dsh-cc-command-branch": "workspace:^",
     "@jianxx/dsh-cc-command-compact": "workspace:^",
     "@jianxx/dsh-cc-command-config": "workspace:^",
