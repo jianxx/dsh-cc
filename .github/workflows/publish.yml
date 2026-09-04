@@ -144,6 +144,12 @@ jobs:
         working-directory: dsh-cc
         run: pnpm check:exports
 
+      # 与 presubmit 同一道真实启动冒烟:发布前最后一次证明主干构建产物
+      # 能在用户等价的解析池里完成整机挂载。
+      - name: Profile boot smoke (smoke:profile-boot)
+        working-directory: dsh-cc
+        run: pnpm smoke:profile-boot
+
       - name: Unit tests (vitest)
         working-directory: dsh-cc
         run: pnpm test
