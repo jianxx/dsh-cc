@@ -1,6 +1,6 @@
 {
   "name": "@jianxx/dsh-cc-command-doctor",
-  "description": "Human-facing slash command for an environment self-check",
+  "description": "Human-facing slash command for a product-grade session health report",
   "version": "0.4.0",
   "repository": {
     "type": "git",
@@ -24,6 +24,9 @@
     "lib"
   ],
   "license": "Apache-2.0",
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-commands": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-invariants": ">=0.1.1-rc.2",

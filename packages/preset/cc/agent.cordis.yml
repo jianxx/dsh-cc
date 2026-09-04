@@ -339,6 +339,11 @@
     - id: command-mcp
       name: '@jianxx/dsh-cc-command-mcp'
 
+    # /doctor reads ccModelRoutes, mcpConnections, and hookBridgeStatus, so it
+    # shares the group realm.
+    - id: command-doctor
+      name: '@jianxx/dsh-cc-command-doctor'
+
     # cc-model-routes owns the model-aliases settings namespace and resolver;
     # tool-task provides the CC Task tool (subagent_type dispatch over
     # per-workspace .claude/agents) and reserves the names 'subagent'/'workflow'.
@@ -426,9 +431,6 @@
 
 - id: command-status
   name: '@jianxx/dsh-cc-command-status'
-
-- id: command-doctor
-  name: '@jianxx/dsh-cc-command-doctor'
 
 - id: command-memory
   name: '@jianxx/dsh-cc-command-memory'

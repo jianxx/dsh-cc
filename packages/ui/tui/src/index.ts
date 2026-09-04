@@ -7,6 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { ThemeOverrides } from './components/theme.ts'
+import { resolveDshProfile } from './profile.ts'
 
 export const name = 'dsh-cc-tui'
 export const inject = ['agents']
@@ -93,6 +94,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (!allowNoTty && !process.stdout.isTTY) {
     throw new Error('dsh-cc-tui requires an interactive terminal (stdout must be a TTY).')
   }
+  ctx.provide('dshProfile', resolveDshProfile())
   process.env.NODE_ENV ??= 'production'
   const { mountTui } = await import('./plugin.ts')
   await mountTui(ctx, { ...config, uiMode: resolveUiMode(config) })

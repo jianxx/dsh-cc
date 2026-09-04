@@ -84,10 +84,10 @@ describe('McpConnectionsService / mcpConnections registry', () => {
 
     const service = ctx.mcpConnections
     expect(service).toBeInstanceOf(McpConnectionsService)
-    const entries = service.entries().map(entry => ({ name: entry.name, state: entry.state, toolCount: entry.toolCount }))
+    const entries = service.entries().map(entry => ({ name: entry.name, state: entry.state, toolCount: entry.toolCount, eagerCount: entry.eagerCount, deferredCount: entry.deferredCount }))
     expect(entries).toHaveLength(2)
-    expect(entries).toContainEqual({ name: 'srv1', state: 'ready', toolCount: 1 })
-    expect(entries).toContainEqual({ name: 'srv2', state: 'ready', toolCount: 1 })
+    expect(entries).toContainEqual({ name: 'srv1', state: 'ready', toolCount: 1, eagerCount: 1, deferredCount: 0 })
+    expect(entries).toContainEqual({ name: 'srv2', state: 'ready', toolCount: 1, eagerCount: 1, deferredCount: 0 })
   })
 
   it('records state transitions connecting → ready for an instance', async () => {
@@ -128,6 +128,31 @@ describe('McpConnectionsService / mcpConnections registry', () => {
     expect(entry.toolCount).toBe(1)
     // The fresh generation re-exposed the tool.
     expect(ctx.tools.get('mcp__srv1__remote')).toBeDefined()
+  })
+
+  it('setToolBreakdown records eager/deferred counts and the invariant eager + deferred = toolCount', () => {
+    const service = new McpConnectionsService(ctx)
+    service.register('brk', { disconnect: async () => {}, reconnect: async () => {} })
+
+    service.setToolBreakdown('brk', { eager: 3, deferred: 2 })
+
+    const entry = service.entries().find(e => e.name === 'brk')!
+    expect(entry.eagerCount).toBe(3)
+    expect(entry.deferredCount).toBe(2)
+    expect(entry.toolCount).toBe(5)
+    expect(entry.eagerCount! + entry.deferredCount!).toBe(entry.toolCount)
+  })
+
+  it('setToolCount sets only toolCount, leaving breakdown fields undefined', () => {
+    const service = new McpConnectionsService(ctx)
+    service.register('tot', { disconnect: async () => {}, reconnect: async () => {} })
+
+    service.setToolCount('tot', 4)
+
+    const entry = service.entries().find(e => e.name === 'tot')!
+    expect(entry.toolCount).toBe(4)
+    expect(entry.eagerCount).toBeUndefined()
+    expect(entry.deferredCount).toBeUndefined()
   })
 
   it('throws for an unregistered server on disconnect/reconnect', async () => {

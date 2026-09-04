@@ -69,10 +69,12 @@ const GROUP_ALLOWED_KEYS = new Set(['matcher', 'hooks'])
 /** A parsed CC config: event name → its matcher groups (any executor kind). */
 export type ClaudeCodeHookConfig = Record<string, MatcherGroup[]>
 
-/** A skipped non-command hook, surfaced so the bridge can warn about it. */
+/** A skipped malformed/unsupported hook, surfaced so the bridge can report it. */
 export interface SkippedHook {
   event: string
   type: string
+  /** Why the hook was dropped (`unknown hook type`, `malformed command`, …). */
+  reason: string
 }
 
 /**
@@ -254,10 +256,15 @@ export function parseClaudeCodeConfig(raw: unknown, vars: SubstitutionVars = {})
           // for every typed object (unknown executor kinds AND a command hook
           // missing its string `command` — previously the latter left no trace).
           const h = asObject(rawHook)
-          if (h) {
-            const type = typeof h.type === 'string' ? h.type : 'command'
-            skipped.push({ event, type })
-          }
+          const type = h && typeof h.type === 'string' ? h.type : 'command'
+          const reason = !h
+            ? 'malformed hook'
+            : type === 'command'
+              ? 'malformed command'
+              : type === 'http'
+                ? 'malformed http'
+                : type === 'prompt' || type === 'agent' ? 'malformed hook' : 'unknown hook type'
+          skipped.push({ event, type, reason })
           continue
         }
         hooks.push(hook)

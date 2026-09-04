@@ -127,6 +127,8 @@ if (worktree.name !== undefined) {
 
 const { env, args } = interceptResume(undefined, worktree.args, env0)
 env.NODE_ENV ??= 'production'
+// Stamp the profile so the TUI plugin can surface it as ctx.get('dshProfile').
+env.DSH_CC_PROFILE = PROFILE
 
 const child = spawn('dsh', ['--profile', PROFILE, ...args], {
   env,

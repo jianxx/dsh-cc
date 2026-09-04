@@ -176,7 +176,7 @@ The CC preset exposes a growing command surface, including:
 
 ```text
 /cost              token / cost information
-/doctor            diagnose the current setup
+/doctor            session health report (--verbose / --json)
 /status            environment and session status
 /memory            inspect memories
 /skills            list installed skills

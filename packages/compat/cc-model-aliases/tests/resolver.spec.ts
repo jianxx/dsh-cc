@@ -5,7 +5,7 @@
  * fallback, and literal passthrough with warn.
  */
 import { describe, expect, it } from 'vitest'
-import { createModelResolver, mergeAliasMaps, BUILTIN_ALIASES } from '../src/resolver.ts'
+import { createModelInspector, createModelResolver, mergeAliasMaps, BUILTIN_ALIASES } from '../src/resolver.ts'
 import { ConfigAliasesSchema, SettingsAliasesSchema } from '../src/schema.ts'
 import type { AliasTarget } from '../src/types.ts'
 import type { ResolvedRoute } from '../src/types.ts'
@@ -21,6 +21,19 @@ function resolverFor(
     { warn: message => warns.push(message) },
   )
   return { resolve, warns }
+}
+
+/** Build an inspector whose alias source is a fixed (call-time) map. */
+function inspectorFor(
+  config: Record<string, unknown> | undefined,
+  settings: Record<string, unknown> | null | undefined,
+): { inspect: (model: string | undefined) => ReturnType<ReturnType<typeof createModelInspector>>; resolve: (model: string | undefined) => ResolvedRoute | undefined; warns: string[] } {
+  const warns: string[] = []
+  const inspect = createModelInspector(
+    () => mergeAliasMaps(config as never, settings as never),
+    { warn: message => warns.push(message) },
+  )
+  return { inspect, resolve: (model) => inspect(model).route, warns }
 }
 
 describe('mergeAliasMaps', () => {
@@ -265,5 +278,76 @@ describe('reasoningEffort on object-form aliases', () => {
     expect(() => ConfigAliasesSchema({ opus: { provider: 'p', reasoningEffort: 'max' } } as never)).not.toThrow()
     const { resolve } = resolverFor({}, { opus: { provider: 'p', reasoningEffort: 'max' } })
     expect(resolve('opus')).toEqual({ provider: 'p', reasoningEffort: 'max' })
+  })
+})
+
+describe('createModelInspector provenance', () => {
+  it('configured object alias inspects as route/configured and matches resolve', () => {
+    const { inspect, resolve } = inspectorFor({ opus: { provider: 'p', model: 'm', reasoningEffort: 'max' } }, {})
+    const inspection = inspect('opus')
+    expect(inspection.kind).toBe('route')
+    expect(inspection.via).toBe('configured')
+    expect(inspection.route).toEqual(resolve('opus'))
+  })
+
+  it('null-deleted config entry inspects as inherit, same as unconfigured', () => {
+    const { inspect } = inspectorFor({ opus: 'cfg' }, { opus: null })
+    expect(inspect('opus')).toEqual({ kind: 'inherit', via: 'builtin' })
+    const { inspect: bare } = inspectorFor({}, {})
+    expect(inspect('opus')).toEqual(bare('opus'))
+  })
+
+  it('unconfigured lane follows its peer: via peer with the peer hop', () => {
+    const { inspect } = inspectorFor({ haiku: { provider: 'p', model: 'flash' } }, {})
+    const inspection = inspect('sketch')
+    expect(inspection.kind).toBe('route')
+    expect(inspection.via).toBe('peer')
+    expect(inspection.hop).toBe('haiku')
+    expect(inspection.route).toEqual(inspect('haiku').route)
+  })
+
+  it('configured string-form target inspects as one-hop with the folded target', () => {
+    const { inspect } = inspectorFor({ sketch: 'haiku', haiku: { provider: 'p', model: 'flash' } }, {})
+    const inspection = inspect('sketch')
+    expect(inspection.kind).toBe('route')
+    expect(inspection.via).toBe('one-hop')
+    expect(inspection.hop).toBe('haiku')
+    expect(inspection.route).toEqual({ provider: 'p', model: 'flash' })
+  })
+
+  it('one-hop string target to an unconfigured builtin inspects as inherit', () => {
+    const { inspect } = inspectorFor({ sketch: 'haiku' }, {})
+    expect(inspect('sketch')).toEqual({ kind: 'inherit', via: 'one-hop', hop: 'haiku' })
+  })
+
+  it('unconfigured architect inspects as inherit/builtin', () => {
+    const { inspect } = inspectorFor({}, {})
+    expect(inspect('architect')).toEqual({ kind: 'inherit', via: 'builtin' })
+  })
+
+  it('inherit token inspects as inherit without via', () => {
+    const { inspect } = inspectorFor({}, {})
+    expect(inspect('inherit')).toEqual({ kind: 'inherit' })
+    expect(inspect(undefined)).toEqual({ kind: 'inherit' })
+  })
+
+  it('inspect(x).route matches resolve(x) across the classification cases', () => {
+    const cases: Array<[Record<string, unknown> | undefined, Record<string, unknown> | null | undefined, string | undefined]> = [
+      [{ opus: { provider: 'p', model: 'm', reasoningEffort: 'max' } }, {}, 'opus'],
+      [{ opus: 'cfg' }, { opus: null }, 'opus'],
+      [{ haiku: { provider: 'p', model: 'flash' } }, {}, 'sketch'],
+      [{ sketch: 'haiku', haiku: { provider: 'p', model: 'flash' } }, {}, 'sketch'],
+      [{ sketch: 'inherit', draft: 'deepseek-chat' }, {}, 'sketch'],
+      [{ sketch: 'inherit', draft: 'deepseek-chat' }, {}, 'draft'],
+      [{}, {}, 'architect'],
+      [{}, {}, 'inherit'],
+      [{}, {}, 'turbo'],
+      [{}, {}, 'deepseek-chat'],
+      [{}, {}, undefined],
+    ]
+    for (const [config, settings, model] of cases) {
+      const { inspect, resolve } = inspectorFor(config, settings)
+      expect(inspect(model).route).toEqual(resolve(model))
+    }
   })
 })
