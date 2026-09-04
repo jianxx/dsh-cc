@@ -319,6 +319,7 @@
     microcompactor: true
     ccModelRoutes: true
     mcpConnections: true
+    hookBridgeStatus: true
   config:
     # ToolSearch: model-called search that activates deferred tools per scope.
     - id: tool-search
@@ -356,8 +357,10 @@
     # Memory and the hook bridge consume `ctx.get('ccModelRoutes')` at spawn
     # time (recall small-fast lane / hook model resolution), so they share this
     # realm. memory-consolidation stays OUTSIDE: its forks must keep inheriting
-    # the parent route. Both rows publish no cordis Service, so group
-    # membership stays mount-legal under the leakedServices gate.
+    # the parent route. memory still publishes no cordis Service;
+    # hooks-claude-code now provides `hookBridgeStatus` (for /doctor), which is
+    # isolated on this group's isolate map — both stay mount-legal under the
+    # leakedServices gate only because they sit INSIDE the group.
     - id: memory
       name: '@jianxx/dsh-cc-memory'
 
