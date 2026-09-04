@@ -1,7 +1,9 @@
 # Harness: the Collectable Continuable Handle
 
-Status: Revised v2 (dual cold review folded: 4-state machine, abort ack/terminal
-split, collectSignal lease, post-admission detach, overloads, catalog regen)
+Status: Revised v2.1 (v2 folded the dual cold review: 4-state machine, abort
+ack/terminal split, collectSignal lease, post-admission detach, overloads, catalog
+regen; v2.1 adds the resolution-check fixes: the aborted branch resolves the epoch
+from the real disposal terminal, and the lease wiring is assigned to downstream)
 Date: 2026-09-10
 Scope: upstream `deepseek-ai/deepseek-harness`, `packages/subagent/subagent/src/{continuation.ts,types.ts,lifecycle.ts,index.ts}` and `packages/subagent/subagent/tests/`. Companion to `docs/plans/2026-09-10-continuable-background-ux.md` (Slices 2–3).
 
@@ -208,8 +210,8 @@ At the top of `notifySettlement` (continuation.ts:1462), before the
 private notifySettlement(activation: Activation, terminal: ActivationTerminal): void {
   const collector = activation.collector
   if (collector !== undefined) {
-    // Exactly-once: only the armed→consumed transition resolves the epoch.
     if (collector.state === 'armed') {
+      // Exactly-once consume: resolve the epoch, deliver no notice.
       collector.state = 'consumed'
       collector.epoch.resolve(terminal)  // the real ActivationTerminal ({stopReason, output?})
       return                              // no notice
@@ -218,6 +220,10 @@ private notifySettlement(activation: Activation, terminal: ActivationTerminal): 
       // fall through to today's delivery verbatim; the epoch is NOT
       // resolved on this path — it stays pending forever (see rule below).
     } else {
+      // aborted: abort() won ownership earlier; per §4.3 the epoch STILL
+      // resolves, from the real disposal terminal arriving here — the
+      // terminal is delivered to the promise, the notice never is.
+      collector.epoch.resolve(terminal)
       return                              // aborted: no notice ever
     }
   }
@@ -338,7 +344,14 @@ the settlement notice or wedging teardown — is closed by the **lease**
 first-epoch wait. When it aborts, an ARMED collector transitions exactly as
 `abort()` does (§4.3's synchronous abort path). The owner going away is
 itself an ownership resolution, so no drain-path special-casing is needed —
-one mechanism covers teardown-mid-collect. There are no drain branches.
+one mechanism covers teardown-mid-collect. There are no drain branches. The
+lease only acts on an ARMED collector: after an implicit followup-detach
+(§4.4) the state field is terminal and the lease abort is a no-op — teardown
+of that child then relies on the detached path's inject-under-closing-
+teardown record (§4.2 Details), exactly as for any detached child. Wiring
+`collectSignal` (to the collecting tool call's cancellation) is dsh-cc's
+responsibility in Slice 3 of docs/plans/2026-09-10-continuable-background-ux.md;
+the harness defines the lease, the caller wires it.
 
 This also closes the scheduler-drain interleaving: a tool call awaiting
 `epoch` is an in-flight dispatch the scheduler awaits during parent cancel
