@@ -67,6 +67,95 @@ for dest_dir in "$dest"/*/; do
   [ "$found" = false ] && { rm -rf "$dest_dir"; echo "pruned stale $short"; }
 done
 
+# Plain-npm runtime dependencies of any synced @jianxx package must also reach
+# the profile: the dsh plugin reconciler never touches packages that are not
+# profile dependencies, and @deepseek-ai/* peers resolve through the
+# ~/.dsh/profiles fallback — but third-party deps (tui's highlight.js) and
+# deps dsh-base does not carry (fetch-http's @deepseek-ai/dsh-web-fetch-http,
+# now a real dependency) resolve only via Node's upward node_modules walk.
+#
+# The copy must be TRANSITIVE: pnpm's strict layout never nests a dep's own
+# deps inside the dep (they sit as siblings in the .pnpm container), so
+# copying @modelcontextprotocol/sdk alone boot-crashed on its sibling-only
+# ajv. BFS below: every copied dep enqueues its own declared dependencies,
+# resolved as siblings of its pnpm realpath, onto the profile root.
+profile_nm="$(dirname "$dest")"  # .../$profile/node_modules
+REPO_PACKAGES="$repo_root/packages" PROFILE_NM="$profile_nm" HARNESS_ROOT="$(cd "$repo_root/.." && pwd)/deepseek-harness" node <<'NODE'
+const fs = require('fs')
+const cp = require('child_process')
+const path = require('path')
+
+const PACKAGES = process.env.REPO_PACKAGES
+const PROFILE_NM = process.env.PROFILE_NM
+const HARNESS = fs.realpathSync(process.env.HARNESS_ROOT)
+
+// Seeds use `dependencies` only — a @jianxx package's peers are host-provided by
+// contract (@deepseek-ai/* via the profiles fallback, @jianxx/* as synced
+// copies). Recursion into npm packages adds peer deps that pnpm actually
+// satisfied as container siblings (e.g. the MCP SDK's non-optional zod peer).
+const manifestDeps = (manifestPath, includePeers) => {
+  const p = require(manifestPath)
+  return Object.entries(includePeers ? { ...(p.dependencies || {}), ...(p.peerDependencies || {}) } : (p.dependencies || {}))
+    .filter(([, range]) => !range.startsWith('workspace:') && !range.startsWith('link:'))
+    .map(([dep]) => dep)
+}
+
+// link: devDeps resolve into the sibling harness WORKSPACE; materializing one
+// would smuggle a second cordis into the profile (the reason the header of
+// this script warns against copies). Registry artifacts live under this
+// repo's own node_modules — realpath is the discriminator.
+const isLinkedHarnessCopy = (src) => fs.realpathSync(src).startsWith(HARNESS + path.sep)
+
+// Queue items are { dep, nm, includePeers }: `nm` is the directory CONTAINING
+// dep (a node_modules dir: initially <pkg>/node_modules, afterwards the pnpm
+// .pnpm container).
+const queue = []
+for (const g of fs.readdirSync(PACKAGES)) {
+  for (const p of fs.readdirSync(path.join(PACKAGES, g))) {
+    const dir = path.join(PACKAGES, g, p)
+    const mf = path.join(dir, 'package.json')
+    if (!fs.existsSync(mf)) continue
+    const name = require(mf).name || ''
+    if (!name.startsWith('@jianxx/')) continue
+    for (const dep of manifestDeps(mf, false)) queue.push({ dep, nm: path.join(dir, 'node_modules') })
+  }
+}
+
+const done = new Set()
+while (queue.length) {
+  const { dep, nm, includePeers = true } = queue.shift()
+  if (done.has(dep)) continue
+  done.add(dep)
+  const src = path.join(nm, dep)
+  if (!fs.existsSync(src)) {
+    console.error(dep + ' (runtime dep closure) missing near ' + nm)
+    process.exit(1)
+  }
+  if (isLinkedHarnessCopy(src)) continue
+  const target = path.join(PROFILE_NM, dep)
+  fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  cp.execFileSync('rsync', ['-aL', '--delete', src + '/', target + '/'])
+  fs.rmSync(path.join(target, '.bin'), { recursive: true, force: true })
+  // pnpm co-locates a package's deps as siblings of its real path inside the
+  // .pnpm container's node_modules — walk up to that dir to recurse.
+  let container = fs.realpathSync(src)
+  while (path.basename(container) !== 'node_modules') container = path.dirname(container)
+  for (const next of manifestDeps(path.join(fs.realpathSync(src), 'package.json'), includePeers)) {
+    // Only the SEED seed-step copies @deepseek-ai-@scope packages (e.g.
+    // @deepseek-ai/dsh-web-fetch-http, a dsh-cc runtime dep absent from
+    // dsh-base). When recursing FROM an @deepseek-ai package, its own
+    // @deepseek-ai deps must stay unpicked: they belong to the host plane and
+    // materialize via the healed profiles fallback (copying schemastery here
+    // would fork cordis's schema runtime into a shadow instance).
+    if (dep.startsWith('@deepseek-ai/') && next.startsWith('@deepseek-ai/')) continue
+    if (next.startsWith('@jianxx/')) continue
+    if (fs.existsSync(path.join(container, next))) queue.push({ dep: next, nm: container })
+  }
+}
+if (done.size) console.log('synced @jianxx runtime deps (dereferenced, transitive): ' + done.size)
+NODE
+
 # The vendored pi-tui renderer has RUNTIME npm deps (marked,
 # get-east-asian-width) that must resolve inside the profile copy. The main
 # loop above excluded node_modules for every package (other packages' nm
@@ -78,36 +167,6 @@ if [ -d "$pi_tui_src" ]; then
   rsync -aL --delete "$pi_tui_src/" "$dest/dsh-cc-pi-tui/"
   rm -rf "$dest/dsh-cc-pi-tui/node_modules/.bin" "$dest/dsh-cc-pi-tui/node_modules/@deepseek-ai"
   echo "synced dsh-cc-pi-tui runtime deps (dereferenced)"
-fi
-
-# The tui package also has plain-npm RUNTIME deps (highlight.js) that must
-# resolve from the synced profile copy. Unlike pi-tui, tui's devDependencies
-# are link: refs into the sibling deepseek-harness — re-copying tui WITH
-# dereferenced node_modules would materialize a second cordis. So instead sync
-# only each plain-npm `dependencies` entry (dereferenced) into the profile
-# root node_modules, where Node's upward resolution finds it for every @jianxx
-# package. Workspace/link/@deepseek-ai entries are skipped (they resolve via
-# the installer-maintained ~/.dsh fallback like the published bundles do).
-tui_src="$repo_root/packages/ui/tui"
-profile_nm="$(dirname "$dest")"  # .../$profile/node_modules
-if [ -f "$tui_src/package.json" ] && [ -d "$tui_src/node_modules" ]; then
-  node -e "
-    const fs = require('fs');
-    const cp = require('child_process');
-    const deps = Object.entries(require('$tui_src/package.json').dependencies || {});
-    let synced = 0;
-    for (const [name, range] of deps) {
-      if (range.startsWith('workspace:') || range.startsWith('link:')) continue;
-      const src = '$tui_src/node_modules/' + name;
-      if (!fs.existsSync(src)) { console.error('tui runtime dep ' + name + ' missing from node_modules'); process.exit(1); }
-      const dest = '$profile_nm/' + name;
-      fs.rmSync(dest, { recursive: true, force: true });
-      cp.execFileSync('rsync', ['-aL', '--delete', src + '/', dest + '/']);
-      fs.rmSync(dest + '/.bin', { recursive: true, force: true });
-      synced++;
-    }
-    if (synced) console.log('synced @jianxx/dsh-cc-tui runtime deps (dereferenced): ' + synced);
-  "
 fi
 
 echo "synced ${#synced[@]} packages into $dest"

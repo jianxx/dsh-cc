@@ -298,6 +298,14 @@ bash scripts/sync-local-profile.sh web
 dsh web
 ```
 
+To prove the production bundle set actually boots in a user-grade
+environment (fresh `DSH_HOME`, harness-healed fallback, pseudo-TTY, no LLM
+calls) — the same gate presubmit and publish run:
+
+```sh
+pnpm smoke:profile-boot
+```
+
 To install/update the CC preset during local development:
 
 ```sh

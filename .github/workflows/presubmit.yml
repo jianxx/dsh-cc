@@ -168,6 +168,13 @@ jobs:
         working-directory: dsh-cc
         run: pnpm run bundle:client
 
+      # 与 publish.yml 平齐:每个 exports 指向的 lib/* 必须由本次构建真实产出。
+      # 此前只在 publish 阶段跑,#112 的 tsconfig 引用缺失(serena-first 从不
+      # 产出 lib/)得以合入——exports 幽灵目标必须合入前就挡下。
+      - name: Export targets (check:exports)
+        working-directory: dsh-cc
+        run: pnpm check:exports
+
       - name: Unit tests (vitest)
         working-directory: dsh-cc
         run: pnpm test

@@ -1,7 +1,7 @@
 # 本地门禁 = 下方列出的命令,与 .github/workflows/presubmit.yml 一一对应。
-#   presubmit 在 CI 上额外跑 check:exports(需要 lib/client.js,由 bundle:client
-#   产 tsdown 产物——本地 typecheck 不产 lib/,单独跑无意义,等 bundle:client 后
-#   再补;presubmit CI 里也是 bundle:client 之后才跑)。
+#   check:exports 在 presubmit/publish 上于 bundle:client 之后跑;本地同样
+#   位置补跑(typecheck 先产各包 lib/,bundle:client 再补 lib/client.js),挡
+#   "exports 指向不存在的 lib 目标"这一类(#112 serena-first 缺 tsconfig 引用)。
 #   typecheck ≡ build 的 tsc -b 部分(同 tsconfig.packages.json);build 另在其后
 #   跑 bundle:client 产 lib/client.js(tsdown,当仓 gitignore lib/,不改 typecheck,
 #   仅 commit 前补跑,使本地 profile sync 能带上浏览器 bundle)
@@ -50,6 +50,7 @@ pnpm test:capabilities
 # --- 构建 + 测试 ---
 pnpm typecheck
 pnpm run bundle:client
+pnpm check:exports
 pnpm test
 pnpm check:subagent-paste
 

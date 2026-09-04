@@ -47,6 +47,9 @@
       "path": "./packages/compat/session-title-provider"
     },
     {
+      "path": "./packages/compat/cc-serena-first"
+    },
+    {
       "path": "./packages/memory/memory"
     },
     {
