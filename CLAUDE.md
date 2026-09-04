@@ -7,7 +7,9 @@ wholesale; subagents return conclusions, you synthesize. Task children
 start with a fresh conversation (no parent history, no MEMORY.md dump) —
 write a self-contained prompt (paths, constraints, what to return). Pass
 `subagent_type: "fork"` only when the child must see completed parent
-turns. A Stop hook (`scripts/check-subagent-paste.mjs`,
+turns. ALWAYS pass an explicit `subagent_type` on every subagent
+spawn/fork call — omitting it has caused real spawn failures; never
+rely on a default. A Stop hook (`scripts/check-subagent-paste.mjs`,
 `.claude/settings.local.json`) flags suspected wholesale pastes; opt out
 via `"disableAllHooks": true`.
 
@@ -61,41 +63,66 @@ Before verifying, specify: what behavior, how driven (script/browser/
 CLI), what observable result counts as pass. fast-worker executes;
 ambiguous results → deep-reasoner judges — don't re-litigate inline.
 
-### Worktree-first modification policy
-Never edit/write files in the main checkout. A session that changes
-repo files launches inside its own worktree: from the main checkout run
-`git worktree add .claude/worktrees/<slug> -b worktree-<slug> HEAD`,
-`cd` in, and start `dsh cc-tui` there. Session cwd is fixed at startup
-and cwd-derived bindings follow it (serena runs `--project-from-cwd`),
-so `EnterWorktree` mid-session is only for a second isolation within
-one session, not the primary flow.
-- Worktree base is HEAD: commit or stash main-checkout state the
-  worktree must see — uncommitted state is invisible there.
-- To finish: commit in the worktree, push `worktree-<slug>`, open a PR.
+### Modification policy: dev branch or worktree, never main
+Never edit/commit directly on `main`. Which isolation you use depends
+on where the session started, because session cwd is fixed at startup
+and cwd-derived bindings follow it: serena runs `--project-from-cwd`,
+pinning its project root and symbol index to the launch directory.
+Never create or enter a new worktree mid-session (`EnterWorktree`, or
+`git worktree add` + `cd`) — serena stays bound to the startup cwd and
+its symbol tools silently miss everything in the new tree.
+- Started inside a worktree (preferred for repo changes): keep the
+  previous flow — work on `worktree-<slug>`, commit, push, open a PR.
   Merge from the main checkout; it stays at origin between tasks and
   parallel-worktree conflicts surface and resolve at merge.
-- Worktrees lack gitignored files: `bash scripts/link-worktree-deps.sh`
-  before the first pnpm command. `.claude/settings.local.json` is the
+- Started in the main checkout: before the first edit, create a dev
+  branch in place (`git switch -c dev-<slug>`), then edit and commit
+  on it. To finish: push `dev-<slug>` and open a PR; after merge,
+  `git switch main && git pull` to return the main checkout to origin.
+- Need a worktree but the session didn't start in one? Exit and
+  relaunch: from the main checkout run
+  `git worktree add .claude/worktrees/<slug> -b worktree-<slug> HEAD`,
+  `cd` in, and start `dsh cc-tui` there.
+- Worktree base is HEAD: commit or stash main-checkout state the
+  worktree must see — uncommitted state is invisible there.
+- Worktrees lack gitignored files: run `pnpm install --frozen-lockfile`
+  inside the worktree before the first pnpm command. `.claude/settings.local.json` is the
   exception — settings-cascade and plugin-loader read the main checkout's
-  copy (Claude Code parity). `.serena/` still does not follow worktrees;
-  other repo-wide behavior must live in tracked files.
+  copy (Claude Code parity). Other repo-wide behavior must live in
+  tracked files.
 
 ### Worktree environment
-Worktrees contain only tracked files, so node_modules is absent and
-pnpm fails until `bash scripts/link-worktree-deps.sh` symlinks every
-node_modules from the main checkout (auto-detects worktree status,
-no-ops in main, idempotent). dist is NOT needed: tsconfig `paths` and
-vite-tsconfig-paths resolve @jianxx/dsh-cc-* to source. A mid-work
-"Cannot find module" means: link first, then re-run.
+Worktrees contain only tracked files, so node_modules is absent. Run
+`pnpm install --frozen-lockfile` inside the worktree before the first
+pnpm command: pnpm hard-links packages from its shared global
+content-addressable store, so it is fast (seconds), needs no network,
+and yields a real self-contained node_modules — `.bin` shims included.
+Never symlink node_modules from the main checkout (the removed
+`link-worktree-deps.sh` approach): it pollutes sibling worktrees,
+misses per-package node_modules, and breaks `.bin`. dist is NOT
+needed: tsconfig `paths` and vite-tsconfig-paths resolve
+@jianxx/dsh-cc-* to source. A mid-work "Cannot find module" means:
+install first, then re-run.
 
 ### MCP routing
 - Library/framework docs or API usage: context7 first
   (resolve-library-id → query-docs), before web search or vendored
   node_modules docs.
-- serena activates the session cwd as its project (per policy: the
-  worktree): use symbol tools (find_symbol, find_referencing_symbols)
-  instead of whole-file reads. `.serena/` is untracked, so memories
-  don't follow worktrees yet.
+- serena activates the session cwd as its project (whatever directory
+  the session launched in — worktree or main checkout): use symbol
+  tools (find_symbol, find_referencing_symbols) instead of whole-file
+  reads. `.serena/` is tracked for its project.yml (serena's own
+  `.serena/.gitignore` keeps cache/ and project.local.yml local), so
+  project config follows worktrees and branches. Serena memories and
+  onboarding are disabled project-wide (`added_modes: ["no-memories"]`
+  in project.yml) — durable knowledge belongs to the dsh-cc memory
+  system (MEMORY.md), never serena memory tools.
+  - Project-root boundary: serena tools only reach files under the
+    session's startup directory — paths are validated against the
+    project root. Anything outside it (the main checkout, sibling
+    worktrees, `$HOME`, `/tmp`) is invisible to serena; use built-in
+    Read/Grep/Edit/Bash for those paths and never route them through
+    serena tools.
   - **Serena fallback rules** (health runbook: `docs/code-intelligence-health.md`):
     - An EMPTY `find_symbol`/`get_symbols_overview` is not ground truth —
       confirm with one cheap probe (a `grep` for an obvious token in that

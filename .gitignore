@@ -158,8 +158,9 @@ packages/**/src/*.d.ts.map
 # Note .claude/agents/ stays tracked.
 .claude/worktrees/
 
-# Serena MCP project-local index (machine state, not source).
-.serena/
+# Serena project config + memories are tracked (shared across worktrees
+# per serena's official worktree guidance); serena's own .serena/.gitignore
+# keeps cache/ and project.local.yml machine-local.
 
 # scripts/lib/ contains source, not build output
 !scripts/lib/

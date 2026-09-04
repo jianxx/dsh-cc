@@ -1666,7 +1666,10 @@ capabilities:
       summary: >-
         subagent_type dispatch over per-workspace .claude/agents (persona =
         definition systemPrompt, alias routing via ccModelRoutes, sanitized
-        toolFilter, maxDepth 3, bundled explore/dsh-cc-guide agents) plus the
+        toolFilter, maxDepth 3, bundled explore/dsh-cc-guide agents, the
+        bundled explore additionally carrying read-only serena symbol
+        retrieval tools mcp__serena__find_symbol /
+        find_referencing_symbols / get_symbols_overview) plus the
         continuable background loop (run_in_background, agentId-addressable
         send_message/interrupt/list). Deliberate deviations: fork + background
         is rejected naming upstream issue #2124 (fork stays foreground
