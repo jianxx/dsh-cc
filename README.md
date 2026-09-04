@@ -121,7 +121,7 @@ The `tui` profile boots directly into the CC preset.
 - `models.aliases` — downgrade: Frontmatter aliases (sonnet/opus/haiku/fable + dsh lanes + open set), settings model-aliases overlay with null-delete and builtin fallback, shared toAgentOptions per-field inheritance, and the ccModelRoutes service all work. Follow-ups: the /model command, ANTHROPIC_* env vars (no Anthropic semantics), and aliasing the main-session default model.
 - `ux.statusline` — downgrade: The statusLine settings contract is unimplemented (no parsing or execution of a configured status-line command); the TUI renders its own fixed HUD statusline (context occupancy) instead.
 
-Statuses were verified against upstream documentation retrieved as of 2026-09-03 (freshness threshold: 120 days).
+Statuses were verified against upstream documentation retrieved as of 2026-09-04 (freshness threshold: 120 days).
 
 For the exact feature-by-feature status and known gaps, see the **[Claude Code parity matrix](docs/cc-parity-matrix.md)**.
 <!-- parity:matrix:end -->

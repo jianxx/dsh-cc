@@ -273,5 +273,5 @@ _None._
 ---
 
 Baseline sources: cc-docs (https://code.claude.com/docs), cc-repo (https://github.com/anthropics/claude-code).
-Newest upstream retrieval: 2026-09-03.
+Newest upstream retrieval: 2026-09-04.
 Freshness threshold: 120 days — re-verify refs older than that before trusting a row.
