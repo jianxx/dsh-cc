@@ -96,14 +96,13 @@ stale claims are yours.
 - After `bash scripts/sync-local-profile.sh web`, also run
   `bash scripts/sync-cc-preset.sh` — it rsyncs the CC preset combo into
   `~/.dsh/.agent-presets/cc` so the `cc` preset is available in any profile.
-- Deps in a fresh worktree: `bash scripts/link-worktree-deps.sh` (idempotent;
-  symlinks each package's node_modules from the main checkout).
-- The worktree root may additionally need `link:` targets flattened into
-  `node_modules/` for resolution of packages whose package node_modules don't
-  carry them — symlink them by hand (`ln -sfn <abs target> node_modules/<name>`).
-- `node_modules/.bin` is absent in the worktree: call `node
-  node_modules/typescript/bin/tsc -b tsconfig.packages.json` and
-  `node node_modules/vitest/vitest.mjs run` directly instead of `pnpm`.
+- Deps in a fresh worktree: run `pnpm install --frozen-lockfile` inside the
+  worktree. pnpm hard-links packages from its shared global content-addressable
+  store, so this is fast, needs no network, and yields a real self-contained
+  node_modules (`.bin` shims included).
+- Never symlink node_modules from the main checkout into a worktree (the
+  removed `scripts/link-worktree-deps.sh` approach): it polluted sibling
+  worktrees, missed per-package node_modules, and broke `.bin`.
 
 ## Cache hit-rate benchmark (`cache-trajectory`)
 
