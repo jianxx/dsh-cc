@@ -13,11 +13,11 @@ stock `@deepseek-ai/dsh-tool-web` `web_fetch` when the CC preset sets `tool-web`
   summarize call on that cheap lane. The tool returns only the extraction. A string-form
   alias (`haiku: deepseek-v4-flash`, model only) inherits the missing provider from the
   calling agent's request-header; with no calling agent (hence no parent provider) the
-  prompt is ignored (NOTICE).
+  tool fails hard.
 - **With `prompt`** but the `haiku` alias unconfigured (no `ccModelRoutes` service or the
-  resolver returns nothing): the summarize call is skipped. The tool degrades to the
-  converted page prefixed by
-  `(prompt ignored: configure the haiku model alias to summarize WebFetch results)`.
+  resolver returns nothing): the tool throws
+  `web_fetch: prompt requires a configured haiku model alias` **before any fetch is
+  performed** — the page is not fetched, streamed, or returned.
 
 The summarize call never carries a `purpose` field: the harness `GenerateOptions.purpose`
 union is closed (`'compaction' | 'session-title'`). A summary model that requests a tool
@@ -25,10 +25,10 @@ or produces no text fails the call as an `isError` tool result.
 
 ## Provider requirement
 
-Stock dsh deployments mount **no fetch provider**: `ctx.web.fetch` throws
-`WEB_PROVIDER_UNAVAILABLE` at execute time until a deployment composes a provider
-(e.g. `web-fetch-http`, which remains unshipped through 0.1.1-rc.2). This package does
-not mount one. Tests fake `ctx.web.fetch`.
+CC deployments get a fetch executor from the cc-shell bundle, which mounts
+`@jianxx/dsh-cc-web-fetch-http` (wrapping `HttpFetchProvider`, with a literal
+SSRF gate). This package itself does not register a provider; tests fake
+`ctx.web.fetch`.
 
 ## Prompt guidance interplay
 
@@ -38,5 +38,8 @@ from the `web_search` system-prompt section. This package re-registers the
 
 ## Known limits
 
-- No host allowlist: a mounted provider reaches any URL the process can reach. Enable
-  only on egress-restricted deployments. Upstream SSRF allowlist remains a follow-up.
+- No host allowlist in this package: the literal SSRF gate (private/loopback/
+  link-local literals blocked) lives in the `@jianxx/dsh-cc-web-fetch-http`
+  wrapper mounted from cc-shell. Residual risk: DNS rebinding — upstream
+  webfetch-ssrf-allowlist (DNS-pin / per-hop re-validation) remains a follow-up.
+- Tavily / Firecrawl are plugins/skills, not fetch backends for this tool.

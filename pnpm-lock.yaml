@@ -85,6 +85,9 @@ importers:
       '@jianxx/dsh-cc-session-title-provider':
         specifier: workspace:^
         version: link:../../compat/session-title-provider
+      '@jianxx/dsh-cc-web-fetch-http':
+        specifier: workspace:^
+        version: link:../../web/fetch-http
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis
@@ -1940,6 +1943,24 @@ importers:
       '@xterm/headless':
         specifier: 5.5.0
         version: 5.5.0
+
+  packages/web/fetch-http:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+        version: link:../../../../deepseek-harness/packages/runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-web':
+        specifier: link:../../../../deepseek-harness/packages/web/web
+        version: link:../../../../deepseek-harness/packages/web/web
+      '@deepseek-ai/dsh-web-fetch-http':
+        specifier: link:../../../../deepseek-harness/packages/web/web-fetch-http
+        version: link:../../../../deepseek-harness/packages/web/web-fetch-http
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
 
   packages/workspace/session-cwd:
     devDependencies:

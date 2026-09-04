@@ -15,6 +15,7 @@
  */
 
 import type { ContentMatcher, PermissionBehavior, PermissionRule, PermissionRuleSource } from './types.ts'
+import { domainMatches, isWebFetchRuleTool, parseDomainContent } from './domain.ts'
 
 /**
  * Parse one rule string into a {@link ContentMatcher} for the given content.
@@ -134,6 +135,12 @@ export function parseRuleString(rule: string): { toolName: string; content?: str
     // Empty or single-wildcard content is a whole-tool rule, as in Claude Code.
     return { toolName }
   }
+  // WebFetch domain rules take their own matcher shape; other tools (e.g.
+  // `Bash(domain:example.com)`) keep the plain prefix convention.
+  if (isWebFetchRuleTool(toolName) && /^domain:/i.test(content)) {
+    const matcher = parseDomainContent(content)
+    return { toolName, content, matcher }
+  }
   const matcher = matchContent(content)
   // Content is non-empty and not a bare `*`, so a matcher is always derived.
   if (matcher === undefined) return { toolName }
@@ -158,6 +165,7 @@ export function ruleString(toolName: string, content?: string): string {
  */
 export function contentMatches(matcher: ContentMatcher, subject: string): boolean {
   if (matcher.kind === 'prefix') return subject.startsWith(matcher.prefix)
+  if (matcher.kind === 'domain') return domainMatches(matcher.hostname, subject)
   return wildcardMatches(matcher.pattern, subject)
 }
 

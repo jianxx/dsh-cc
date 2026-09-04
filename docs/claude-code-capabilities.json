@@ -101,8 +101,8 @@
       ]
     },
     "webfetch-ssrf-allowlist": {
-      "title": "SSRF host allowlist for web-fetch-http",
-      "problem": "The web-fetch-http executor row is unshipped by the CLI through 0.1.1-rc.2 and there is no host allowlist, so WebFetch stays enable-only-on-egress-restricted-deployments.",
+      "title": "DNS-pin SSRF for web-fetch-http",
+      "problem": "The CLI now mounts @jianxx/dsh-cc-web-fetch-http (literal hostname/IP gate). The remaining gap is DNS-pin / per-hop re-validation inside harness web-fetch-http.",
       "cc_contract": "Claude Code WebFetch enforces an SSRF allowlist before honoring fetches.",
       "refs": [],
       "needed_for": [
@@ -920,13 +920,26 @@
           "anchor": "- id: tool-web-fetch"
         },
         {
+          "type": "source",
+          "path": "packages/bundle/cc-shell/cordis.patch.yml",
+          "anchor": "- id: web-fetch-http-cc"
+        },
+        {
           "type": "test",
           "path": "packages/core/tool-web-fetch/tests/tools.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/interaction/permission-rules/tests/domain.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/web/fetch-http/tests/ssrf.spec.ts"
         }
       ],
       "deviation": {
         "kind": "downgrade",
-        "summary": "Mounted via @jianxx/dsh-cc-tool-web-fetch (optional prompt summarized on resolve('haiku') when configured, else raw converted text + notice). No fetch provider is shipped through 0.1.1-rc.2 (WEB_PROVIDER_UNAVAILABLE at execute until a deployment mounts one); no host allowlist — enable only on egress-restricted deployments; upstream SSRF allowlist remains a follow-up."
+        "summary": "Mounted via @jianxx/dsh-cc-tool-web-fetch (optional prompt summarized on resolve('haiku'); prompt without haiku hard-fails before fetch). Fetch executor is @jianxx/dsh-cc-web-fetch-http wrapping HttpFetchProvider, mounted from cc-shell. WebFetch(domain:) content rules match hostnames. Literal SSRF gate blocks private/loopback/ link-local literals. Residual: no DNS pinning, no Anthropic preflight, no 15-min cache, no pre-approved docs domains; upstream webfetch-ssrf-allowlist remains for DNS-pin / per-hop re-validation."
       }
     },
     "engine.web-search": {

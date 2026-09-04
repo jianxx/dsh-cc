@@ -6,6 +6,7 @@
  * @module
  */
 import { ccToolAliases, type ToolExecution } from '@jianxx/dsh-cc-tools'
+import { canonicalizeHostname } from './domain.ts'
 import { contentMatches } from './parser.ts'
 import type { PermissionRule } from './types.ts'
 
@@ -33,5 +34,10 @@ export function subjectOf(exec: ToolExecution, bashToolName: string): string | u
   const args = exec.arguments as Record<string, unknown>
   if (isBashToolName(exec.name, bashToolName) && typeof args.command === 'string') return args.command
   if (typeof args.file_path === 'string') return args.file_path
+  // A WebFetch call's subject is its URL's canonical hostname (undefined for
+  // an unparsable URL, so the call falls through to whole-tool matching).
+  if (ccToolAliases(exec.name).includes('WebFetch') && typeof args.url === 'string') {
+    return canonicalizeHostname(args.url)
+  }
   return undefined
 }

@@ -7,7 +7,7 @@
  */
 
 import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
-import { ruleString } from '@jianxx/dsh-cc-permission-rules'
+import { canonicalizeHostname, isWebFetchRuleTool, ruleString } from '@jianxx/dsh-cc-permission-rules'
 import type { ApprovalPreview } from '../store.ts'
 
 /**
@@ -112,8 +112,9 @@ function diffsOf(name: string, args: Record<string, unknown>): readonly { path: 
  * otherwise embed the colon in the prefix and never match). Environment
  * variable prefixes (e.g., `FOO=bar`) are stripped before extracting the
  * first word, so `FOO=bar npm install` derives a rule for `npm`, not `FOO=bar`.
- * Every other tool gets a whole-tool rule. Undefined (stay once-only) when
- * nothing usable remains, e.g. a blank command.
+ * A WebFetch call derives a `WebFetch(domain:<host>)` rule on the exact host
+ * from its `url` argument; every other tool gets a whole-tool rule. Undefined
+ * (stay once-only) when nothing usable remains, e.g. a blank command.
  */
 export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefined): string | undefined {
   const name = toolName.trim()
@@ -152,6 +153,21 @@ export function allowRuleOf(toolName: string, preview: ApprovalPreview | undefin
     // ruleString escapes parens/backslashes so a subshell-opening first word
     // round-trips through parseRuleString.
     return ruleString(name, `${firstWord} `)
+  }
+  // WebFetch persists a domain rule on the exact host (not `*.host`): the
+  // args preview carries the URL, whose hostname is canonicalized here. An
+  // unparsable payload keeps today's whole-tool rule.
+  if (isWebFetchRuleTool(name) && preview?.kind === 'args') {
+    try {
+      const parsed: unknown = JSON.parse(preview.json)
+      const url = (parsed as Record<string, unknown>).url
+      if (typeof url === 'string') {
+        const hostname = canonicalizeHostname(url)
+        if (hostname !== undefined) return ruleString('WebFetch', `domain:${hostname}`)
+      }
+    } catch {
+      // Malformed JSON or missing url — fall through to the whole-tool rule.
+    }
   }
   return name
 }
