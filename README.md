@@ -1,38 +1,35 @@
 # dsh-cc
 
-**A Claude Code-style coding experience for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
+**English** | [简体中文](README.zh.md)
 
-`dsh-cc` adds the interactive coding-agent features developers expect — a terminal UI, slash commands, subagents, skills, MCP, hooks, permissions, memory, worktrees, resumable sessions, model aliases, and more — as composable plugins for DeepSeek Harness.
+## Claude Code-style workflows. Your models. DeepSeek Harness.
 
-**No permanent DeepSeek Harness fork required.**
+`dsh-cc` turns [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) into a batteries-included coding environment for everyday development. Keep familiar project assets and interaction patterns while choosing the models, tools, permissions, and agent composition that fit your environment.
 
-> This project is not Claude Code and is not a wrapper around Claude Code. It re-creates familiar Claude Code-style workflows on top of the DeepSeek Harness runtime, where you control the models, tools, plugins, and agent composition.
+- **Reuse familiar workflows:** `.claude/agents`, `SKILL.md`, `CLAUDE.md`, hooks, permissions, slash commands, and resumable sessions.
+- **Bring your own model strategy:** route aliases such as `sketch`, `draft`, `blueprint`, and `masterplan` to any provider/model pair supported by your dsh deployment.
+- **Run a complete coding loop:** TUI, MCP, memory, subagents, background tasks, worktrees, structured output, and deferred tool discovery.
+- **Stay composable:** install the experience through native dsh profiles and plugins instead of maintaining a permanent DeepSeek Harness fork.
 
-## Why dsh-cc?
-
-DeepSeek Harness provides a flexible agent runtime and plugin system. `dsh-cc` builds a more complete interactive coding environment on top of it.
-
-With the CC profile installed, you get:
-
-- a full-screen terminal UI designed for coding-agent workflows;
-- familiar slash commands such as `/doctor`, `/memory`, `/skills`, `/permissions`, `/tasks`, `/resume`, and `/branch`;
-- `.claude/agents` subagents and `SKILL.md` skills;
-- `CLAUDE.md`-style project memory and background memory consolidation;
-- MCP tools, resources, prompts, and OAuth 2.1 support;
-- Claude Code-style hooks and permission rules;
-- worktree-aware workflows and resumable sessions;
-- deferred tool discovery with `ToolSearch`;
-- tools such as `NotebookEdit`, `StructuredOutput`, and `Sleep`;
-- configurable model aliases such as `opus`, `sonnet`, `haiku`, and `inherit`;
-- the same CC-oriented backend available from both terminal and web profiles.
-
-All of this is loaded through the native dsh profile/plugin system rather than maintained as a long-lived product fork.
+> `dsh-cc` is not Claude Code and is not a wrapper around Claude Code. It implements familiar Claude Code-style workflows on the open, composable DeepSeek Harness runtime.
 
 ## Quick start
 
-Prerequisite: `dsh` on `PATH`, version **>= 0.1.0-rc.5**.
+Install DeepSeek Harness and the `dsh-cc` launcher, then start coding:
 
-Install the CC-oriented terminal profile:
+```sh
+npm install -g @deepseek-ai/dsh @jianxx/dsh-cc
+dsh-cc
+```
+
+Already have `dsh` **>= 0.1.0-rc.5**? Install only the launcher:
+
+```sh
+npm install -g @jianxx/dsh-cc
+dsh-cc
+```
+
+The launcher creates and boots the CC-oriented `tui` profile. To compose the profile explicitly instead:
 
 ```sh
 dsh plugin --profile tui add \
@@ -42,14 +39,7 @@ dsh plugin --profile tui add \
 dsh --profile tui
 ```
 
-Or install the optional launcher:
-
-```sh
-npm install -g @jianxx/dsh-cc
-dsh-cc
-```
-
-For the web UI, install the same backend without the TUI bundle:
+The same backend also works with the dsh web UI:
 
 ```sh
 dsh plugin --profile web add \
@@ -58,9 +48,20 @@ dsh plugin --profile web add \
 dsh web
 ```
 
-The `tui` profile boots directly into the CC preset.
+## Why developers use dsh-cc
 
-## What you get
+| Need | What dsh-cc provides |
+| --- | --- |
+| Keep project conventions | Loads Claude Code-style agents, skills, project memory, settings, hooks, and plugin commands |
+| Mix fast and capable models | Maps stable aliases to deployment-controlled provider/model routes |
+| Delegate larger tasks | Supports subagent dispatch, background work, task inspection, and resume-aware routing |
+| Work safely in parallel | Adds permission rules, approval flows, worktree tools, and workspace boundaries |
+| Avoid loading every tool up front | Provides deferred discovery through `ToolSearch` and MCP integration |
+| Move between interfaces | Exposes the same CC-oriented backend through terminal and web profiles |
+
+`dsh-cc` is developed with `dsh-cc` itself. The repository's current setup routes work across Kimi, GLM, and DeepSeek models; see [Dogfooding dsh-cc](#dogfooding-dsh-cc) for the concrete mapping.
+
+## Compatibility at a glance
 
 <!-- parity:matrix:start -->
 | Category | Full | Partial | Missing | Non-goal |
@@ -326,4 +327,15 @@ Release process details: **[docs/release.md](docs/release.md)**.
 
 If you find a workflow that works differently from Claude Code, the [parity matrix](docs/cc-parity-matrix.md) is the best place to check whether it is implemented, partial, intentionally out of scope, or still missing.
 
-Contributions, compatibility reports, and focused upstream extension proposals are welcome.
+Contributions, compatibility reports, and focused upstream extension proposals are welcome. Useful ways to help include:
+
+- compatibility reports with reproduction steps and `/doctor --json` output;
+- focused fixes and tests for one capability;
+- upstream extension proposals that reduce vendored code;
+- real-project model-routing and workflow examples.
+
+**[Open an issue](https://github.com/jianxx/dsh-cc/issues) · [View pull requests](https://github.com/jianxx/dsh-cc/pulls)**
+
+## License
+
+[Apache-2.0](LICENSE)
