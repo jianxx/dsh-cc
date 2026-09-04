@@ -152,19 +152,24 @@ describe('agent.cordis.yml composition', () => {
     }
   })
 
-  it('isolates exactly the four cc-services services, hosting the commands and the ccModelRoutes consumers', () => {
+  it('isolates exactly the cc-services services, hosting the commands and the ccModelRoutes consumers', () => {
     const group = doc.find((r) => r.id === 'cc-services')!
     expect(group.name).toBe('cordis:group')
     expect(group.isolate).toEqual({
       toolSearch: true,
       microcompactor: true,
       ccModelRoutes: true,
+      resumePinStore: true,
       mcpConnections: true,
     })
     const configIds = (group.config as any[]).map((r) => r.id)
     const topIds = doc.map((r) => r.id)
     expect(configIds).toContain('command-plugin')
     expect(configIds).toContain('command-mcp')
+    // The resume-pins plugin row publishes the `resumePinStore` service and
+    // must sit inside the group, between cc-model-routes and tool-task (§4.10).
+    expect(configIds.indexOf('cc-resume-pins')).toBeGreaterThan(configIds.indexOf('cc-model-routes'))
+    expect(configIds.indexOf('cc-resume-pins')).toBeLessThan(configIds.indexOf('tool-task'))
     // The two commands live inside the group, not duplicated at top level.
     expect(topIds).not.toContain('command-plugin')
     expect(topIds).not.toContain('command-mcp')

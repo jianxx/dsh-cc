@@ -74,7 +74,9 @@
     "@jianxx/dsh-cc-tool-notebook-edit": "workspace:^",
     "@jianxx/dsh-cc-tool-sleep": "workspace:^",
     "@jianxx/dsh-cc-tool-structured-output": "workspace:^",
-    "@jianxx/dsh-cc-settings-migrations": "workspace:^"
+    "@jianxx/dsh-cc-settings-migrations": "workspace:^",
+    "@jianxx/dsh-cc-subagent-resume-pins": "workspace:^",
+    "@jianxx/dsh-cc-subagent-task": "workspace:^"
   },
   "publishConfig": {
     "access": "public"

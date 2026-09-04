@@ -1,0 +1,21 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../preset/claude-code-agents"
+    },
+    {
+      "path": "../../compat/cc-model-aliases"
+    },
+    {
+      "path": "../../core/tools"
+    }
+  ]
+}

@@ -80,6 +80,9 @@
       "path": "./packages/subagent/task"
     },
     {
+      "path": "./packages/subagent/resume-pins"
+    },
+    {
       "path": "./packages/compaction/compaction-micro"
     },
     {

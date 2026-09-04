@@ -318,6 +318,7 @@
     toolSearch: true
     microcompactor: true
     ccModelRoutes: true
+    resumePinStore: true
     mcpConnections: true
   config:
     # ToolSearch: model-called search that activates deferred tools per scope.
@@ -344,6 +345,20 @@
     # per-workspace .claude/agents) and reserves the names 'subagent'/'workflow'.
     - id: cc-model-routes
       name: '@jianxx/dsh-cc-model-aliases'
+
+    # Resume pins (plan docs/plans/2026-09-04-subagent-resume-pins.md §4.10):
+    # one PinStore + the resume gate/overlay/policy per mounted preset, exposed
+    # as the `resumePinStore` service (isolated above, like ccModelRoutes). The
+    # pins root COLOCATES with the session-persistence root: the harness base
+    # patch mounts the jsonl backend at `!!js dshHomePath('sessions')`, and this
+    # `!!js` expression resolves `dshHomePath` the same way at entry activation
+    # (app-boot provides it on the root ctx before the config tree mounts), so
+    # pins always sit next to the durable sessions they pin. Must mount BEFORE
+    # tool-task: the Task plugin's spawn capture prefers this service store.
+    - id: cc-resume-pins
+      name: '@jianxx/dsh-cc-subagent-resume-pins'
+      config:
+        pinsRoot: !!js dshHomePath('sessions', 'resume-pins')
 
     - id: tool-task
       name: '@jianxx/dsh-cc-subagent-task'

@@ -167,6 +167,12 @@ importers:
       '@jianxx/dsh-cc-settings-migrations':
         specifier: workspace:^
         version: link:../../settings/settings-migrations
+      '@jianxx/dsh-cc-subagent-resume-pins':
+        specifier: workspace:^
+        version: link:../../subagent/resume-pins
+      '@jianxx/dsh-cc-subagent-task':
+        specifier: workspace:^
+        version: link:../../subagent/task
       '@jianxx/dsh-cc-tool-notebook-edit':
         specifier: workspace:^
         version: link:../../core/tool-notebook-edit
@@ -1462,6 +1468,9 @@ importers:
       '@jianxx/dsh-cc-skill-loader':
         specifier: workspace:^
         version: link:../../skill/skill-claude-code
+      '@jianxx/dsh-cc-subagent-resume-pins':
+        specifier: workspace:^
+        version: link:../../subagent/resume-pins
       '@jianxx/dsh-cc-subagent-task':
         specifier: workspace:^
         version: link:../../subagent/task
@@ -1706,6 +1715,40 @@ importers:
         specifier: workspace:^
         version: link:../../core/tools
 
+  packages/subagent/resume-pins:
+    dependencies:
+      '@jianxx/dsh-cc-claude-code-agents':
+        specifier: workspace:^
+        version: link:../../preset/claude-code-agents
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../../deepseek-harness/vendor/cordis
+        version: link:../../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../../deepseek-harness/packages/core/agent
+        version: link:../../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm
+        version: link:../../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../../deepseek-harness/packages/core/session
+        version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-persistence':
+        specifier: link:../../../../deepseek-harness/packages/session/session-persistence
+        version: link:../../../../deepseek-harness/packages/session/session-persistence
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../../deepseek-harness/packages/settings/settings
+        version: link:../../../../deepseek-harness/packages/settings/settings
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../../deepseek-harness/packages/core/tools
+        version: link:../../../../deepseek-harness/packages/core/tools
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../../deepseek-harness/vendor/schemastery
+        version: link:../../../../deepseek-harness/vendor/schemastery
+
   packages/subagent/task:
     dependencies:
       '@jianxx/dsh-cc-claude-code-agents':
@@ -1717,6 +1760,9 @@ importers:
       '@jianxx/dsh-cc-model-aliases':
         specifier: workspace:^
         version: link:../../compat/cc-model-aliases
+      '@jianxx/dsh-cc-subagent-resume-pins':
+        specifier: workspace:^
+        version: link:../resume-pins
       '@jianxx/dsh-cc-tools':
         specifier: workspace:^
         version: link:../../core/tools
