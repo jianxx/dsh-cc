@@ -140,8 +140,21 @@ describe('allowRuleOf rule generation', () => {
     expect(contentMatches(parsed.matcher!, command)).toBe(true)
   })
 
-  it('writes a whole-tool rule for non-shell tools', () => {
-    expect(allowRuleOf('Write', { kind: 'diff', diffs: [] })).toBe('Write')
+  it('writes a domain rule on the exact WebFetch host', () => {
+    expect(allowRuleOf('WebFetch', { kind: 'args', json: '{"url":"https://docs.example.com/a"}' }))
+      .toBe('WebFetch(domain:docs.example.com)')
+    // Harness spelling gets the same treatment; lowercased, port dropped.
+    expect(allowRuleOf('web_fetch', { kind: 'args', json: '{"url":"https://Example.COM.:8443/x"}' }))
+      .toBe('WebFetch(domain:example.com)')
+  })
+
+  it('keeps the whole-tool WebFetch rule when the args carry no parsable URL', () => {
+    expect(allowRuleOf('WebFetch', { kind: 'args', json: 'not-json{' })).toBe('WebFetch')
+    expect(allowRuleOf('WebFetch', { kind: 'args', json: '{"url":"not a url"}' })).toBe('WebFetch')
+    expect(allowRuleOf('WebFetch', { kind: 'args', json: '{}' })).toBe('WebFetch')
+  })
+
+  it('writes a whole-tool rule for non-shell tools', () => {    expect(allowRuleOf('Write', { kind: 'diff', diffs: [] })).toBe('Write')
     expect(allowRuleOf('WebFetch', { kind: 'args', json: '{}' })).toBe('WebFetch')
     expect(allowRuleOf('Read', undefined)).toBe('Read')
     expect(allowRuleOf('Read', { kind: 'none' })).toBe('Read')

@@ -86,11 +86,14 @@ export interface PermissionRule {
  * How a content rule compares a call's subject against its declared content.
  * A `wildcard` pattern uses `*` to match any run of characters (`\*` is a
  * literal asterisk); a `prefix` rule matches any subject starting with the
- * string.
+ * string; a `domain` rule (WebFetch only) matches the call's canonicalized
+ * URL hostname against a domain pattern (exact, `*.suffix` subdomain-tree, or
+ * single-label `*` wildcards).
  */
 export type ContentMatcher =
   | { kind: 'wildcard'; pattern: string }
   | { kind: 'prefix'; prefix: string }
+  | { kind: 'domain'; hostname: string }
 
 /** A group of rules by behavior, used as the engine's rule input. */
 export interface PermissionRuleSet {

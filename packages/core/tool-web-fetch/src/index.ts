@@ -2,9 +2,9 @@
  * CC-style `web_fetch` replacement with an optional `prompt`. The stock
  * harness tool returns the raw converted page; this one adds a model-facing
  * `prompt` parameter and, when the cheap lane (`haiku` alias) is configured,
- * one-shot summarizes the fetched document against that instruction. Without
- * a configured route the tool degrades gracefully: the converted page comes
- * back prefixed by a NOTICE so the caller knows the prompt was ignored.
+ * one-shot summarizes the fetched document against that instruction. Passing
+ * a `prompt` without a configured cheap lane is a hard failure: the tool
+ * throws `WebFetchError` before any network request is made.
  * @module @jianxx/dsh-cc-tool-web-fetch
  */
 
@@ -51,9 +51,6 @@ const DEFAULTS: ResolvedConfig = {
   maxSummaryInputChars: 32_000,
 }
 
-/** Shown when a `prompt` was given but the cheap lane is unconfigured. */
-const NOTICE = '(prompt ignored: configure the haiku model alias to summarize WebFetch results)'
-
 /** Model-visible failure (maps to an isError tool result). */
 class WebFetchError extends Error {}
 
@@ -69,8 +66,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     name: 'tool:web_fetch',
     order: 111,
     text: 'Use the web_fetch tool to retrieve the content of a specific HTTP(S) URL (for example a result from web_search). '
-      + 'The optional prompt parameter extracts or summarizes the page against that instruction; when the haiku model alias is configured '
-      + 'the summarization runs on that cheap lane. Omit prompt to receive the raw page text. Cite the URL as a markdown link when you use its content.',
+      + 'Omit prompt to receive the page decoded to text (HTML is converted to markdown). If you pass prompt, a configured haiku '
+      + 'alias summarizes the page against that instruction on the cheap lane and you receive only the extraction — the call '
+      + 'fails if haiku is not configured. Cite the URL as a markdown link when you use its content. Cross-origin redirects are '
+      + 'not followed; fetch the Location URL in a new call.',
   })
 
   // The harness presenters/format helpers carry harness `dsh-tools` lib types,
@@ -80,8 +79,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   const tool = defineTool({
     name: 'web_fetch',
     description: 'Fetch the content of a specific HTTP(S) URL and return it decoded to text. '
-      + 'The optional prompt, when set and the haiku alias is configured, extracts/summarizes the page against that instruction '
-      + 'instead of returning the full raw text.',
+      + 'If prompt is set, a configured haiku alias summarizes the page against that instruction on the cheap lane '
+      + 'and you receive only the extraction; the call fails if haiku is not configured.',
     parameters: {
       url: { type: 'string', required: true, description: 'The HTTP(S) URL to fetch.' },
       prompt: {
@@ -135,10 +134,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       truncated: boolean
     }> {
       const input = parseFetchArgs({ url: args.url })
-      const result = await ctx.web.fetch({ url: input.url }, exec.signal)
       const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
 
       if (prompt.length === 0) {
+        const result = await ctx.web.fetch({ url: input.url }, exec.signal)
         return {
           url: result.url,
           statusCode: result.statusCode,
@@ -154,21 +153,17 @@ export function apply(ctx: Context, config: Config = {}): void {
         | undefined
       // The calling agent's logged request header fills the provider for a
       // string-form (model-only) haiku alias; absent a calling agent the
-      // pair cannot be completed and the tool degrades to the NOTICE.
+      // pair cannot be completed and the tool fails hard before fetching.
       const parent = exec.agent?.session.requestHeader()?.config as
         | { provider?: string; model?: string }
         | undefined
       const filled = toOneShotRoute(routes?.resolve('haiku'), parent)
-      const converted = formatFetchOutput(result, resolved.maxSummaryInputChars)
-
       if (filled === undefined) {
-        return {
-          url: result.url,
-          statusCode: result.statusCode,
-          body: { kind: 'text', content: `${NOTICE}\n\n${converted}` },
-          truncated: result.truncated,
-        }
+        throw new WebFetchError('web_fetch: prompt requires a configured haiku model alias')
       }
+
+      const result = await ctx.web.fetch({ url: input.url }, exec.signal)
+      const converted = formatFetchOutput(result, resolved.maxSummaryInputChars)
 
       // One-shot summarize on the cheap lane. `purpose` is omitted on
       // purpose: the harness GenerateOptions purpose union is closed

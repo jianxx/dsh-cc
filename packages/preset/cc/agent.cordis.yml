@@ -278,12 +278,11 @@
 # The `web` service and its search provider stay in the host composition; only
 # the model-facing tool is per-session.
 #
-# Moved in from the cc-shell global swap. fetch is disabled here: web_fetch is
-# provided by `@jianxx/dsh-cc-tool-web-fetch` inside cc-services instead, which
-# adds the optional `prompt` (summarized on the cheap lane when the `haiku`
-# alias is configured). WebFetch is model-directed fetch — an SSRF surface —
-# the web-fetch-http executor row is unshipped by the CLI through 0.1.1-rc.2,
-# so no executor is mounted here; see README "Known limits".
+# Moved in from the cc-shell global swap. fetch is still disabled here because
+# `@jianxx/dsh-cc-tool-web-fetch` inside cc-services owns the model-facing tool
+# (adds the optional `prompt`). The HTTP executor is
+# `@jianxx/dsh-cc-web-fetch-http` mounted from cc-shell (literal SSRF gate).
+# A prompt without the `haiku` route hard-fails.
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
   config:

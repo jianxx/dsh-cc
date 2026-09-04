@@ -104,6 +104,9 @@
       "@jianxx/dsh-cc-tool-web-fetch": [
         "./packages/core/tool-web-fetch/src/index.ts"
       ],
+      "@jianxx/dsh-cc-web-fetch-http": [
+        "./packages/web/fetch-http/src/index.ts"
+      ],
       "@jianxx/dsh-cc-output-styles": [
         "./packages/compat/cc-output-styles/src/index.ts"
       ],

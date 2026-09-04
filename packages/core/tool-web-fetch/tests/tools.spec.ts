@@ -2,9 +2,10 @@
  * Unit tests for the CC-style WebFetch tool: schema registration and prompt
  * section, raw passthrough without a prompt, cheap-lane summarization with a
  * configured `haiku` alias (exact route stamped, purpose omitted, prompt+page
- * fed to the LLM), NOTICE degradation when the lane is unconfigured, error
- * paths (blank url, seam failure, tool-call summary output), and replacement
- * of the stock `dsh-tool-web` web_fetch under `fetch: false`.
+ * fed to the LLM), hard failure when a prompt is given but the lane is
+ * unconfigured (fetch must not run), error paths (blank url, seam failure,
+ * tool-call summary output), and replacement of the stock `dsh-tool-web`
+ * web_fetch under `fetch: false`.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -41,7 +42,8 @@ async function setup(options: SetupOptions = {}) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntimeCC)
-  ctx.provide('web', { fetch: options.fetch ?? (async () => ({ ...FETCH_RESULT })) } as never)
+  const fetchMock = vi.fn(options.fetch ?? (async () => ({ ...FETCH_RESULT })))
+  ctx.provide('web', { fetch: fetchMock } as never)
   const streams: GenerateOptions[] = []
   let script: readonly StreamChunk[] = options.script ?? SUMMARY_SCRIPT
   const fakeStream = vi.fn(async function * (streamOptions: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -51,7 +53,7 @@ async function setup(options: SetupOptions = {}) {
   ctx.provide('llm', { stream: fakeStream } as never)
   if (options.routes !== undefined) ctx.provide('ccModelRoutes', options.routes)
   await ctx.plugin(ToolWebFetch)
-  return { ctx, streams }
+  return { ctx, streams, fetchMock }
 }
 
 let callCounter = 0
@@ -99,6 +101,7 @@ describe('web_fetch registration', () => {
     const text = JSON.stringify(provider)
     expect(text).toContain('prompt')
     expect(text).toContain('web_fetch')
+    expect(text).toContain('fails if haiku is not configured')
   })
 })
 
@@ -149,32 +152,40 @@ describe('prompt summarization on the cheap lane', () => {
     expect(streams[0]!.model).toBe('cheap')
   })
 
-  it('degrades to NOTICE for a string-form haiku without a calling agent', async () => {
-    const { ctx, streams } = await setup({ routes: { resolve: (m) => (m === 'haiku' ? { model: 'cheap' } : undefined) } })
+  it('fails hard for a string-form haiku without a calling agent (fetch not called)', async () => {
+    const { ctx, streams, fetchMock } = await setup({ routes: { resolve: (m) => (m === 'haiku' ? { model: 'cheap' } : undefined) } })
     const result = await call(ctx, { url: 'https://example.com/x', prompt: 'Summarize' })
-    expect(result.isError).toBe(false)
+    expect(result.isError).toBe(true)
     expect(streams).toHaveLength(0)
-    expect(String(result.value.body.content)).toContain('(prompt ignored:')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(text(result)).toMatch(/haiku/)
   })
 })
 
 describe('prompt with the cheap lane unconfigured', () => {
-  it('does not stream and prefixes the NOTICE to the converted page (no routes service)', async () => {
-    const { ctx, streams } = await setup()
+  it('fails hard without fetching or streaming (no routes service)', async () => {
+    const { ctx, streams, fetchMock } = await setup()
     const result = await call(ctx, { url: 'https://example.com/x', prompt: 'Summarize' })
-    expect(result.isError).toBe(false)
+    expect(result.isError).toBe(true)
     expect(streams).toHaveLength(0)
-    expect(result.value.body.kind).toBe('text')
-    expect(String(result.value.body.content)).toMatch(/^\(prompt ignored: configure the haiku model alias/)
-    expect(String(result.value.body.content)).toContain('Hello')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(text(result)).toMatch(/haiku/)
   })
 
-  it('does not stream and prefixes the NOTICE (routes resolve undefined)', async () => {
-    const { ctx, streams } = await setup({ routes: { resolve: () => undefined } })
+  it('fails hard without fetching or streaming (routes resolve undefined)', async () => {
+    const { ctx, streams, fetchMock } = await setup({ routes: { resolve: () => undefined } })
+    const result = await call(ctx, { url: 'https://example.com/x', prompt: 'Summarize' })
+    expect(result.isError).toBe(true)
+    expect(streams).toHaveLength(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(text(result)).toMatch(/haiku/)
+  })
+
+  it('still fetches on the cheap-lane success path', async () => {
+    const { ctx, fetchMock } = await setup({ routes: CHEAP_ROUTES })
     const result = await call(ctx, { url: 'https://example.com/x', prompt: 'Summarize' })
     expect(result.isError).toBe(false)
-    expect(streams).toHaveLength(0)
-    expect(String(result.value.body.content)).toContain('(prompt ignored:')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 

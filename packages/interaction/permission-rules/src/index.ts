@@ -76,6 +76,7 @@ export {
   ruleString,
   contentMatches,
 } from './parser.ts'
+export { canonicalizeHostname, isWebFetchRuleTool } from './domain.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
