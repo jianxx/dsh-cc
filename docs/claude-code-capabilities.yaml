@@ -1836,7 +1836,9 @@ capabilities:
     plane: preset
     upstream:
       summary: CLAUDE.md-style output styles rendered into the system prompt, switchable via /output-style.
-      refs: []
+      refs:
+        - { source: cc-docs, path: /docs/en/output-styles, retrieved: '2026-09-04' }
+        - { source: cc-docs, path: /docs/en/glossary, retrieved: '2026-09-04' }
     dimensions:
       recognized: true
       mounted: true
@@ -1855,7 +1857,8 @@ capabilities:
       summary: >-
         User-configured status line command/script whose output replaces the
         bottom status line of the TUI.
-      refs: []
+      refs:
+        - { source: cc-docs, path: /docs/en/statusline, retrieved: '2026-09-04' }
     dimensions:
       recognized: false
       mounted: false
