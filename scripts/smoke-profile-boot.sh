@@ -69,13 +69,27 @@ profile=cc-smoke
 # with confusing ERR_MODULE_NOT_FOUND on @deepseek-ai/*/lib.
 pool_ok() {  # $1 = cli path
   [ -f "$1" ] || return 1
+  # Stage 1: the base bundle must import via the CLI's chain. Stage 2: what
+  # dsh-base mounts sits in its OWN nested node_modules (bundle-pinned
+  # subgraph, invisible from apps/cli directly) — resolve from the bundle's
+  # resolved location, which is where the healed fallback links point.
   node --input-type=module -e "
     import { createRequire } from 'node:module'
-    const req = createRequire(new URL('file://$1'))
-    for (const probe of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway']) {
-      try { req.resolve(probe) } catch { process.exit(1) }
+    import { pathToFileURL } from 'node:url'
+    const req = createRequire(pathToFileURL('$1'))
+    let baseJson
+    try { baseJson = req.resolve('@deepseek-ai/dsh-base/package.json') } catch (err) {
+      console.error('  pool probe failed: @deepseek-ai/dsh-base from ' + '$1' + ' — ' + String(err && err.message || err).split('\n')[0])
+      process.exit(1)
     }
-  " 2>/dev/null
+    const reqBase = createRequire(pathToFileURL(baseJson))
+    for (const probe of ['@deepseek-ai/dsh-typert-registry', '@deepseek-ai/dsh-api-gateway']) {
+      try { reqBase.resolve(probe) } catch (err) {
+        console.error('  pool probe failed: ' + probe + ' from ' + baseJson + ' — ' + String(err && err.message || err).split('\n')[0])
+        process.exit(1)
+      }
+    }
+  "
 }
 
 if ! pool_ok "$cli"; then
