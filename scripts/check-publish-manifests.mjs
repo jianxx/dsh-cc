@@ -27,7 +27,7 @@
  * process.exitCode = 1 otherwise. No external dependencies.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -245,6 +245,30 @@ export function findManifestViolations(root = ROOT) {
       const value = json.dependencies[key];
       if (typeof value === "string" && value.startsWith("link:")) {
         problems.push({ pkg: pkgName, reason: `dependency '${key}' is a link: value` });
+      }
+    }
+    // link: dev/peer deps must resolve to a real directory relative to the
+    // manifest. A dangling link: (wrong relative path) makes pnpm install a
+    // broken symlink, and `pnpm publish` then fails with
+    // ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL on the workspace: peer
+    // (the v0.4.1 permission-rules → session-cwd incident). Targets that
+    // escape the repo root are sibling-checkout links (deepseek-harness);
+    // their existence depends on the checkout layout, so they are skipped.
+    for (const section of ["devDependencies", "peerDependencies"]) {
+      for (const key of Object.keys(json[section] ?? {})) {
+        const value = json[section][key];
+        if (typeof value !== "string" || !value.startsWith("link:")) continue;
+        const target = join(dirname(path), value.slice("link:".length));
+        const rel = relative(root, target);
+        if (rel.startsWith("..")) continue;
+        if (!existsSync(target)) {
+          problems.push({
+            pkg: pkgName,
+            reason:
+              `${section} '${key}' link: target '${value}' does not resolve ` +
+              `(expected ${rel} to exist) — pnpm would install a dangling symlink`,
+          });
+        }
       }
     }
     if (!repositoryMatchesExpected(json.repository)) {

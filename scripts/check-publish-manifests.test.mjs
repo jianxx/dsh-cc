@@ -114,7 +114,7 @@ check("malformed >= floor throws", () => {
 
 const GOOD_REPO = {
   type: "git",
-  url: "git+https://github.com/jianxx/dsh-cc-plugins.git",
+  url: "git+https://github.com/jianxx/dsh-cc.git",
   directory: "packages/a/public-pkg",
 };
 check("normalizeRepoSlug: git+https + .git + directory", () => {
@@ -122,18 +122,18 @@ check("normalizeRepoSlug: git+https + .git + directory", () => {
 });
 check("normalizeRepoSlug: plain https url, no .git", () => {
   assert.equal(
-    normalizeRepoSlug({ url: "https://github.com/jianxx/dsh-cc-plugins" }),
+    normalizeRepoSlug({ url: "https://github.com/jianxx/dsh-cc" }),
     EXPECTED_REPOSITORY,
   );
 });
 check("normalizeRepoSlug: ssh scp-like form", () => {
   assert.equal(
-    normalizeRepoSlug({ url: "git@github.com:jianxx/dsh-cc-plugins.git" }),
+    normalizeRepoSlug({ url: "git@github.com:jianxx/dsh-cc.git" }),
     EXPECTED_REPOSITORY,
   );
 });
 check("normalizeRepoSlug: shorthand string", () => {
-  assert.equal(normalizeRepoSlug("jianxx/dsh-cc-plugins"), EXPECTED_REPOSITORY);
+  assert.equal(normalizeRepoSlug("jianxx/dsh-cc"), EXPECTED_REPOSITORY);
 });
 check("normalizeRepoSlug: missing / empty / wrong repo", () => {
   assert.equal(normalizeRepoSlug(undefined), null);
@@ -149,6 +149,54 @@ check("repositoryMatchesExpected: the pi-tui incident shape", () => {
   assert.equal(repositoryMatchesExpected(undefined), false); // the v0.1.1 bug
   assert.equal(repositoryMatchesExpected({ url: "" }), false);
 });
+
+const BAD_DANGLING_LINK = {
+  // mimics the v0.4.1 incident: devDependencies link: path points at a
+  // directory that does not exist (packages/interaction/session-cwd),
+  // so pnpm installs a dangling symlink and `pnpm publish` later dies
+  // with ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL on the workspace: peer.
+  "packages/a/dangling-link-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-dangling-link-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      license: "Apache-2.0",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/jianxx/dsh-cc.git",
+        directory: "packages/a/dangling-link-pkg",
+      },
+      peerDependencies: { "@jianxx/dsh-cc-session-cwd": "workspace:^" },
+      devDependencies: { "@jianxx/dsh-cc-session-cwd": "link:../session-cwd" },
+    },
+    null,
+    2,
+  ),
+};
+const BAD_RESOLVED_LINK = {
+  // devDeps link: values that DO resolve to real workspace dirs are fine
+  "packages/a/resolved-link-pkg/package.json": JSON.stringify(
+    {
+      name: "@jianxx/dsh-cc-resolved-link-pkg",
+      version: "0.1.0",
+      publishConfig: { access: "public" },
+      license: "Apache-2.0",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/jianxx/dsh-cc.git",
+        directory: "packages/a/resolved-link-pkg",
+      },
+      devDependencies: { "@jianxx/dsh-cc-lib": "link:../lib" },
+    },
+    null,
+    2,
+  ),
+  "packages/a/lib/package.json": JSON.stringify({
+    name: "@jianxx/dsh-cc-lib",
+    version: "0.1.0",
+    private: true,
+  }),
+};
 
 /* ---- fixture: happy path ---- */
 
@@ -167,9 +215,10 @@ const GOOD_PUBLIC = {
       name: "@jianxx/dsh-cc-public-pkg",
       version: "0.1.0",
       publishConfig: { access: "public" },
+      license: "Apache-2.0",
       repository: {
         type: "git",
-        url: "git+https://github.com/jianxx/dsh-cc-plugins.git",
+        url: "git+https://github.com/jianxx/dsh-cc.git",
         directory: "packages/a/public-pkg",
       },
       dependencies: {},
@@ -300,6 +349,41 @@ const GOOD_PRIVATE = {
   }
 }
 
+/* ---- dangling link: resolution gate: fixtures ---- */
+{
+  const dir = makeFixture({
+    ...BAD_DANGLING_LINK,
+    ...BAD_RESOLVED_LINK,
+  });
+  try {
+    check("link resolution gate: dangling devDep link flagged, resolved link OK", () => {
+      const problems = findManifestViolations(dir);
+      const dangling = problems.filter((p) => p.pkg.includes("dangling-link-pkg"));
+      assert.equal(dangling.length, 1, `expected 1 dangling-link violation, got ${JSON.stringify(dangling)}`);
+      assert.ok(
+        dangling[0].reason.includes("does not resolve"),
+        `reason should mention non-resolution, got: ${dangling[0].reason}`,
+      );
+      assert.ok(
+        dangling[0].reason.includes("@jianxx/dsh-cc-session-cwd"),
+        "reason should name the offending dependency",
+      );
+      assert.ok(
+        !problems.some((p) => p.pkg.includes("resolved-link-pkg")),
+        `resolved link must NOT be flagged, got: ${problems.filter((p) => p.pkg.includes("resolved-link-pkg")).map((p) => p.reason).join("; ")}`,
+      );
+    });
+    check("link resolution gate: CLI exits 1 on dangling link", () => {
+      const { status, stderr } = runScript([], dir);
+      assert.equal(status, 1, `expected exit 1, got ${status}`);
+      assert.ok(stderr.includes("dangling-link-pkg"), "dangling pkg in CLI output");
+      assert.ok(!stderr.includes("resolved-link-pkg"), "resolved pkg NOT in CLI output");
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /* ---- smoke: real repo MUST pass publishConfig + no-link rules ---- */
 // NOTE: this only passes once the parallel manifest remediation lands. If
 // it fails here because remediation is pending, it is a known-failure, not
@@ -324,6 +408,18 @@ const GOOD_PRIVATE = {
       problems.length,
       0,
       `expected zero repository-provenance violations, got: ${problems
+        .map((p) => `${p.pkg} (${p.reason})`)
+        .join("; ")}`,
+    );
+  });
+  check("REAL repo: every link: dependency resolves to an existing directory", () => {
+    const problems = findManifestViolations(ROOT).filter((p) =>
+      /does not resolve/.test(p.reason),
+    );
+    assert.equal(
+      problems.length,
+      0,
+      `expected zero dangling link: violations, got: ${problems
         .map((p) => `${p.pkg} (${p.reason})`)
         .join("; ")}`,
     );
