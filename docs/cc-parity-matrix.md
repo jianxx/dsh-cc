@@ -127,6 +127,7 @@ derived from four orthogonal dimensions (`recognized` / `mounted` / `behavioral`
 | Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | ✅ | <a id="cap-mcp.client"></a>MCP client | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/mcp/mcp-client/tests/mcp-client.spec.ts) [t2](packages/mcp/mcp-client/tests/auth.spec.ts) | — | — |
+| ✅ | <a id="cap-mcp.serena-first"></a>Serena-first prompt steering | ✓ | ✓ | Full | Full | [s1](packages/preset/cc/agent.cordis.yml) [t1](packages/compat/cc-serena-first/tests/serena-first.spec.ts) | — | — |
 
 ## Plugins and marketplaces
 

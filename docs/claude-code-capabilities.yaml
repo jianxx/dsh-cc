@@ -1711,6 +1711,26 @@ capabilities:
       - { type: test, path: packages/mcp/mcp-client/tests/auth.spec.ts }
     deviation: { kind: none }
 
+  mcp.serena-first:
+    title: Serena-first prompt steering
+    category: mcp
+    plane: preset
+    upstream:
+      summary: >-
+        Claude Code leaves MCP tool steering to the servers' own tool
+        descriptions; there is no system-prompt policy section for symbol
+        tools. dsh-cc adds one while a serena MCP server is ready.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: serena-first" }
+      - { type: test, path: packages/compat/cc-serena-first/tests/serena-first.spec.ts }
+    deviation: { kind: none }
+
   # ── plugins ─────────────────────────────────────────────────────────────
   plugins.loader:
     title: Plugin system

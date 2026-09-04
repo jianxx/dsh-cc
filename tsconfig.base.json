@@ -68,6 +68,9 @@
       "@jianxx/dsh-cc-tool-append-order": [
         "./packages/core/tool-append-order/src/index.ts"
       ],
+      "@jianxx/dsh-cc-serena-first": [
+        "./packages/compat/cc-serena-first/src/index.ts"
+      ],
       "@jianxx/dsh-cc-claude-code-agents": [
         "./packages/preset/claude-code-agents/src/index.ts"
       ],
