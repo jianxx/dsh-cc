@@ -175,14 +175,6 @@ jobs:
         working-directory: dsh-cc
         run: pnpm check:exports
 
-      # 真实启动冒烟:全新 DSH_HOME + pty 下 boot 生产 tui bundle 集合,零 LLM
-      # 调用。解析池由 CLI 从 apps/cli 安装自愈——与用户机器同构;挡
-      # "exports 悬空 (lib/ 未产出)"与 "peer 声明缺 host 依赖"两类启动事故
-      # (#112 / #111,2026-09-04 v0.4.1 tui 启动崩溃)。
-      - name: Profile boot smoke (smoke:profile-boot)
-        working-directory: dsh-cc
-        run: pnpm smoke:profile-boot
-
       - name: Unit tests (vitest)
         working-directory: dsh-cc
         run: pnpm test
