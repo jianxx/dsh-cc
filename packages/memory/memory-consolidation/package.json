@@ -1,7 +1,7 @@
 {
   "name": "@jianxx/dsh-cc-memory-consolidation",
   "description": "Background memory consolidation: turn-end extraction and three-gate dream rewrite",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jianxx/dsh-cc.git",
