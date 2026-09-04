@@ -51,6 +51,20 @@ async function boot(
 }
 
 describe('ccModelRoutes service', () => {
+  it('publishes BOTH resolve and resolveDetailed (the Task resume-pin capture path)', async () => {
+    const { routes } = await boot({ modelAliases: { opus: { provider: 'p', model: 'm' } } })
+    // Regression: the service object once lacked `resolveDetailed`, so every
+    // captured background spawn (Task tool resume-pin capture) threw TypeError.
+    expect(typeof routes.resolve).toBe('function')
+    expect(typeof routes.resolveDetailed).toBe('function')
+    expect(routes.resolve('opus')).toEqual({ provider: 'p', model: 'm' })
+    expect(routes.resolveDetailed('opus')).toEqual({
+      selector: 'opus',
+      via: 'alias',
+      route: { provider: 'p', model: 'm' },
+    })
+  })
+
   it('provides a resolver that maps a config alias to a route', async () => {
     const { routes } = await boot({ modelAliases: { opus: { provider: 'p', model: 'm' } } })
     expect(routes.resolve('opus')).toEqual({ provider: 'p', model: 'm' })

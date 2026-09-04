@@ -25,7 +25,7 @@ import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ConfigAliasesSchema, SettingsAliasesSchema } from './schema.ts'
 import { createModelInspector, createModelResolver, mergeAliasMaps } from './resolver.ts'
 import { overlayStampedEffort, stampedEffortOf } from './effort.ts'
-import type { AliasInspection, AliasTarget, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
 
 /** Plugin configuration: deployment-default alias map. */
 export interface Config {
@@ -43,6 +43,12 @@ export const MODEL_ALIASES_NAMESPACE = settingsNamespace('model-aliases')
 export interface ModelRoutes {
   /** Resolve one frontmatter `model` to a dsh route, or undefined to inherit. */
   resolve(model: string | undefined): ResolvedRoute | undefined
+  /**
+   * Atomic detailed resolution: `{selector, via, route}` from ONE settings
+   * snapshot — `via` records how the selector was classified (alias / literal
+   * / inherit) so callers can capture provenance without a second, racy lookup.
+   */
+  resolveDetailed(model: string | undefined): DetailedRoute
   /** Inspect one frontmatter `model` with provenance (for `/doctor` reporting). */
   inspect(model: string | undefined): AliasInspection
 }
@@ -74,15 +80,19 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     },
   })
-  const inspect = createModelInspector(
-    () => mergeAliasMaps(
-      config.modelAliases,
-      scope?.get?.() as Record<string, AliasTarget | null> | undefined,
-    ),
-    { warn: message => ctx.logger.warn(message) },
+  const aliasSources = () => mergeAliasMaps(
+    config.modelAliases,
+    scope?.get?.() as Record<string, AliasTarget | null> | undefined,
   )
-  const resolve = (model: string | undefined) => inspect(model).route
-  ctx.provide('ccModelRoutes', { resolve, inspect })
+  const warnOptions = { warn: (message: string) => ctx.logger.warn(message) }
+  const resolver = createModelResolver(aliasSources, warnOptions)
+  const inspect = createModelInspector(aliasSources, warnOptions)
+  const resolveDetailed = resolver.resolveDetailed
+  // Both consumption shapes must be published: the Task tool's resume-pin
+  // capture calls `resolveDetailed` — publishing only `resolve` makes every
+  // captured background spawn throw TypeError at spawn time. `inspect` keeps
+  // the upstream provenance form (`/doctor`) available alongside.
+  ctx.provide('ccModelRoutes', { resolve: resolver, resolveDetailed, inspect } satisfies ModelRoutes)
 
   // Host-side effort overlay: a child spawned through an alias whose route
   // declared `reasoningEffort` carries it on its options as an undeclared
@@ -116,4 +126,23 @@ export function resolveAlias(ctx: Context, alias: string | undefined): ResolvedR
     () => mergeAliasMaps(undefined, overlay),
     { warn: message => ctx.logger.warn(message) },
   )(alias)
+}
+
+/**
+ * Host-plane DETAILED alias read: the provenance-carrying counterpart of
+ * {@link resolveAlias}, with the same service-then-overlay fallback and the
+ * same single-snapshot guarantee (classification and route from one map).
+ * @param ctx - the host context (no plugin instance required).
+ * @param alias - frontmatter model alias, or undefined to inherit.
+ * @returns the atomic detailed resolution for the alias.
+ */
+export function resolveDetailedAlias(ctx: Context, alias: string | undefined): DetailedRoute {
+  const routes = ctx.get('ccModelRoutes') as ModelRoutes | undefined
+  if (routes !== undefined) return routes.resolveDetailed(alias)
+  const settings = ctx.get('settings') as SettingsProvider | undefined
+  const overlay = settings?.get?.(MODEL_ALIASES_NAMESPACE) as Record<string, AliasTarget | null> | undefined
+  return createModelResolver(
+    () => mergeAliasMaps(undefined, overlay),
+    { warn: message => ctx.logger.warn(message) },
+  ).resolveDetailed(alias)
 }

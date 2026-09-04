@@ -21,7 +21,7 @@
  * @module @jianxx/dsh-cc-model-aliases/resolver
  */
 
-import type { AliasInspection, AliasTarget, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, DetailedRoute, ResolvedRoute } from './types.ts'
 
 /**
  * Claude Code family aliases. Unconfigured → inherit the parent route.
@@ -104,14 +104,42 @@ export function mergeAliasMaps(
  *   a configured alias and not a builtin looks like an intended alias (a bare
  *   lowercase alphabetic word) and is passed through verbatim.
  * @returns the resolution function mapping a frontmatter `model` to a route, or
- *   `undefined` for no override.
+ *   `undefined` for no override. The returned function also carries
+ *   `resolveDetailed`, the atomic provenance-carrying form it is derived from.
  */
+export interface ModelResolver {
+  (model: string | undefined): ResolvedRoute | undefined
+  /** Atomic detailed resolution — one settings snapshot classifies AND routes. */
+  resolveDetailed(model: string | undefined): DetailedRoute
+}
+
 export function createModelResolver(
   getAliases: () => ReadonlyMap<string, AliasTarget>,
   options?: { warn?: (message: string) => void },
-): (model: string | undefined) => ResolvedRoute | undefined {
+): ModelResolver {
   const inspect = createModelInspector(getAliases, options)
-  return (model) => inspect(model).route
+  const resolveDetailed = (model: string | undefined): DetailedRoute => {
+    const verdict: AliasInspection = inspect(model)
+    if (verdict.kind === 'inherit') {
+      return { selector: model === undefined || model.trim().length === 0 ? undefined : model.trim(), via: 'inherit', route: undefined }
+    }
+    const selector = model?.trim()
+    if (verdict.kind === 'route') {
+      return { selector, via: 'alias', route: verdict.route }
+    }
+    // Upstream's inspector reports the literal passthrough for BOTH a custom
+    // alias name and a followed string-form target; our `DetailedRoute` keeps
+    // the finer split: when the literal route's model differs from the
+    // selector, the selector was a CONFIGURED alias followed to its target,
+    // so the provenance is `alias`, not `literal`.
+    const followed = verdict.route !== undefined && verdict.route.model !== undefined && verdict.route.model !== selector
+    return { selector: followed ? selector : verdict.route?.model, via: followed ? 'alias' : 'literal', route: verdict.route }
+  }
+  // `resolve` is derived from `resolveDetailed` so the classification and the
+  // route always come from the SAME merged map — no double lookup, and the
+  // legacy route behavior stays byte-identical by construction.
+  const resolve = (model: string | undefined) => resolveDetailed(model).route
+  return Object.assign(resolve, { resolveDetailed })
 }
 
 /**
@@ -161,7 +189,10 @@ export function createModelInspector(
     }
 
     // Unconfigured lane → follow its CC peer (`sketch` → `haiku`, …).
-    // `architect` has no peer and falls through to inherit.
+    // `architect` has no peer and falls through to inherit. Choice: when the
+    // peer resolves to a configured route we report `via: 'alias'` (the lane
+    // shares the peer alias's route); when the peer is itself unconfigured the
+    // lane inherits, so `via: 'inherit'` — matching today's `resolve()`.
     const peer = LANE_PEERS[folded]
     if (peer !== undefined) {
       const followed = followStringTarget(peer, aliases, folded)

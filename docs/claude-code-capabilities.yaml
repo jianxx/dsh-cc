@@ -1656,8 +1656,11 @@ capabilities:
       ux: partial
     evidence:
       - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: tool-task" }
+      - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: cc-resume-pins" }
       - { type: test, path: packages/subagent/task/tests/tool.spec.ts }
       - { type: test, path: packages/subagent/task/tests/integration.spec.ts }
+      - { type: test, path: packages/subagent/resume-pins/tests/gate.spec.ts }
+      - { type: test, path: packages/bundle/cc-shell/tests/resume-pins-composition.spec.ts }
     deviation:
       kind: divergent
       summary: >-
@@ -1670,6 +1673,18 @@ capabilities:
         one-shot); no TaskOutput alias and no outputFile field; omitting
         run_in_background stays foreground unless the definition pins
         background: true, unlike Claude Code's interactive omit=background.
+        Continuable cold resume: each background spawn captures a resume pin
+        (resolveDetailed-selected alias plus maxTokens) into the resumePinStore
+        service (preset row cc-resume-pins, isolated as resumePinStore in
+        cc-services), and resume restores the pinned tuple INCLUDING explicit
+        absence (a pin recording an unset reasoningEffort/maxTokens is honored
+        as absent rather than re-resolved); a pinned model the parent can no
+        longer resolve is gated by the subagents-resume settings namespace
+        (subagents-resume.onUnavailableModel: block|route-current, default
+        block) with deny codes SUBAGENT_MODEL_UNAVAILABLE /
+        WORKSPACE_CHANGED / DEFINITION_CHANGED / PINNED_TOOL_UNAVAILABLE /
+        PIN_ORPHANED / PIN_UNREADABLE naming the policy knob — Claude Code has
+        no equivalent mechanism.
 
   # ── mcp ─────────────────────────────────────────────────────────────────
   mcp.client:

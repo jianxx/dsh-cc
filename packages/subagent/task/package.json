@@ -44,6 +44,7 @@
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@jianxx/dsh-cc-memory": "workspace:^",
     "@jianxx/dsh-cc-model-aliases": "workspace:^",
+    "@jianxx/dsh-cc-subagent-resume-pins": "workspace:^",
     "@jianxx/dsh-cc-tools": "workspace:^"
   },
   "devDependencies": {
@@ -67,6 +68,7 @@
     "@jianxx/dsh-cc-claude-code-agents": "workspace:^",
     "@jianxx/dsh-cc-memory": "workspace:^",
     "@jianxx/dsh-cc-model-aliases": "workspace:^",
+    "@jianxx/dsh-cc-subagent-resume-pins": "workspace:^",
     "@jianxx/dsh-cc-tools": "workspace:^"
   },
   "publishConfig": {

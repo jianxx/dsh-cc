@@ -66,6 +66,27 @@ export interface AliasInspection {
 }
 
 /**
+ * One atomic resolution result: the effective route PLUS its provenance,
+ * captured from a single settings snapshot (never re-derived later). `via`
+ * records how `selector` was classified:
+ * - `inherit`: no override (`undefined`, blank, the `inherit` sentinel, an
+ *   unconfigured builtin, or an unresolvable lane peer) — the parent route
+ *   stands and `route` is undefined.
+ * - `alias`: a configured alias (or a lane peer sharing a configured peer's
+ *   route) — `route` is the alias's resolved route.
+ * - `literal`: passed through verbatim as a model id — `route` is
+ *   `{ model: selector }` with `provider` absent.
+ */
+export interface DetailedRoute {
+  /** The trimmed selector that was resolved (undefined for blank/undefined input). */
+  readonly selector: string | undefined
+  /** How the selector was classified, from the same snapshot as `route`. */
+  readonly via: 'alias' | 'literal' | 'inherit'
+  /** The resolved route (undefined exactly when `via` is `inherit`). */
+  readonly route: ResolvedRoute | undefined
+}
+
+/**
  * One alias target as authored in config or settings.
  *
  * A string form names only a model id (`sonnet: deepseek-chat`); the provider

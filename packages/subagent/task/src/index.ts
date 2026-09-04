@@ -17,6 +17,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { PinStore } from '@jianxx/dsh-cc-subagent-resume-pins'
+import { SpawnPinCapture, type ResumePinsConfig } from './resume-capture.ts'
 import { AgentRegistry } from './registry.ts'
 import { registerTaskTool } from './tool.ts'
 import { mountAgentCatalog } from './catalog.ts'
@@ -30,6 +32,8 @@ export {
   isDelegated,
   isAgentInstructions,
 } from './strip-instructions.ts'
+export type { ResumePinsConfig, CaptureInput } from './resume-capture.ts'
+export { SpawnPinCapture, overlayRoute, probeWorkspace } from './resume-capture.ts'
 
 /** Cordis plugin id. */
 export const name = 'cc-subagent-task'
@@ -79,16 +83,44 @@ export function mountBackgroundSection(ctx: Context): (() => void) | undefined {
   })
 }
 
+/** Plugin configuration. */
+export interface TaskPluginConfig {
+  /**
+   * Spawn-time resume-pin capture (plan §4.3/§4.5) for continuable background
+   * children. Absent (default) → zero behavior change: no pin writes, no
+   * preflight, identical spawns.
+   */
+  readonly resumePins?: ResumePinsConfig
+}
+
 /**
  * Mount the Task tool, the agents catalog, and the workspace-instruction
  * strip. Safe when either the tools or the system-prompt seam is absent
  * (the corresponding mount skips); the pre-step listener only needs
  * `ctx.on`, so it mounts regardless.
  * @param ctx - the plug context.
+ * @param config - plugin configuration; omitted `resumePins` still arms capture
+ * when the resume-pins plugin's `resumePinStore` service is mounted (plan
+ * §4.10); with neither, capture is disabled.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: TaskPluginConfig = {}): void {
   const registry = new AgentRegistry()
-  registerTaskTool(ctx, registry)
+  const pins = config.resumePins
+  // Durability ordering (plan §4.6): when the resume-pins plugin is mounted
+  // its `resumePinStore` is THE store — gate, overlay, and capture must share
+  // one cache. Capture only falls back to its own config store/pinsRoot when
+  // no plugin-provided store exists (keeps the standalone config path working).
+  const sharedStore = ctx.get('resumePinStore') as PinStore | undefined
+  // Production wiring (plan §4.10): the preset mounts the resume-pins plugin
+  // ahead of this row, so its service store arms capture with NO extra Task
+  // config. Explicit `resumePins` config still wins for standalone consumers.
+  const capture =
+    pins === undefined
+      ? sharedStore !== undefined
+        ? new SpawnPinCapture(ctx, sharedStore)
+        : undefined
+      : new SpawnPinCapture(ctx, sharedStore ?? pins.store ?? new PinStore(pins.pinsRoot))
+  registerTaskTool(ctx, registry, capture)
   mountAgentCatalog(ctx, registry)
   mountBackgroundSection(ctx)
   mountStripWorkspaceInstructions(ctx)

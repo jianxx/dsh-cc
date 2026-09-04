@@ -29,12 +29,13 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
+import type { AgentDefinition, ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { defineTool } from '@jianxx/dsh-cc-tools'
 import { cwdOf } from '@jianxx/dsh-cc-memory'
-import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import type { DetailedRoute, ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
 import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
+import { SpawnPinCapture } from './resume-capture.ts'
 import { sanitizeToolFilter } from './sanitize-filter.ts'
 
 /** The registered tool name (the CC display mapping surfaces it as `Task`). */
@@ -99,6 +100,8 @@ interface SubagentsLike {
   startContinuable?(spec: {
     provider: string
     label: string
+    /** Caller-reserved durable id (becomes the child's session id). */
+    childId?: string
     request: {
       prompt: readonly { type: 'text'; text: string }[]
       parent: Agent
@@ -149,11 +152,14 @@ function wantsBackground(args: TaskArgs, definition?: { background?: boolean }):
  * Register the Task tool.
  * @param ctx - the plug context.
  * @param registry - the per-workspace definition cache.
+ * @param capture - the spawn-time resume-pin capture; undefined (the default,
+ *   no `resumePins` plugin config) writes no pins and runs no preflight.
  * @returns the registration disposer, or undefined when the tools seam is absent.
  */
 export function registerTaskTool(
   ctx: Context,
   registry: AgentRegistry,
+  capture?: SpawnPinCapture,
 ): (() => void) | undefined {
   const tools = ctx.get('tools') as {
     register(def: unknown): () => void
@@ -258,7 +264,9 @@ export function registerTaskTool(
       }
 
       if (type === undefined || type.length === 0 || type === GENERAL_PURPOSE) {
-        if (wantsBackground(args)) return startBackground(seam, base)
+        if (wantsBackground(args)) {
+          return startBackground(seam, preparedBackground(base, capture), capture)
+        }
         const run = await seam.start(PROVIDER_SPAWN, base)
         return settle(run)
       }
@@ -304,7 +312,9 @@ export function registerTaskTool(
           : {}),
         ...(agentOptions !== undefined ? { agentOptions } : {}),
       }
-      if (wantsBackground(args, definition)) return startBackground(seam, folded)
+      if (wantsBackground(args, definition)) {
+        return startBackground(seam, preparedBackground(folded, capture, definition, routes), capture)
+      }
       const run = await seam.start(PROVIDER_SPAWN, folded)
       return settle(run)
     },
@@ -324,6 +334,37 @@ type BackgroundRequest = {
   persona?: string
   agentOptions?: Record<string, string>
   toolFilter?: ToolRestriction
+  /**
+   * Caller-reserved durable child id — preallocated by the capture flow so
+   * the pin can be written before the child exists (plan §4.5 step 1).
+   */
+  childId?: string
+  /** Capture-only metadata (never forwarded to the seam): definition. */
+  captureDefinition?: AgentDefinition
+  /** Capture-only metadata: the atomic model-selector resolution. */
+  captureSelector?: DetailedRoute
+}
+
+/**
+ * Thread the preallocated childId and the capture metadata into a background
+ * request. Without capture (no `resumePins` config) the request is returned
+ * unchanged — zero behavior difference.
+ */
+function preparedBackground(
+  request: BackgroundRequest,
+  capture: SpawnPinCapture | undefined,
+  definition?: AgentDefinition,
+  routes?: ModelRoutes,
+): BackgroundRequest {
+  if (capture === undefined) return request
+  return {
+    ...request,
+    childId: capture.preallocateChildId(),
+    ...(definition !== undefined ? { captureDefinition: definition } : {}),
+    captureSelector: routes !== undefined
+      ? routes.resolveDetailed(definition?.model)
+      : SpawnPinCapture.inheritSelector(definition?.model),
+  }
 }
 
 /**
@@ -338,6 +379,7 @@ type BackgroundRequest = {
 async function startBackground(
   seam: SubagentsLike,
   request: BackgroundRequest,
+  capture?: SpawnPinCapture,
 ): Promise<{ text: string; status: 'async_launched'; agentId: string }> {
   if (typeof seam.startContinuable !== 'function') {
     throw new Error(
@@ -356,12 +398,30 @@ async function startBackground(
       + 'and a session-persistence backend; run this Task in the foreground instead.',
     )
   }
-  const { label, prompt, parent, signal, ...rest } = request
+  const { label, prompt, parent, signal, childId, captureDefinition, captureSelector, ...rest } = request
+  // §4.5 step 2: the pin is written BEFORE the creation call (crash
+  // consistency). A failed capture keeps the spawn alive but must never be
+  // silent: the returned reason becomes an explicit captureWarning line in
+  // the tool result ("this child will resume with legacy semantics").
+  let captureWarning: string | undefined
+  if (capture !== undefined && childId !== undefined && captureSelector !== undefined) {
+    captureWarning = await capture.write({
+      parentSessionId: parent.id,
+      label,
+      childId,
+      definition: captureDefinition,
+      selector: captureSelector,
+      parentRoute: parent.options,
+      toolFilter: 'toolFilter' in rest ? rest.toolFilter : undefined,
+      cwd: cwdOf(parent),
+    })
+  }
   let started: ContinuableStart
   try {
     started = await seam.startContinuable({
       provider: PROVIDER_SPAWN,
       label,
+      ...(childId !== undefined ? { childId } : {}),
       request: {
         prompt,
         parent,
@@ -373,6 +433,9 @@ async function startBackground(
       signal,
     })
   } catch (error) {
+    // §4.5 step 4: the creation rolled back fully (no child id), so the pin
+    // must not survive it — tombstone, then rethrow the error unchanged.
+    if (capture !== undefined && childId !== undefined) await capture.tombstone(childId)
     const message = (error as Error).message ?? String(error)
     if (message.includes('UNSUPPORTED_CAPABILITY') || message.includes('does not support continuable')) {
       throw new Error(
@@ -388,7 +451,10 @@ async function startBackground(
       `Background subagent started (agentId: ${started.childId}). It is running in the `
       + 'background; its report or finish notice will arrive as a waking message. Control it '
       + 'by that id: `list_agents` for status, `send_message` to continue the same '
-      + 'conversation, `interrupt_agent` to stop its current turn.',
+      + 'conversation, `interrupt_agent` to stop its current turn.'
+      + (captureWarning !== undefined
+        ? `\nresume pin capture failed: ${captureWarning}; this child will resume with legacy semantics`
+        : ''),
     status: 'async_launched',
     agentId: started.childId,
   }
