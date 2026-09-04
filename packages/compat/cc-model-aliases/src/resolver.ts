@@ -21,7 +21,7 @@
  * @module @jianxx/dsh-cc-model-aliases/resolver
  */
 
-import type { AliasTarget, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, ResolvedRoute } from './types.ts'
 
 /**
  * Claude Code family aliases. Unconfigured → inherit the parent route.
@@ -110,30 +110,53 @@ export function createModelResolver(
   getAliases: () => ReadonlyMap<string, AliasTarget>,
   options?: { warn?: (message: string) => void },
 ): (model: string | undefined) => ResolvedRoute | undefined {
+  const inspect = createModelInspector(getAliases, options)
+  return (model) => inspect(model).route
+}
+
+/**
+ * Build an inspector that classifies one frontmatter `model` the same way
+ * {@link createModelResolver} resolves it, additionally reporting provenance
+ * (kind / via / hop) for tooling like `/doctor`. The `route` field is exactly
+ * what `resolve()` returns for the same input.
+ * @param getAliases - returns the effective alias map for this invocation.
+ * @param options - same warning hook as {@link createModelResolver}.
+ * @returns the inspection function mapping a frontmatter `model` to an
+ *   {@link AliasInspection}.
+ */
+export function createModelInspector(
+  getAliases: () => ReadonlyMap<string, AliasTarget>,
+  options?: { warn?: (message: string) => void },
+): (model: string | undefined) => AliasInspection {
   const warn = options?.warn ?? ((message: string) => console.warn(message))
   return (model) => {
-    if (model === undefined || model.trim().length === 0) return undefined
+    if (model === undefined || model.trim().length === 0) return { kind: 'inherit' }
     const trimmed = model.trim()
     const folded = trimmed.toLowerCase()
-    if (folded === 'inherit') return undefined
+    if (folded === 'inherit') return { kind: 'inherit' }
 
     const aliases = getAliases()
     const hit = aliases.get(folded)
     if (hit !== undefined && hit !== null) {
       if (typeof hit === 'string') {
         const followed = followStringTarget(hit, aliases, folded)
-        if (followed.kind === 'route') return followed.route
-        if (followed.kind === 'inherit') return undefined
-        return { model: hit }
+        const foldedTarget = hit.trim().toLowerCase()
+        if (followed.kind === 'route') return { kind: 'route', via: 'one-hop', hop: foldedTarget, route: followed.route }
+        if (followed.kind === 'inherit') return { kind: 'inherit', via: 'one-hop', hop: foldedTarget }
+        return { kind: 'literal', route: { model: hit } }
       }
       // Object form: forward the route fields that are present. `provider` and
       // `reasoningEffort` are optional (absent = inherit / no stamp); `model`
       // is always set on a schema-valid object entry. Object targets are
       // concrete routes — they are not followed as alias names.
       return {
-        ...(hit.provider === undefined ? {} : { provider: hit.provider }),
-        ...(hit.model === undefined ? {} : { model: hit.model }),
-        ...(hit.reasoningEffort === undefined ? {} : { reasoningEffort: hit.reasoningEffort }),
+        kind: 'route',
+        via: 'configured',
+        route: {
+          ...(hit.provider === undefined ? {} : { provider: hit.provider }),
+          ...(hit.model === undefined ? {} : { model: hit.model }),
+          ...(hit.reasoningEffort === undefined ? {} : { reasoningEffort: hit.reasoningEffort }),
+        },
       }
     }
 
@@ -142,12 +165,12 @@ export function createModelResolver(
     const peer = LANE_PEERS[folded]
     if (peer !== undefined) {
       const followed = followStringTarget(peer, aliases, folded)
-      if (followed.kind === 'route') return followed.route
-      return undefined
+      if (followed.kind === 'route') return { kind: 'route', via: 'peer', hop: peer, route: followed.route }
+      return { kind: 'inherit', via: 'peer', hop: peer }
     }
 
     // Unconfigured builtin alias → inherit the parent route ("current model").
-    if (BUILTIN_SET.has(folded)) return undefined
+    if (BUILTIN_SET.has(folded)) return { kind: 'inherit', via: 'builtin' }
 
     // Custom alias that is unconfigured: warn when it looks like an intended
     // alias, then pass through verbatim as a literal model id (no regression
@@ -155,7 +178,7 @@ export function createModelResolver(
     if (/^[a-z]+$/.test(folded)) {
       warn(`cc-model-aliases: model "${trimmed}" is not a configured alias and is not builtin; passing through verbatim as a literal model id`)
     }
-    return { model: trimmed }
+    return { kind: 'literal', route: { model: trimmed } }
   }
 }
 

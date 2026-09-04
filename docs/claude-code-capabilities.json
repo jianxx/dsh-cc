@@ -2149,8 +2149,13 @@
         {
           "type": "test",
           "path": "packages/interaction/command-doctor/tests/command-doctor.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/interaction/command-doctor/tests/collect-json.spec.ts"
         }
       ],
+      "notes": "Goes beyond CC's read-only install scan: grouped session health report\n(ok/warn/fail/skip/info checks) with --verbose slow probes and a --json\nreport written to $DSH_HOME/tui/doctor-report.json. Observe-only —\nnever mutates CLAUDE.md or skills. Headless `dsh doctor` is Phase 2.\n",
       "deviation": {
         "kind": "none"
       }

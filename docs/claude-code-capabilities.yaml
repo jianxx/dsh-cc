@@ -1127,6 +1127,12 @@ capabilities:
     evidence:
       - { type: source, path: packages/preset/cc/agent.cordis.yml, anchor: "- id: command-doctor" }
       - { type: test, path: packages/interaction/command-doctor/tests/command-doctor.spec.ts }
+      - { type: test, path: packages/interaction/command-doctor/tests/collect-json.spec.ts }
+    notes: |
+      Goes beyond CC's read-only install scan: grouped session health report
+      (ok/warn/fail/skip/info checks) with --verbose slow probes and a --json
+      report written to $DSH_HOME/tui/doctor-report.json. Observe-only —
+      never mutates CLAUDE.md or skills. Headless `dsh doctor` is Phase 2.
     deviation: { kind: none }
 
   commands.exit:

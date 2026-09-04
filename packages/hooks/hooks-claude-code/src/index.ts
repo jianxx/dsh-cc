@@ -36,6 +36,9 @@ import {
   hookDiagnosticsWriter,
 } from '@jianxx/dsh-cc-hook-protocol'
 import { parseClaudeCodeConfig, type ClaudeCodeHookConfig } from './config.ts'
+import { failedStatus, loadedStatus } from './status.ts'
+
+export type { HookBridgeStatus } from './status.ts'
 import {
   notificationPayload,
   permissionDeniedPayload,
@@ -161,6 +164,8 @@ export function apply(ctx: Context, config: Config): void {
   const configPath = config.configPath || dshHomeFile(ctx, 'hooks.json')
   if (!configPath) {
     ctx.logger.info('no hooks config path; hooks disabled')
+    // Instance-scoped status for /doctor: no module-level singleton.
+    ctx.provide('hookBridgeStatus', failedStatus('', 'no hooks config path', config))
     return
   }
   // Validate before config parsing so a bad value cannot be hidden by its early return.
@@ -181,7 +186,7 @@ export function apply(ctx: Context, config: Config): void {
     })
     parsed = result.config
     for (const s of result.skipped) {
-      ctx.logger.warn(`hooks-claude-code: skipping unsupported "${s.type}" hook on ${s.event} (unknown hook type)`)
+      ctx.logger.warn(`hooks-claude-code: skipping "${s.type}" hook on ${s.event} (${s.reason})`)
     }
     // F6: every parse warning is logged AND recorded as a `config` diagnostic.
     for (const w of result.warnings) {
@@ -189,8 +194,10 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`hooks-claude-code: ${detail}`)
       recordIssue?.({ ts: new Date().toISOString(), dialect: 'claude-code', point: w.event, kind: 'config', detail })
     }
+    ctx.provide('hookBridgeStatus', loadedStatus(configPath, parsed, result.skipped, config))
   } catch (error: unknown) {
     ctx.logger.warn(`hooks-claude-code: could not load hook config "${configPath}": ${String(error)} — no hooks registered`)
+    ctx.provide('hookBridgeStatus', failedStatus(configPath, String(error), config))
     return
   }
 

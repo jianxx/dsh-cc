@@ -133,6 +133,12 @@ export interface ConnectionHandle {
    * resource-bridge tools. Prompts are skills and do not count.
    */
   toolCount(): number
+  /**
+   * Eager/deferred split of {@link toolCount}: eager counts listed tools
+   * registered visibly plus the always-eager resource-bridge tools; deferred
+   * counts listed tools hidden behind ToolSearch. `eager + deferred === toolCount()`.
+   */
+  toolBreakdown(): { eager: number; deferred: number }
 }
 
 /** All registrations owned by one server generation, keyed by swap target. */
@@ -436,6 +442,12 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     ready,
     toolCount(): number {
       return registrations.tools.disposers.size + registrations.resources.size
+    },
+    toolBreakdown(): { eager: number; deferred: number } {
+      return {
+        eager: registrations.tools.eagerCount + registrations.resources.size,
+        deferred: registrations.tools.deferredCount,
+      }
     },
     async dispose(): Promise<void> {
       disposed = true

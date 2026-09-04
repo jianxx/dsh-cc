@@ -165,9 +165,11 @@ describe('agent.cordis.yml composition', () => {
     const topIds = doc.map((r) => r.id)
     expect(configIds).toContain('command-plugin')
     expect(configIds).toContain('command-mcp')
-    // The two commands live inside the group, not duplicated at top level.
+    // The three commands live inside the group, not duplicated at top level.
     expect(topIds).not.toContain('command-plugin')
     expect(topIds).not.toContain('command-mcp')
+    expect(configIds).toContain('command-doctor')
+    expect(topIds).not.toContain('command-doctor')
     // memory + hooks-claude-code consume ctx.get('ccModelRoutes') and must
     // share the group realm; memory-consolidation stays outside (inherit).
     expect(configIds).toContain('memory')

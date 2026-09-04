@@ -23,9 +23,9 @@ import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-agent'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ConfigAliasesSchema, SettingsAliasesSchema } from './schema.ts'
-import { createModelResolver, mergeAliasMaps } from './resolver.ts'
+import { createModelInspector, createModelResolver, mergeAliasMaps } from './resolver.ts'
 import { overlayStampedEffort, stampedEffortOf } from './effort.ts'
-import type { AliasTarget, ResolvedRoute } from './types.ts'
+import type { AliasInspection, AliasTarget, ResolvedRoute } from './types.ts'
 
 /** Plugin configuration: deployment-default alias map. */
 export interface Config {
@@ -43,6 +43,8 @@ export const MODEL_ALIASES_NAMESPACE = settingsNamespace('model-aliases')
 export interface ModelRoutes {
   /** Resolve one frontmatter `model` to a dsh route, or undefined to inherit. */
   resolve(model: string | undefined): ResolvedRoute | undefined
+  /** Inspect one frontmatter `model` with provenance (for `/doctor` reporting). */
+  inspect(model: string | undefined): AliasInspection
 }
 
 /** Cordis plugin id. */
@@ -72,14 +74,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     },
   })
-  const resolve = createModelResolver(
+  const inspect = createModelInspector(
     () => mergeAliasMaps(
       config.modelAliases,
       scope?.get?.() as Record<string, AliasTarget | null> | undefined,
     ),
     { warn: message => ctx.logger.warn(message) },
   )
-  ctx.provide('ccModelRoutes', { resolve })
+  const resolve = (model: string | undefined) => inspect(model).route
+  ctx.provide('ccModelRoutes', { resolve, inspect })
 
   // Host-side effort overlay: a child spawned through an alias whose route
   // declared `reasoningEffort` carries it on its options as an undeclared

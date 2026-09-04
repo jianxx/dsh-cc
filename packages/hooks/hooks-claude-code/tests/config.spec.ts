@@ -56,12 +56,13 @@ describe('parseClaudeCodeConfig', () => {
       ] }],
     })
     expect(config.PreToolUse![0]!.hooks.map(h => h.type)).toEqual([undefined, 'http'])
-    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'mcp_tool' }])
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'mcp_tool', reason: 'unknown hook type' }])
   })
 
   it('drops a malformed http hook without a url string', () => {
-    const { config } = parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] })
+    const { config, skipped } = parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] })
     expect(config.PreToolUse).toBeUndefined()
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'http', reason: 'malformed http' }])
   })
 
   it('treats a hook with no `type` as a command (CC default)', () => {
@@ -74,6 +75,19 @@ describe('parseClaudeCodeConfig', () => {
     expect(parseClaudeCodeConfig({ PreToolUse: [42, { hooks: 'no' }, { hooks: [7, { type: 'command' }] }] }).config).toEqual({})
     // a group whose only hook lacks a command string drops the whole (empty) group
     expect(parseClaudeCodeConfig({ Stop: [{ hooks: [{ type: 'command', command: 5 }] }] }).config).toEqual({})
+  })
+
+  it('records a skipped row for every malformed hook, with the matching reason', () => {
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [7] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed hook' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'command' }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed command' }])
+    expect(parseClaudeCodeConfig({ Stop: [{ hooks: [{ type: 'command', command: 5 }] }] }).skipped)
+      .toEqual([{ event: 'Stop', type: 'command', reason: 'malformed command' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'http', url: 5 }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'http', reason: 'malformed http' }])
+    expect(parseClaudeCodeConfig({ PreToolUse: [{ hooks: [{ type: 'mcp_tool' }] }] }).skipped)
+      .toEqual([{ event: 'PreToolUse', type: 'mcp_tool', reason: 'unknown hook type' }])
   })
 
   it('returns empty for a non-object / null / array top level', () => {
@@ -197,7 +211,7 @@ describe('parseClaudeCodeConfig — F6 warnings', () => {
       PreToolUse: [{ hooks: [{ type: 'command', note: 'missing command' }] }],
     })
     expect(config.PreToolUse).toBeUndefined()
-    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'command' }])
+    expect(skipped).toEqual([{ event: 'PreToolUse', type: 'command', reason: 'malformed command' }])
     expect(warnings).toEqual([{ event: 'PreToolUse', matcher: undefined, hookType: 'command', keys: ['note'] }])
   })
 })

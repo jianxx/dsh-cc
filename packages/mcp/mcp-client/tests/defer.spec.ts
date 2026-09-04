@@ -111,6 +111,10 @@ describe('deferred MCP tool disclosure', () => {
       expect(names).toContain('mcp__srv__greet')
       expect(names).toContain('mcp__srv__add')
       expect(spy).not.toHaveBeenCalled()
+      // Tool breakdown: all listed tools eager, none deferred.
+      expect(generation.eagerCount).toBe(2)
+      expect(generation.deferredCount).toBe(0)
+      expect(generation.eagerCount + generation.deferredCount).toBe(generation.disposers.size)
     })
 
     it('D. no toolSearch service, deferToolThreshold 0 → eager register (standalone fallback)', async () => {
@@ -154,6 +158,10 @@ describe('deferred MCP tool disclosure', () => {
       })
       expect(result.isError).toBe(false)
       expect(result.content[0]).toEqual({ type: 'text', text: 'ok' })
+      // Tool breakdown: the single listed tool deferred, nothing eager.
+      expect(generation.eagerCount).toBe(0)
+      expect(generation.deferredCount).toBe(1)
+      expect(generation.eagerCount + generation.deferredCount).toBe(generation.disposers.size)
     })
 
     it('C. over-threshold server: alwaysLoad tool eager, sibling deferred', async () => {
@@ -169,6 +177,10 @@ describe('deferred MCP tool disclosure', () => {
       expect(names).not.toContain('mcp__srv__add')
       expect(ctx.toolSearch.search('add').map(h => h.name)).toContain('mcp__srv__add')
       expect(generation.disposers.size).toBe(2)
+      // Tool breakdown: alwaysLoad tool eager, sibling deferred.
+      expect(generation.eagerCount).toBe(1)
+      expect(generation.deferredCount).toBe(1)
+      expect(generation.eagerCount + generation.deferredCount).toBe(generation.disposers.size)
     })
 
     it('E. deferred generation, identical second sync → no re-registerDeferred, same generation', async () => {

@@ -916,7 +916,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping unsupported "mcp_tool" hook on PreToolUse'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping \"mcp_tool\" hook on PreToolUse (unknown hook type)'))
     })
   })
 

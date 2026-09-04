@@ -69,11 +69,15 @@ export interface ToolGeneration {
   fingerprint: string | undefined
   /** The client generation the payload was fetched from; a new client forces a swap. */
   client: Client | undefined
+  /** Listed tools registered eagerly (visible in the model-facing schema). */
+  eagerCount: number
+  /** Listed tools registered deferred (searchable, hidden until activated). */
+  deferredCount: number
 }
 
 /** The generation representing "nothing registered yet" (or a rolled-back swap). */
 export function emptyToolGeneration(): ToolGeneration {
-  return { disposers: new Map(), fingerprint: undefined, client: undefined }
+  return { disposers: new Map(), fingerprint: undefined, client: undefined, eagerCount: 0, deferredCount: 0 }
 }
 
 /**
@@ -285,9 +289,13 @@ export async function syncTools(
   // Phase 2: swap generations.
   for (const dispose of previous.disposers.values()) dispose()
   const disposers: ToolDisposers = new Map()
+  let eagerCount = 0
+  let deferredCount = 0
   try {
     for (const [publicName, entry] of definitions) {
       disposers.set(publicName, publishListedTool(ctx, opts, publicName, entry, seam, deferServer))
+      if (deferServer && !entry.alwaysLoad) deferredCount += 1
+      else eagerCount += 1
     }
   } catch (error) {
     // A conflict on an `mcp__<serverName>__`-qualified name means a foreign
@@ -302,7 +310,7 @@ export async function syncTools(
     // real swap even if the payload is unchanged.
     return emptyToolGeneration()
   }
-  return { disposers, fingerprint, client }
+  return { disposers, fingerprint, client, eagerCount, deferredCount }
 }
 
 /**

@@ -38,6 +38,34 @@ export interface ResolvedRoute {
 }
 
 /**
+ * What an alias lookup resolved to, for provenance reporting (`/doctor`).
+ *
+ * - `route`: a concrete route was produced (configured object, or a followed
+ *   string/peer target).
+ * - `inherit`: no override — the child inherits the parent route.
+ * - `literal`: the alias name is passed through verbatim as a model id.
+ */
+export type AliasInspectKind = 'route' | 'inherit' | 'literal'
+
+/**
+ * Where the classification came from: a directly configured entry, a peer
+ * lane's entry, a one-hop string target, or the builtin fallback.
+ */
+export type AliasInspectVia = 'configured' | 'peer' | 'one-hop' | 'builtin'
+
+/**
+ * Provenance of one alias resolution. `route` is exactly what
+ * `resolve()` returned for the same input; `via`/`hop` are omitted when not
+ * meaningful (e.g. the literal passthrough and the bare inherit cases).
+ */
+export interface AliasInspection {
+  readonly kind: AliasInspectKind
+  readonly route?: ResolvedRoute
+  readonly via?: AliasInspectVia
+  readonly hop?: string
+}
+
+/**
  * One alias target as authored in config or settings.
  *
  * A string form names only a model id (`sonnet: deepseek-chat`); the provider

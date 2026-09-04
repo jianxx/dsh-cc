@@ -1,111 +1,67 @@
 /**
- * Human-facing `/doctor` command: an environment self-check that reports the
- * package version, settings reachability, and the mounted capability seams
- * (enumerating LLM providers where the seam exposes a list).
+ * Human-facing `/doctor` command: a product-grade session health report with
+ * three renderings of one data object — default text, verbose text, and a
+ * JSON file written under `$DSH_HOME`.
  * @module @jianxx/dsh-cc-command-doctor
  */
 
-import { readFileSync } from 'node:fs'
-import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { readHookDiagnostics } from '@jianxx/dsh-cc-hook-protocol'
-import { formatDoctorReport, type DoctorReport, type SeamStatus } from './doctor.ts'
+import { collect } from './collect.ts'
+import { formatUsage, parseDoctorFlags } from './flags.ts'
+import { doctorJsonPath, writeDoctorReport } from './json.ts'
+import { redactReport } from './redact.ts'
+import { formatDoctorReport } from './render.ts'
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    /** Harness-home path resolver, provided by @deepseek-ai/dsh-app-boot at boot. Optional in tests. */
-    dshHomePath?: (...segments: string[]) => string
-  }
-}
+export { readVersion } from './version.ts'
+export { DOCTOR_USAGE, parseDoctorFlags } from './flags.ts'
+export { redactReport } from './redact.ts'
+export { collect } from './collect.ts'
+export type { Check, CheckGroup, CheckStatus, DoctorReport } from './report.ts'
 
 export const name = 'command-doctor'
 export const inject = ['commands']
 
-/**
- * Read this package's manifest version, mirroring `apps/cli`'s self-version
- * read: every harness package shares `0.1.0-rc.x`, so the command package's own
- * manifest carries the harness version.
- * @returns the version string, or `0.0.0` when the manifest is unreadable.
- */
-export function readVersion(): string {
+/** Execute `/doctor [flags]` against the composed context. */
+async function executeDoctor(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+  const flags = parseDoctorFlags(invocation.rawInput)
+  if (flags.kind === 'usage') {
+    return { kind: 'success', text: formatUsage() }
+  }
+  const t0 = performance.now()
+  const collected = await collect(ctx, invocation, {
+    verbose: flags.verbose || flags.json,
+    now: () => new Date(),
+    ms: () => performance.now() - t0,
+  })
+  const report = redactReport(collected)
+  if (flags.json) {
+    return { kind: 'success', text: await emitJson(report) }
+  }
+  return { kind: 'success', text: formatDoctorReport(report, { verbose: flags.verbose }) }
+}
+
+/** Write the JSON file and produce the short ack text (never the JSON body). */
+async function emitJson(report: Parameters<typeof writeDoctorReport>[1]): Promise<string> {
+  const path = doctorJsonPath()
+  const summary = `summary: ${report.summary.ok} ok, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.skip} skip, ${report.summary.info} info`
+  const ids = statusIds(report)
   try {
-    const manifest = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { version?: unknown }
-    return typeof manifest.version === 'string' ? manifest.version : '0.0.0'
-  } catch {
-    return '0.0.0'
+    await writeDoctorReport(path, report)
+    return [`doctor report written: ${path}`, summary, ...ids].join('\n')
+  } catch (error) {
+    return [`failed to write ${path}: ${String(error)}`, summary, ...ids].join('\n')
   }
 }
 
-/** The seam names `/doctor` checks for presence without documentation. */
-const SEAMS = ['shell', 'subprocess', 'fs', 'skills', 'web', 'lsp'] as const
-
-/** How many valid diagnostics lines to read back: 10 for display, and the
- * same unbounded read counts every valid line for `total`. The writer caps
- * the file at 256 KB (≈ hundreds of entries), so one large-limit read is
- * cheap and keeps the gather simple. */
-const HOOK_DIAGNOSTICS_READ_LIMIT = 1_000_000
-
-/**
- * Read a dsh-home path without throwing when the boot-provided `dshHomePath`
- * resolver is absent — cordis throws on the property access itself (not a
- * plain `undefined`), so every read must be guarded. Mirrors the
- * hooks-claude-code bridge's `dshHomeFile` helper.
- */
-function dshHomeFile(ctx: Context, ...segments: string[]): string | undefined {
-  try {
-    return ctx.dshHomePath?.(...segments)
-  } catch {
-    return undefined
+/** The fail/warn ids appended under the JSON ack. */
+function statusIds(report: Parameters<typeof writeDoctorReport>[1]): string[] {
+  const lines: string[] = []
+  for (const status of ['fail', 'warn'] as const) {
+    const ids = report.checks.filter(check => check.status === status).map(check => check.id)
+    if (ids.length > 0) lines.push(`${status}: ${ids.join(', ')}`)
   }
-}
-
-/** Read the hook diagnostics JSONL under the dsh home, best-effort. */
-function gatherHooks(ctx: Context): DoctorReport['hooks'] {
-  const path = dshHomeFile(ctx, 'hooks', 'diagnostics.jsonl')
-  if (path === undefined) return { issues: [], total: 0 }
-  const all = readHookDiagnostics(path, HOOK_DIAGNOSTICS_READ_LIMIT)
-  return { issues: all.slice(-10), total: all.length, path }
-}
-
-/** Whether a named capability-seam service is mounted. */
-function mounted(ctx: Context, name: (typeof SEAMS)[number]): boolean {
-  return ctx.get(name) !== undefined
-}
-
-/** Gather the environment report from the composed services. */
-function gatherReport(ctx: Context): DoctorReport {
-  const seams: SeamStatus[] = []
-  for (const name of SEAMS) {
-    seams.push({ name, mounted: mounted(ctx, name) })
-  }
-  const llm = ctx.get('llm')
-  if (llm !== undefined) {
-    const providers = llm.listProviders()
-    const detail = providers.length === 0
-      ? undefined
-      : providers.map(provider => provider.id).join(', ')
-    seams.push({
-      name: 'llm',
-      mounted: true,
-      ...detail === undefined ? {} : { detail },
-    })
-  } else {
-    seams.push({ name: 'llm', mounted: false })
-  }
-  return {
-    version: readVersion(),
-    settings: ctx.get('settings') !== undefined,
-    seams,
-    hooks: gatherHooks(ctx),
-  }
-}
-
-/** Execute `/doctor` against the composed context. */
-function executeDoctor(ctx: Context): CommandResult {
-  return { kind: 'success', text: formatDoctorReport(gatherReport(ctx)) }
+  return lines
 }
 
 /**
@@ -115,7 +71,8 @@ function executeDoctor(ctx: Context): CommandResult {
 export function apply(ctx: Context): void {
   ctx.commands.register({
     name: 'doctor',
-    description: 'run an environment self-check of services, seams, and version',
-    handler: (_invocation: CommandInvocation) => executeDoctor(ctx),
+    description: 'session health report',
+    input: { hint: '[--verbose|--json]' },
+    handler: (invocation: CommandInvocation) => executeDoctor(ctx, invocation),
   })
 }
