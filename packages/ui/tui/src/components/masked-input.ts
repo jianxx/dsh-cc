@@ -11,12 +11,17 @@ import {
 	CURSOR_MARKER,
 	type Focusable,
 	getKeybindings,
+	sliceByColumn,
 	visibleWidth,
 } from '@jianxx/dsh-cc-pi-tui'
-import { getGraphemeSegmenter, sliceByColumn } from '@jianxx/dsh-cc-pi-tui/src/utils.ts'
-import { findWordBackward, findWordForward } from '@jianxx/dsh-cc-pi-tui/src/word-navigation.ts'
 
-const segmenter = getGraphemeSegmenter()
+// pi-tui's segmenter/word-navigation helpers are not part of the package's
+// public root surface, and deep `src/` imports are forbidden (check:deep-imports
+// — they do not survive the lib emit). The grapheme segmenter is a one-liner,
+// so it is instantiated locally; word-jump keys are deliberately not bound
+// (secrets are single-token entries; the control-char filter below swallows
+// those key sequences harmlessly instead).
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
 export class MaskedInput implements Component, Focusable {
 	private value = ''
@@ -107,14 +112,7 @@ export class MaskedInput implements Component, Focusable {
 			this.cursor = this.value.length
 			return
 		}
-		if (kb.matches(data, 'tui.editor.cursorWordLeft')) {
-			if (this.cursor > 0) this.cursor = findWordBackward(this.value, this.cursor)
-			return
-		}
-		if (kb.matches(data, 'tui.editor.cursorWordRight')) {
-			if (this.cursor < this.value.length) this.cursor = findWordForward(this.value, this.cursor)
-			return
-		}
+		// cursorWordLeft/Right intentionally unbound — see the header comment.
 
 		// Printable input only — never let control characters into a secret.
 		const hasControlChars = [...data].some((ch) => {
