@@ -3,7 +3,10 @@
 Status: Revised v2.1 (v2 folded the dual cold review: 4-state machine, abort
 ack/terminal split, collectSignal lease, post-admission detach, overloads, catalog
 regen; v2.1 adds the resolution-check fixes: the aborted branch resolves the epoch
-from the real disposal terminal, and the lease wiring is assigned to downstream)
+from the real disposal terminal, and the lease wiring is assigned to downstream).
+2026-09-10 constraint: deepseek-harness is never modified (local checkout, fork, or
+upstream PR) — local implementation is cancelled; this document is the upstream
+proposal only. The dsh-cc UX plan's Slices 2–3 reformulate dsh-cc-side instead.
 Date: 2026-09-10
 Scope: upstream `deepseek-ai/deepseek-harness`, `packages/subagent/subagent/src/{continuation.ts,types.ts,lifecycle.ts,index.ts}` and `packages/subagent/subagent/tests/`. Companion to `docs/plans/2026-09-10-continuable-background-ux.md` (Slices 2–3).
 

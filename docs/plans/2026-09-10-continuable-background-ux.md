@@ -1,8 +1,8 @@
 # Continuable Background Agents: Background-by-Default Pins, the `/agents` Surface, and Ctrl+B Promotion
 
-Status: Approved (dual blind review deep-reasoner/Opus + Codex GPT-5.4, independent, both REVISE → findings folded → resolution check: 11/12 CLOSED, 2 verification deltas folded into Slice 0 task 1 and §3.6)
+Status: Approved (dual blind review deep-reasoner/Opus + Codex GPT-5.4, independent, both REVISE → findings folded → resolution check: 11/12 CLOSED, 2 verification deltas folded into Slice 0 task 1 and §3.6). 2026-09-10 product constraint: deepseek-harness is NEVER modified (local checkout, fork, or upstream PR) — Slice 2's upstream implementation is cancelled; Slices 2–3 reformulate dsh-cc-side (in-process event + session-log collector) pending a feasibility spike; the handle design doc stands as the proposal for upstream adoption.
 Date: 2026-09-10
-Scope: `packages/interaction/command-agents` (new), `packages/interaction/command-tasks`, `packages/subagent/task`, `packages/subagent/resume-pins`, `packages/ui/tui`, `packages/preset/cc`, `.claude/agents`, `CLAUDE.md`, `docs/claude-code-capabilities.yaml`; upstream harness PR (collectable continuable handle) for Slices 2–3
+Scope: `packages/interaction/command-agents` (new), `packages/interaction/command-tasks`, `packages/subagent/task`, `packages/subagent/resume-pins`, `packages/ui/tui`, `packages/preset/cc`, `.claude/agents`, `CLAUDE.md`, `docs/claude-code-capabilities.yaml`, `packages/hooks`, `packages/bundle/cc-shell`; no harness changes
 
 ## 1. Problem and goals
 
@@ -268,56 +268,45 @@ scheduling policy; tuning is a follow-up.
    users always have query/control before omission behavior shifts; interim-window
    risk eliminated.
 
-### Slice 2 — upstream harness: collectable continuable handle (prerequisite PR)
+### Slice 2 — dsh-cc epoch collector (no harness changes)
 
-dsh-cc develops against the sibling harness checkout and pins released harness
-versions; this slice is an **upstream PR + release + version bump**, sequenced before
-Slice 3. Requested API (names final at upstream review):
+A feasibility spike established dsh-cc can collect a continuable child's first
+epoch inline with zero harness changes: subscribe to `subagent/start`/`end` on
+the cordis event bus, race the epoch against abort/promotion, suppress the
+duplicated `subagent-settled` notice with a pop-once pre-step filter, and abort
+via `ctx.subagents.interrupt` (exactly once, prompt synthetic resolution). The
+normative design — collector loop, abort semantics, suppression, race register,
+and TDD plan — is `docs/plans/2026-09-10-epoch-collector-dsh-cc.md`. The
+harness-collectable-handle doc
+(`docs/plans/2026-09-10-harness-collectable-handle.md`) remains the upstream
+adoption path; because collection sits behind a small internal interface
+(collector doc §7), that swap is one file when upstream lands.
 
-```ts
-interface ContinuableCollectHandle {
-  readonly childId: SessionId
-  /** First epoch outcome; resolves on epoch settlement. */
-  readonly epoch: Promise<EpochResult>   // { stopReason, output? }
-  /** Exactly-once ownership: the first of consume/detach/abort wins; rest are no-ops. */
-  detach(): void       // release to background: the eventual settlement notice is delivered normally
-  abort(): Promise<void>  // interrupt the child; NO settlement notice for this epoch
-}
-// startContinuable(spec) gains an opt-in, e.g. { collectable: true }, returning
-// { childId, messageId, collect: ContinuableCollectHandle }
-```
+### Slice 3 — collect refit + Ctrl+B promotion (dsh-cc only)
 
-Semantics pinned upstream: consuming `epoch` (the tool awaited it to resolution)
-suppresses `notifySettlement` **iff** ownership was not detached first — the decision
-is linearized at detach/abort/epoch-resolution time, not at start (F4). Esc/abort
-ownership ends cleanly (F5). dsh-cc gates on the released harness version with a
-capability check in the `prepareContinuable` error style (tool.ts:393-399) and the
-version pin bumps in the same PR that lands Slice 3; CI runs against the released
-artifact. If upstream rejects/adjourns the API, Slice 3 does not shim it with event
-scraping — it waits (declared in the PR body).
-
-### Slice 3 — dsh-cc collect refit + Ctrl+B promotion
-
-1. **Collect refit** (tool.ts execute branches, F2): non-fork foreground calls use
-   `startContinuable({ collectable: true })`; the wait races `handle.epoch` against
-   promotion/abort intents. The collect path performs the **same pin preallocation
-   + pre-start write + tombstone-on-throw** as `startBackground` (F2 gap) — a
-   foreground-launched child is pinnable/resumable exactly like a background one,
-   and `$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`-forced foreground also gets pins.
+1. **Collect refit** (tool.ts execute branches, F2): non-fork foreground calls
+   route through the epoch collector (see collector doc); same pin
+   preallocation/tombstone parity with `startBackground` — a foreground-launched
+   child is pinnable/resumable exactly like a background one, and
+   `$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`-forced foreground also gets pins.
 2. **Outcome mapping**: `stopReason: completed` → tool result as today; all other
    stop reasons keep `settle`'s throw semantics with per-reason copy
    (aborted/error/max-tokens/refusal enumerated; tests pin the messages).
 3. **Output schema**: optional `backgroundedByUser: true`.
-4. **Promotion registry**: `ActiveContinuableCollects` in the task package —
-   `{sessionId+toolCallToken -> {childId, promote(), abort()}}`, registered before
-   start (pre-acceptance promotions queue onto the handle's ownership race),
-   unregistered on any resolution; queried by the TUI keybinding (F9).
-5. **TUI busy-branch Ctrl+B**: gated on (a) busy, (b) registry non-empty for this
-   session, (c) env kill switch unset; invokes `promote()` on the promotable
-   collect(s) of this session; else falls through (idle behavior untouched).
-6. **Esc mapping**: on the existing cancel path, each registered collect for this
-   session resolves via `abort` (F5/F10 semantics of §3.4); exactly-once interrupt
-   per child; prompt return without awaiting settlement.
+4. **Promotion registry**: `ccCollectorRegistry` published as a root-realm
+   service per the collector doc §6 (pattern
+   `packages/bundle/cc-shell/src/ccPlugins.ts:121-133`) —
+   `{parentSessionId+toolCallToken -> {childId, promote(), abort()}}`,
+   registered before start, unregistered on any resolution; queried by the TUI
+   keybinding (F9).
+5. **TUI busy-branch Ctrl+B**: gated on (a) busy, (b) the root-realm
+   `ccCollectorRegistry` non-empty for this session, (c) env kill switch unset;
+   invokes `promote()` on the promotable collect(s) of this session; else falls
+   through (idle behavior untouched).
+6. **Esc mapping**: on the existing cancel path, each registered collect for
+   this session aborts per the collector abort semantics (collector doc §4) —
+   exactly-once interrupt; synthetic prompt resolve without awaiting
+   settlement.
 7. Tests: race matrix (settle-vs-promote, Esc-vs-promote, promote-before-acceptance,
    repeated Ctrl+B, N parallel collectors), exactly-once settlement delivery for both
    collected and promoted children, pin capture parity between collect and
@@ -348,12 +337,16 @@ TUI-vs-preset detail divergence) explicitly.
 
 ## 6. Load-bearing risks (post-review state)
 
-### 6.1 Settlement delivery — resolved by design (Slice 2 gate)
+### 6.1 Settlement delivery — resolved dsh-cc-side (no upstream changes)
 
-Static start-time flags were considered and rejected (cannot express post-start
-promotion, F4). The ownership handle makes exactly-once delivery structural. Residual
-risk: upstream review time → mitigated by slice sequencing (Slices 0–1 ship
-independently) and by the no-shim rule.
+Double delivery is ruled out dsh-cc-side: the pop-once suppression set in the
+pre-step waterfall (collector doc §5) drops the `subagent-settled` notice for
+independently collected epochs, while promoted children are removed from the
+set and deliver normally. **Documented parity deviation:** for inline-collected
+epochs the parent session log lacks the settlement account (it lives only in
+the tool result); under the upstream handle it would have been structural.
+Residual risk is bounded to the suppression-set lifetime, which dies with the
+parent process (collector doc §8).
 
 ### 6.2 Signal ownership — covered
 
@@ -391,17 +384,18 @@ guard. Deviations declared, not smoothed.
 - `Done` group / epoch history / usage in `/agents` (needs a durable projection
   service — follow-up).
 - `/agents attach` (P1), Ctrl+X Ctrl+B chord (P1), @-mention typeahead entries.
-- Upstream pool-cap changes; a dsh-cc-side event-scraping shim for the ownership
-  handle (explicitly rejected, §4 Slice 2).
+- Upstream pool-cap changes.
+- Upstream adoption of the handle (tracked by the companion design doc, out of
+  scope here).
 - Live-conversion of one-shot runs (impossible per F11-adjacent substrate facts).
 
 ## 9. Rollout
 
-1. Slice 0 + Slice 1 → review, commit on `worktree-continuable-background-agent`.
-2. Slice 2 upstream PR (collectable handle) → harness release → pin bump.
-3. Slice 3 (collect refit + Ctrl+B) → same PR as Slices 0–1, all tests per §5.
-4. Open the dsh-cc PR (English title/body via `gh pr create --body-file`), referencing
-   the upstream harness PR; body declares the deviations from §3.
+1. Slices 0+1 (landed: ee9063b, 50ca96f).
+2. Slice 2 collector (TDD per collector doc §9).
+3. Slice 3 Ctrl+B.
+4. Open one PR; body declares deviations; the upstream handle doc is attached
+   as the future upstream proposal (not implemented).
 
 ## 10. Review provenance
 
