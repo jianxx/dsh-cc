@@ -21,17 +21,43 @@ import { PinStore } from '@jianxx/dsh-cc-subagent-resume-pins'
 import { SpawnPinCapture, type ResumePinsConfig } from './resume-capture.ts'
 import { AgentRegistry } from './registry.ts'
 import { registerTaskTool } from './tool.ts'
+import { mountSettledNoticeSuppression } from './suppress-settled.ts'
 import { mountAgentCatalog } from './catalog.ts'
 import { mountStripWorkspaceInstructions } from './strip-instructions.ts'
 
 export { AgentRegistry } from './registry.ts'
-export { registerTaskTool, TASK_TOOL } from './tool.ts'
+export {
+  registerTaskTool,
+  TASK_TOOL,
+  MAX_LIVE_CONTINUABLE_CHILDREN,
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,
+  backgroundTasksDisabled,
+} from './tool.ts'
+export {
+  collectFirstEpoch,
+  collectorFor,
+  collectorKey,
+  registerCollector,
+  unregisterCollector,
+  markCollectedForSuppression,
+  releaseCollectedForSuppression,
+  isCollectedForSuppression,
+} from './epoch-collector.ts'
+export type {
+  CollectorRegistration,
+  EpochOutcome,
+  EpochTerminal,
+} from './epoch-collector.ts'
 export { mountAgentCatalog } from './catalog.ts'
 export {
   mountStripWorkspaceInstructions,
   isDelegated,
   isAgentInstructions,
 } from './strip-instructions.ts'
+export {
+  isSubagentSettledNotice,
+  mountSettledNoticeSuppression,
+} from './suppress-settled.ts'
 export type { ResumePinsConfig, CaptureInput } from './resume-capture.ts'
 export { SpawnPinCapture, overlayRoute, probeWorkspace } from './resume-capture.ts'
 
@@ -127,4 +153,5 @@ export function apply(ctx: Context, config: TaskPluginConfig = {}): void {
   mountAgentCatalog(ctx, registry)
   mountBackgroundSection(ctx)
   mountStripWorkspaceInstructions(ctx)
+  mountSettledNoticeSuppression(ctx)
 }
