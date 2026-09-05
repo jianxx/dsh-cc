@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootstrapCommand, existingWorktreeDecision, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, sanitizeInheritedEnv, slugRetryDecision, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
+import { bootstrapCommand, dshUnavailableMessage, existingWorktreeDecision, interceptResume, parseWorktreeFlag, planWorktree, PROFILE, sanitizeInheritedEnv, slugRetryDecision, spawnEnv, worktreeAddArgv, worktreeEnv } from '../bootstrap.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ownVersion = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version
@@ -19,19 +19,18 @@ if (process.argv.includes('--version') || process.argv.includes('-V')) {
   process.exit(0)
 }
 
-const probe = spawnSync('dsh', ['--version'], { encoding: 'utf8' })
-if (probe.error || probe.status !== 0) {
-  console.error('dsh-cc: the `dsh` CLI is not on PATH.')
-  console.error('Install deepseek-harness first, e.g.:  npm install -g @deepseek-ai/dsh')
-  process.exit(1)
-}
-
 const home = process.env.DSH_HOME || join(homedir(), '.dsh')
 const profileDir = join(home, 'profiles', PROFILE)
 const add = bootstrapCommand(existsSync(join(profileDir, 'package.json')), ownVersion)
 if (add !== undefined) {
   console.error(`dsh-cc: initializing profile "${PROFILE}"…`)
   const installed = spawnSync('dsh', add, { encoding: 'utf8', stdio: 'inherit' })
+  // A spawn error (e.g. dsh not on PATH) leaves status null — that is a
+  // missing-CLI problem, not an install failure.
+  if (installed.error) {
+    console.error(dshUnavailableMessage())
+    process.exit(1)
+  }
   if (installed.status !== 0) {
     console.error(`dsh-cc: plugin install failed. Retry:\n  dsh ${add.join(' ')}`)
     process.exit(installed.status ?? 1)
@@ -129,11 +128,23 @@ const { env, args } = interceptResume(undefined, worktree.args, env0)
 env.NODE_ENV ??= 'production'
 // Stamp the profile so the TUI plugin can surface it as ctx.get('dshProfile').
 env.DSH_CC_PROFILE = PROFILE
+// Default NODE_COMPILE_CACHE so the child reuses compiled modules across
+// boots (see spawnEnv); a user-set value always wins.
+const spawnEnvironment = spawnEnv(env, home)
 
 const child = spawn('dsh', ['--profile', PROFILE, ...args], {
-  env,
+  env: spawnEnvironment,
   stdio: 'inherit',
   ...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
+})
+// ENOENT (dsh missing from PATH) never reaches the exit handler — handle it
+// here with the same guidance as the bootstrap-install path.
+child.on('error', (error) => {
+  if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+    console.error(dshUnavailableMessage())
+    process.exit(1)
+  }
+  throw error
 })
 child.on('exit', (code, signal) => {
   if (signal) {
