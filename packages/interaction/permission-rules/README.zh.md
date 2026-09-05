@@ -55,7 +55,7 @@ await ctx.plugin(PermissionRules, {
 
 ## settings 与热更新
 
-当 `ctx.settings` 挂载时，插件注册 `permissions` 命名空间（`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`，另加供风险分类器使用的 `additionalDirectories` / `protectedFiles` / `dangerousPatterns`）。settings 规则携带 `settingsSource` 标签（默认 `userSettings`），并按来源优先级与 Config `rules` 合并——settings 规则优先。存储变更会立即重跑合并并重注册 guard（热更新）；畸形 settings 规则在 settings 边界 fail loud。当 `ctx.settings` 缺席时，仅 Config `rules` 生效（分类器使用其精选默认值）。
+当 `ctx.settings` 挂载时，插件注册 `permissions` 命名空间（`permissions.allow` / `permissions.deny` / `permissions.ask` / `permissions.defaultMode`，另加供风险分类器使用的 `additionalDirectories` / `protectedFiles` / `dangerousPatterns`，以及可选的 `autoMode` 小节——`autoMode.soft_deny` 文字规则（支持 `$defaults` 展开）与 `autoMode.classifier`（`enabled` / `route` / `timeoutMs` / `cacheMaxEntries`）共同驱动 `auto` 模式下可选择性开启的 LLM 风险分类器阶段；`autoMode` 键缺席即保持缺席，该阶段保持解除武装）。settings 规则携带 `settingsSource` 标签（默认 `userSettings`），并按来源优先级与 Config `rules` 合并——settings 规则优先。存储变更会立即重跑合并并重注册 guard（热更新）；畸形 settings 规则在 settings 边界 fail loud。当 `ctx.settings` 缺席时，仅 Config `rules` 生效（分类器使用其精选默认值）。
 
 ## 来源与模式
 

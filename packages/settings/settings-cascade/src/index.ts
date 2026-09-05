@@ -28,6 +28,7 @@ export { applyCcKeyAliases, CC_KEY_ALIASES } from './cc-key-aliases.ts'
 
 export { resolveLocalSettingsDir, type LocalRootDeps, type LocalRootExec, type LocalRootExecResult } from './local-root.ts'
 export { mergeValue, mergeSettingsSection, unionDenyPrecedence } from './merge.ts'
+export { AutoModeSchema, AutoModeClassifierSchema, type AutoMode, type AutoModeClassifier } from './auto-mode.ts'
 export { PermissionsSchema, PERMISSION_MODES, type Permissions, type PermissionMode } from './permissions.ts'
 export { applyEnv, applyTrustedEnv, coerceEnv, DANGEROUS_ENV_VARS, type EnvSettings } from './env.ts'
 
