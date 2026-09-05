@@ -4,7 +4,8 @@
  * harness. Row mapping: user → blockquote, assistant → verbatim text,
  * thinking → collapsed `<details>`, tool → fenced `tool <name>` block (with
  * the result summary, or a `…running` marker) plus a fenced `diff` block when
- * structured diffs are present, status → italics (errors get a ⚠ marker).
+ * structured diffs are present, status → italics (errors get a ⚠ marker), banner
+ * → skipped (pre-styled UI chrome must not leak raw SGR/block glyphs).
  * @module @jianxx/dsh-cc-tui/export-markdown
  */
 
@@ -111,7 +112,8 @@ function statusBlock(text: string, error?: boolean): string {
 export function rowsToMarkdown(rows: readonly TranscriptRow[]): string {
   const blocks: string[] = []
   for (const row of rows) {
-    if (row.kind === 'user') blocks.push(blockquote(row.text))
+    if (row.kind === 'banner') continue
+    else if (row.kind === 'user') blocks.push(blockquote(row.text))
     else if (row.kind === 'assistant') blocks.push(row.text)
     else if (row.kind === 'thinking') blocks.push(details(row.text))
     else if (row.kind === 'tool') blocks.push(...toolBlocks(row))

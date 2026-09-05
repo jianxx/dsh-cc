@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { composePreset } from './preset.ts'
+import { bootBannerRows } from './boot-banner.ts'
 import { createSessionsSection } from './driver-sessions.ts'
 import { gitBranchOf } from './shell-output.ts'
 import { runShellCommand as runShellCommandModule } from './driver-bash.ts'
@@ -239,13 +240,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   emit(setPermissionMode(state, liveModeWithDefault(ctx)(current.agent)))
 
-  // Boot banner: one status row greeting, before the resume fold (row 0); the
+  // Boot banner: art + status rows before the resume fold (row 0); the
   // settled seed upserts the label + gated notice (driver-agent continuation).
   const modelLabel = selection.current?.model ?? 'default model'
-  emit(upsertRow(state, {
-    kind: 'status',
-    text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
-  }))
+  for (const row of bootBannerRows(modelLabel, cwd)) emit(upsertRow(state, row))
 
   // Replay the durable event log so a resumed session shows its prior
   // conversation via the agent section's presenter-bound fold. One emit for

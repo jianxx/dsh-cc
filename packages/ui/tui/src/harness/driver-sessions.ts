@@ -14,6 +14,7 @@ import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import { randomUUID } from 'node:crypto'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { join } from 'node:path'
+import { bootBannerRows } from './boot-banner.ts'
 import { filterSessions, sortByActivity, type SessionListEntry } from './session-list.ts'
 import { defaultTuiDir } from '../history.ts'
 import { liveSessionCwd } from './driver-live.ts'
@@ -295,10 +296,7 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     // when the new session's log has a session/title event.
     emit(setSessionTitle(clearRows(rt.state()), undefined))
     const modelLabel = rt.selection.current?.model ?? 'default model'
-    emit(upsertRow(rt.state(), {
-      kind: 'status',
-      text: `dsh cc-mode — ${modelLabel} · ${rt.cwd} · /tui-help for keys`,
-    }))
+    for (const row of bootBannerRows(modelLabel, rt.cwd)) emit(upsertRow(rt.state(), row))
     emit(rt.foldHistory())
     emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent)))
     // Success path: drop the previous session's anchor together with the busy

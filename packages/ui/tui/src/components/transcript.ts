@@ -131,6 +131,9 @@ export function renderRowText(row: TranscriptRow, options?: RowRenderOptions, th
     }
     case 'compact':
       return compactRowText(row, options, theme)
+    case 'banner':
+      // Pre-styled UI chrome (boot whale): rendered verbatim, never re-styled.
+      return row.text
     case 'status':
       // Error status rows (turn/end failures) render in the error role; plain
       // status notices stay muted.
@@ -138,10 +141,26 @@ export function renderRowText(row: TranscriptRow, options?: RowRenderOptions, th
   }
 }
 
+/**
+ * Banner art Text: suppresses the boot whale below 44 columns — pi-tui's
+ * word-wrap shreds multi-line block art at narrow widths (internal spaces
+ * become wrap opportunities and continuation lines lose leading whitespace),
+ * so instead of a mangled smear the art collapses to a blank line.
+ */
+class BannerText extends Text {
+  override render(width: number): string[] {
+    if (width < 44) return ['']
+    return super.render(width)
+  }
+}
+
 /** Build the pi-tui component for a single row. */
 function buildChild(row: TranscriptRow, options: RowRenderOptions, theme: Theme): Component {
   if (row.kind === 'assistant') {
     return new Markdown(row.text, 0, 0, createMarkdownTheme(theme))
+  }
+  if (row.kind === 'banner') {
+    return new BannerText(renderRowText(row, options, theme), 0, 0)
   }
   return new Text(renderRowText(row, options, theme), 0, 0)
 }
