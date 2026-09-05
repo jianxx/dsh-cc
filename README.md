@@ -79,7 +79,7 @@ dsh web
 | Permissions | 0 | 1 | 0 | 0 |
 | Models | 0 | 1 | 0 | 0 |
 | Workspace | 1 | 0 | 0 | 0 |
-| Interactive UX | 1 | 1 | 0 | 0 |
+| Interactive UX | 1 | 2 | 0 | 0 |
 Statuses were verified against upstream documentation retrieved as of 2026-09-05 (freshness threshold: 120 days).
 
 For the exact feature-by-feature status and known gaps, see the **[Claude Code parity matrix](docs/cc-parity-matrix.md)**.

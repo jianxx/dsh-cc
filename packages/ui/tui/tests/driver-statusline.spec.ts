@@ -1,6 +1,6 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 import { formatModeLine } from '@jianxx/dsh-cc-tui/statusline.ts'
@@ -123,8 +123,8 @@ function makeStatusLineCtx(opts: {
   settings?: ReturnType<typeof makeSettings>
   executor?: ReturnType<typeof makeExecutor>
   persistence?: { locate(header: unknown): { path?: string } | undefined }
-  createSession?: { id: string; provider?: string; model?: string; createdAt?: number; cwd?: string }
-  resumeSessions?: Record<string, { id: string; cwd?: string }>
+  createSession?: { id: string; provider?: string; model?: string; createdAt?: number; cwd?: string; events?: unknown[] }
+  resumeSessions?: Record<string, { id: string; cwd?: string; events?: unknown[] }>
 }) {
   const createSession = opts.createSession ?? { id: 's-a', provider: 'p', model: 'm1', createdAt: 1_000_000 }
   const services: Record<string, unknown> = {
@@ -138,7 +138,7 @@ function makeStatusLineCtx(opts: {
     },
   }
   if (opts.settings !== undefined) services.settings = opts.settings.service
-  const makeAgent = (s: { id: string; provider?: string; model?: string; createdAt?: number; cwd?: string }) => ({
+  const makeAgent = (s: { id: string; provider?: string; model?: string; createdAt?: number; cwd?: string; events?: unknown[] }) => ({
     options: s.provider === undefined ? {} : { provider: s.provider, model: s.model },
     session: {
       id: s.id,
@@ -146,7 +146,7 @@ function makeStatusLineCtx(opts: {
         ...(s.cwd === undefined ? {} : { cwd: s.cwd }),
         ...(s.createdAt === undefined ? {} : { createdAt: s.createdAt }),
       },
-      events: [],
+      events: s.events ?? [],
     },
     id: `agent-${s.id}`,
     status: 'idle',
@@ -158,6 +158,17 @@ function makeStatusLineCtx(opts: {
     agent: makeAgent(s),
     dispose: async () => {},
   })
+  // Captured session/event listeners: tests drive live appends through
+  // emitSessionEvent (each subscribed handler fires, like cordis fan-out).
+  const eventHandlers: ((session: { id?: unknown }, event: unknown) => void)[] = []
+  const on = (name: string, cb: (session: { id?: unknown }, event: unknown) => void): (() => void) => {
+    if (name !== 'session/event') return () => {}
+    eventHandlers.push(cb)
+    return () => {
+      const i = eventHandlers.indexOf(cb)
+      if (i >= 0) eventHandlers.splice(i, 1)
+    }
+  }
   const ctx: Record<string, unknown> = {
     get(key: string) {
       if (key === 'agentPresets') {
@@ -173,7 +184,7 @@ function makeStatusLineCtx(opts: {
         effect: (factory: () => unknown) => { void factory() },
       })
     },
-    on: () => () => {},
+    on,
     fiber: { state: 0 },
     agents: {
       create: async () => makeHandle(createSession),
@@ -184,12 +195,21 @@ function makeStatusLineCtx(opts: {
       },
     },
   }
-  return { ctx }
+  /** Fire a live session/event through every subscribed handler. */
+  const emitSessionEvent = (sessionId: string, event: unknown): void => {
+    for (const cb of [...eventHandlers]) cb({ id: sessionId }, event)
+  }
+  return { ctx, emitSessionEvent, eventHandlers }
 }
 
-const usageState = (input: number, output: number) => ({
+const usageState = (input: number, output: number, buckets?: {
+  uncachedInputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}) => ({
   totals: { uncachedInputTokens: input, outputTokens: output, cacheReadTokens: 0, cacheWriteTokens: 0 },
-  last: null,
+  last: buckets === undefined ? null : { turn: 1, step: 1, buckets },
 })
 
 const activeSection = (overrides: Record<string, unknown> = {}) => ({
@@ -198,12 +218,16 @@ const activeSection = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-async function bootActiveDriver(executor = makeExecutor(), section = activeSection()) {
+async function bootActiveDriver(
+  executor = makeExecutor(),
+  section = activeSection(),
+  extra: Parameters<typeof makeStatusLineCtx>[0] = {},
+) {
   const settings = makeSettings(section)
   const projections = makeProjections()
-  const { ctx } = makeStatusLineCtx({ projections, settings, executor })
+  const { ctx, emitSessionEvent } = makeStatusLineCtx({ projections, settings, executor, ...extra })
   const driver = await createDriver(ctx as never, { cwd: '/w/proj', branchProbe: async () => undefined })
-  return { driver, settings, projections, executor }
+  return { driver, settings, projections, executor, emitSessionEvent }
 }
 
 describe('createDriver custom statusLine wiring', () => {
@@ -212,7 +236,9 @@ describe('createDriver custom statusLine wiring', () => {
 
   beforeEach(() => {
     prevHome = process.env.DSH_HOME
-    tempHome = mkdtempSync(join(tmpdir(), 'dsh-driver-statusline-'))
+    // Temp homes live INSIDE the worktree (os.tmpdir() writes are
+    // sandbox-denied in this environment) and are removed in afterEach.
+    tempHome = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), '.tmp-dsh-home-'))
     process.env.DSH_HOME = tempHome
     vi.useFakeTimers()
   })
@@ -221,6 +247,7 @@ describe('createDriver custom statusLine wiring', () => {
     vi.useRealTimers()
     if (prevHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = prevHome
+    rmSync(tempHome, { recursive: true, force: true })
   })
 
   it('configured output replaces driver.statusLine and the payload rides stdin', async () => {
@@ -289,6 +316,102 @@ describe('createDriver custom statusLine wiring', () => {
     // Fresh JSON, not a stale echo of the boot payload.
     expect(JSON.parse(executor.specs[0]!.stdin!).context_window).toBeUndefined()
     expect(driver.statusLine).toBe('HELLO FROM CMD' + '\n' + formatModeLine('default'))
+  })
+
+  it('the payload carries context_window.current_usage from the last step and never a transcript_path', async () => {
+    const { projections, executor } = await bootActiveDriver()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(executor.specs).toHaveLength(1)
+
+    projections.fire('s-a', 'tokenUsage', usageState(10_000, 1_000, {
+      uncachedInputTokens: 1_234,
+      outputTokens: 345,
+      cacheReadTokens: 56,
+      cacheWriteTokens: 78,
+    }))
+    await vi.advanceTimersByTimeAsync(300)
+    expect(executor.specs).toHaveLength(2)
+    const payload = JSON.parse(executor.specs.at(-1)!.stdin!) as Record<string, unknown>
+    expect((payload.context_window as Record<string, unknown>).current_usage).toEqual({
+      input_tokens: 1_234,
+      output_tokens: 345,
+      cache_creation_input_tokens: 78,
+      cache_read_input_tokens: 56,
+    })
+    // Slice C: no seeded usage EVENTS in the session log → the mirror is
+    // never created, so the path stays unadvertised (the zeros-shadow trap).
+    expect('transcript_path' in payload).toBe(false)
+  })
+
+  it('a seeded usage log produces a ready CC mirror and the payload advertises its transcript_path', async () => {
+    const events = [
+      { type: 'user/message', seq: 1, time: 1_700_000_000_000 },
+      {
+        type: 'assistant/message',
+        seq: 2,
+        time: 1_700_000_001_000,
+        data: { usage: { inputTokens: 111, outputTokens: 222, cacheReadTokens: 5, cacheWriteTokens: 6 } },
+      },
+    ]
+    const { executor } = await bootActiveDriver(makeExecutor(), activeSection(), { createSession: { id: 's-a', provider: 'p', model: 'm1', createdAt: 1_000_000, events } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(executor.specs).toHaveLength(1)
+    const payload = JSON.parse(executor.specs[0]!.stdin!) as Record<string, unknown>
+    const expected = join(tempHome, 'tui', 'cc-transcripts', 's-a.jsonl')
+    expect(payload.transcript_path).toBe(expected)
+    expect(existsSync(expected)).toBe(true)
+    const lines = readFileSync(expected, 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(2)
+    expect(JSON.parse(lines[1]!).message.usage).toEqual({
+      input_tokens: 111,
+      output_tokens: 222,
+      cache_creation_input_tokens: 6,
+      cache_read_input_tokens: 5,
+    })
+  })
+
+  it('a live session/event appends to the mirror for the bound session and ignores other sessions', async () => {
+    // A session with no usage events at boot has no mirror file; append alone
+    // never creates one (readiness flips only through a rebind).
+    const bare = await bootActiveDriver()
+    await vi.advanceTimersByTimeAsync(0)
+    const path = join(tempHome, 'tui', 'cc-transcripts', 's-a.jsonl')
+    expect(existsSync(path)).toBe(false)
+    bare.emitSessionEvent('s-a', { type: 'user/message', seq: 1, time: 1_700_000_000_000 })
+    expect(existsSync(path)).toBe(false)
+
+    // A session WITH a seeded usage log: live appends grow the file — but only
+    // for the bound session id.
+    const events = [{ type: 'assistant/message', seq: 1, time: 1_700_000_000_000, data: { usage: { inputTokens: 1, outputTokens: 2 } } }]
+    const { emitSessionEvent } = await bootActiveDriver(makeExecutor(), activeSection(), {
+      createSession: { id: 's-a', provider: 'p', model: 'm1', createdAt: 1_000_000, events },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    const before = readFileSync(path, 'utf8').trim().split('\n').length
+    emitSessionEvent('s-other', { type: 'user/message', seq: 2, time: 1_700_000_001_000 })
+    expect(readFileSync(path, 'utf8').trim().split('\n').length).toBe(before)
+    emitSessionEvent('s-a', { type: 'user/message', seq: 2, time: 1_700_000_002_000 })
+    const lines = readFileSync(path, 'utf8').trim().split('\n')
+    expect(lines.length).toBe(before + 1)
+    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ type: 'user', sessionId: 's-a' })
+  })
+
+  it('onRebind to a different session id switches the mirror path', async () => {
+    const events = [{ type: 'assistant/message', seq: 1, time: 1_700_000_000_000, data: { usage: { inputTokens: 1, outputTokens: 2 } } }]
+    const { driver, executor } = await bootActiveDriver(makeExecutor(), activeSection(), {
+      createSession: { id: 's-a', provider: 'p', model: 'm1', createdAt: 1_000_000, events },
+      resumeSessions: { 's-b': { id: 's-b', cwd: '/other/dir', events } },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect((JSON.parse(executor.specs[0]!.stdin!) as Record<string, unknown>).transcript_path)
+      .toBe(join(tempHome, 'tui', 'cc-transcripts', 's-a.jsonl'))
+
+    await driver.switchSession('s-b')
+    await vi.advanceTimersByTimeAsync(300)
+    const payload = JSON.parse(executor.specs.at(-1)!.stdin!) as Record<string, unknown>
+    expect(payload.session_id).toBe('s-b')
+    expect(payload.transcript_path).toBe(join(tempHome, 'tui', 'cc-transcripts', 's-b.jsonl'))
+    expect(existsSync(join(tempHome, 'tui', 'cc-transcripts', 's-b.jsonl'))).toBe(true)
   })
 
   it('a failing command (exit 3) blanks the line', async () => {
