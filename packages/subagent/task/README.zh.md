@@ -41,6 +41,7 @@ Claude Code 的 `Task` 工具允许主代理按 `subagent_type`(如 `deep-reason
 - **server 级 MCP 通配。** `mcp__<server>` 与 `mcp__<server>__*` 都会展开为该 server 已挂载的全部工具(`mcp__<server>__` 前缀),frontmatter 因此不必逐个点名带 hash 的条目也能在 server 发布新工具后继续生效。
 - **裸 `mcp__`**(无 server 段)被丢弃并给出 invalid-wildcard 告警。
 - **自动带上 `ToolSearch`。** 若过滤器带有 `allow` 清单、保留下来的 allow 名中有 MCP 工具、且 `ToolSearch` 工具本身已挂载(可限制),则追加 `ToolSearch`(去重)——否则 child 手握 MCP 名却没有任何加载路径。`ToolSearch` 未挂载时绝不注入。
+- **spawn 时预激活显式列出的延后 MCP 名。** `tools:` 中显式点名、且仍处于延后(未注册)状态的 MCP 名,会在 spawn 时、child 启动之前,经 duck-typed `ctx.toolSearch` seam 激活——前台 collect 与后台两条派发路径都会执行,激活是进程全局的(spawn 之后每个可接纳该工具的 agent 的 schema 都会变大)。server 级通配(`mcp__<server>`、`mcp__<server>__*`)仅用于限制、绝不预激活;被消毒 deny 清单排除或被消毒丢弃的名永不激活,已注册(急加载)的名静默跳过。结果浮现在 Task 结果文本中(`Preloaded deferred tools for child: …`,以及 `Not preloaded: <名>(<原因>)`);未挂载 `toolSearch` 服务时只告警一次、照常 spawn。
 - **未挂载的名被丢弃**,给出标准 `dropping unknown tool name …` 告警——包括未挂载 server 的 MCP 名。
 - **匹配不到任何工具的 allow 清单 = 醒目的 deny-all。** 若过滤器带有 `allow` 清单而消毒后一个名都不剩,产出的过滤器是 `{ allow: [] }`(child 以零工具运行)并告警列出被丢弃的原始名——省略 `allow` 反而会把 child 放宽到全部工具。被清空的 `deny` 清单则直接省略。
 

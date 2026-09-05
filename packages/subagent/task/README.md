@@ -84,6 +84,17 @@ registered row are accepted without code churn:
   MCP tool, and the `ToolSearch` tool is itself mounted (restrictable), `ToolSearch` is
   appended (deduped) — otherwise the child would hold MCP names with no load path. When
   `ToolSearch` is not mounted it is never injected.
+- **Spawn-time preload of explicit deferred MCP names.** An explicit `tools:` entry that is
+  still deferred (not yet registered) is activated through the duck-typed `ctx.toolSearch`
+  seam at spawn, BEFORE the child starts, on BOTH dispatch paths (foreground collect and
+  background) — activation is process-global, so every admitting agent's schema grows after
+  the spawn. Server-level wildcard entries (`mcp__<server>`, `mcp__<server>__*`) are
+  restrict-only: their expansions are never preloaded. Names the sanitized deny list
+  excludes, or that sanitize dropped as unknown, are never activated; already-registered
+  (eager) names are skipped silently. Outcomes surface in the Task result text
+  (`Preloaded deferred tools for child: …`, plus `Not preloaded: <name> (<reason>)` for
+  denied/unknown activations); with no `toolSearch` service mounted the step degrades to a
+  single warning and the spawn proceeds normally.
 - **Unmounted names are dropped** with the standard `dropping unknown tool name …`
   warning — including MCP names of servers that are not mounted.
 - **An allow-list that matches nothing is deny-all, loudly.** If the filter carried an
