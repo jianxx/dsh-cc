@@ -141,6 +141,7 @@ derived from four orthogonal dimensions (`recognized` / `mounted` / `behavioral`
 
 | Status | Capability | Recognized | Mounted | Behavior | UX | Evidence | Deviation | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ✅ | <a id="cap-settings.hot-reload"></a>Settings hot reload | ✓ | ✓ | Full | Full | [t1](packages/settings/settings-cascade/tests/watcher.spec.ts) [t2](packages/settings/settings-cascade/tests/watcher.spec.ts) | — | — |
 | 🔶 | <a id="cap-settings.migrations"></a>Settings migrations | ✓ | ✓ | Partial | Partial | [t1](packages/settings/settings-migrations/tests/migrations.spec.ts) | downgrade — Mechanism only (version-gated runMigrations over an atomically-written settings.json, auto-run on mount) — no real migrations yet. | — |
 | ✅ | <a id="cap-settings.precedence"></a>Settings precedence | ✓ | ✓ | Full | Full | [t1](packages/settings/settings-cascade/tests/cascade.spec.ts) [t2](packages/settings/settings-cascade/tests/merge.spec.ts) | — | — |
 

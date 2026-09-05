@@ -1904,6 +1904,27 @@ capabilities:
     deviation: { kind: none }
 
   # ── settings ────────────────────────────────────────────────────────────
+  settings.hot-reload:
+    title: Settings hot reload
+    category: settings
+    plane: host
+    upstream:
+      summary: >-
+        Edits to settings.json files (user, project, local, the --settings
+        flag file, and file-based managed-policy paths) apply live in running
+        sessions without a restart.
+      refs:
+        - { source: cc-docs, path: /docs/en/settings-reference, retrieved: '2026-09-03' }
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: test, path: packages/settings/settings-cascade/tests/watcher.spec.ts, anchor: "hot-reloads an external edit" }
+      - { type: test, path: packages/settings/settings-cascade/tests/watcher.spec.ts, anchor: "keeps the last good document" }
+    deviation: { kind: none }
+
   settings.migrations:
     title: Settings migrations
     category: settings

@@ -28,6 +28,9 @@
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
+  "dependencies": {
+    "chokidar": "^4.0.3"
+  },
   "files": [
     "lib"
   ],
