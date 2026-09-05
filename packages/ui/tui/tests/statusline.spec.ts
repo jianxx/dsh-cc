@@ -1,7 +1,25 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { formatStatusLine, formatTokens } from '@jianxx/dsh-cc-tui/statusline.ts'
+import { formatModeLine, formatStatusLine, formatTokens } from '@jianxx/dsh-cc-tui/statusline.ts'
+
+describe('formatModeLine', () => {
+  it('joins the mode and the shared key hints', () => {
+    expect(formatModeLine('default')).toBe('default · shift+tab · /quit')
+    expect(formatModeLine('acceptEdits')).toBe('acceptEdits · shift+tab · /quit')
+    expect(formatModeLine('plan')).toBe('plan · shift+tab · /quit')
+  })
+
+  it('shares the hint tail with formatStatusLine so the formats cannot drift', () => {
+    const line = formatStatusLine({
+      cwd: '/tmp',
+      sessionId: 'x',
+      permissionMode: 'default',
+      busy: false,
+    })
+    expect(line.endsWith(formatModeLine('default'))).toBe(true)
+  })
+})
 
 describe('formatStatusLine', () => {
   it('joins cwd, short session id, mode, and model', () => {

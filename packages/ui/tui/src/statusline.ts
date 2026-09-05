@@ -62,6 +62,18 @@ export function formatTokens(tokens: number): string {
   return scaled(1_000_000, 'm')
 }
 
+/** Key-hint tail segments shared by the built-in line and the mode row. */
+const MODE_HINTS = ['shift+tab', '/quit'] as const
+
+/**
+ * The client-drawn permission-mode row appended under a custom statusline
+ * (`<mode> · shift+tab · /quit`); shares the hint constants with the
+ * built-in line so the formats cannot drift.
+ */
+export function formatModeLine(permissionMode: string): string {
+  return [permissionMode, ...MODE_HINTS].join(' · ')
+}
+
 /**
  * Compact footer: `cwd [branch] · session · mode · model · ctx NN% ·
  * ↑in ↓out tok` plus the busy marker and key hints. Absent optional fields
@@ -96,7 +108,7 @@ export function formatStatusLine(input: StatusLineInput, opts?: { width?: number
       parts.push(`↑${formatTokens(input.tokens.input)} ↓${formatTokens(input.tokens.output)} tok`)
     }
     if (input.busy) parts.push('working')
-    parts.push('shift+tab', '/quit')
+    parts.push(...MODE_HINTS)
     return parts.join(' · ')
   }
   const line = build(true)

@@ -40,7 +40,7 @@ export type StatusLineUpdateOptions = {
 export type StatusLineCommand = {
   /** Trigger a (debounced by default) run with a fresh payload. */
   update(config: { command: string }, payload: unknown, options?: StatusLineUpdateOptions): void
-  /** The last settled first line (empty string until a run succeeds). */
+  /** The last settled rows (0–3, '\n'-joined; empty string until a run succeeds). */
   latest(): string
   /** Abort in-flight, clear all timers, and make later settles no-ops. */
   dispose(): void
@@ -52,6 +52,8 @@ const DEFAULT_DEBOUNCE_MS = 300
 const DEFAULT_TIMEOUT_MS = 60_000
 /** dsh-cc's stdout hard cap. */
 const DEFAULT_STDOUT_MAX_BYTES = 64 * 1024
+/** Max rows of the command's stdout kept (multi-row CC status line, capped). */
+const MAX_STATUSLINE_ROWS = 3
 
 /**
  * Create the status-line command runner. Pure with respect to the injected
@@ -132,7 +134,18 @@ export function createStatusLineCommand(deps: StatusLineCommandDeps): StatusLine
         }
         if (!isCurrent(gen)) return
         const success = result.exitCode === 0 && !result.timedOut && result.stdout.text.length > 0
-        latestLine = success ? (result.stdout.text.split('\n', 1)[0] ?? '').trimEnd() : ''
+        if (success) {
+          const rows = result.stdout.text.split('\n').map((row) => row.trimEnd())
+          while (rows.length > 0 && rows[rows.length - 1] === '') rows.pop()
+          if (rows.length > 0 && rows.some((row) => row !== '')) {
+            latestLine = rows.slice(0, MAX_STATUSLINE_ROWS).join('\n')
+          } else {
+            blank()
+            return
+          }
+        } else {
+          latestLine = ''
+        }
         if (latestLine.length === 0) {
           blank()
           return

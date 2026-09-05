@@ -218,7 +218,10 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
   return {
     override(): string | undefined {
       if (!description.active || runner === undefined) return undefined
-      return ' '.repeat(description.padding) + runner.latest()
+      // Pad each content row (multi-row runner output, plan D2); the
+      // client-drawn mode row is never padded (added in driver-hud).
+      const pad = ' '.repeat(description.padding)
+      return runner.latest().split('\n').map(row => pad + row).join('\n')
     },
     onProjection(_key: string): void {
       fire()
