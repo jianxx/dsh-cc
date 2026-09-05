@@ -119,6 +119,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   //    Code files behind a non-empty dsh-native config (≥ 1 declared server):
   //    the dsh config then takes sole effect and skipped Claude Code servers
   //    surface as a notice pointing at `/mcp migrate`.
+  //
+  //    Mounts are deferred (`deferStartupConnect`): each plugin instance
+  //    activates without awaiting its MCP handshake, so the first frame is
+  //    not blocked on spawned servers; the handshakes still overlap because
+  //    the serial mounts each spawn their child synchronously.
+  const deferredNames: string[] = []
   let files: string[]
   let gatedPaths: ResolvedMcpPaths | undefined
   let noticeSources: ClaudeOnlySource[] = []
@@ -144,10 +150,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (!existsSync(file)) continue
     try {
       const body = JSON.parse(readFileSync(file, 'utf8')) as McpConfigFile
-      const registrations = buildRegistrations(body, { env: process.env })
+      const registrations = buildRegistrations(body, { env: process.env, deferStartupConnect: true })
       for (const server of registrations) {
         try {
           await ctx.plugin(CcMcpClient, server)
+          deferredNames.push(server.serverName)
           results.push(`mcp server ${server.serverName} mounted from ${file}`)
         } catch (error) {
           ctx.logger.warn(`cc-shell-glue: failed to mount MCP server ${server.serverName} from ${file}: ${String(error)}`)
@@ -158,7 +165,32 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }
   }
 
-  // 3. Gating notice: warn immediately, then inject once on the first
+  // 3. Deferred-connect visibility window: prompts submitted while a deferred
+  //    server is still handshaking cannot see its `mcp__*` tools. When any
+  //    deferred server was mounted, register a one-shot `agent/session-start`
+  //    hook (same pattern as the gating notice below) that lists the servers
+  //    still `connecting` at that moment. The pending set is evaluated at fire
+  //    time — fast handshakes settle right after the mount loop, so a boot
+  //    where everything is ready by the first prompt injects nothing.
+  if (deferredNames.length > 0) {
+    let fired = false
+    ctx.on('agent/session-start', ({ agent }: { agent: { inject(message: unknown): void } }) => {
+      // One shot per process, consumed even when suppressed.
+      if (fired) return
+      fired = true
+      const registry = ctx.get('mcpConnections') as CcMcpClient.McpConnectionsService | undefined
+      const pending = registry === undefined
+        ? []
+        : registry.entries()
+          .filter(entry => deferredNames.includes(entry.name) && entry.state === 'connecting')
+          .map(entry => entry.name)
+      if (pending.length === 0) return
+      const text = `MCP: still connecting — ${pending.join(', ')}. Tools from these servers become available once ready.`
+      agent.inject(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'cc-shell-glue', form: 'notice', summary: text } }))
+    })
+  }
+
+  // 4. Gating notice: warn immediately, then inject once on the first
   //    `agent/session-start` (the TUI cannot see logger.warn). The closure
   //    flag makes it fire exactly once per process even when subagent/resume
   //    fan-out re-emits the event.

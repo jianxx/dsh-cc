@@ -73,6 +73,12 @@ export interface StdioConfig {
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
+  /**
+   * Return from `apply` without awaiting the initial connect: the handshake
+   * and tool discovery settle in the background. Ignored (fully blocking)
+   * when `failOnStartupError` is true.
+   */
+  deferStartupConnect?: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
 }
@@ -97,6 +103,12 @@ export interface StreamableHttpConfig {
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
+  /**
+   * Return from `apply` without awaiting the initial connect: the handshake
+   * and tool discovery settle in the background. Ignored (fully blocking)
+   * when `failOnStartupError` is true.
+   */
+  deferStartupConnect?: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
 }
@@ -121,6 +133,12 @@ export interface SseConfig {
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
+  /**
+   * Return from `apply` without awaiting the initial connect: the handshake
+   * and tool discovery settle in the background. Ignored (fully blocking)
+   * when `failOnStartupError` is true.
+   */
+  deferStartupConnect?: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
 }
@@ -151,6 +169,7 @@ export const Config = z.union([
     cwd: z.string().default(''),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
+    deferStartupConnect: z.boolean().default(false),
     reconnect: Reconnect,
   }),
   z.object({
@@ -161,6 +180,7 @@ export const Config = z.union([
     oauth: OAuth.required(false),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
+    deferStartupConnect: z.boolean().default(false),
     reconnect: Reconnect,
   }),
   z.object({
@@ -171,6 +191,7 @@ export const Config = z.union([
     oauth: OAuth.required(false),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
+    deferStartupConnect: z.boolean().default(false),
     reconnect: Reconnect,
   }),
 ]) as unknown as z<Config>
@@ -240,6 +261,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const handle = startConnection(ctx, config, reconnect)
     current = handle
     const outcome = await handle.ready
+    // Settle guard: a deferred continuation whose supervisor was already
+    // replaced (a newer connect) or disposed (the effect teardown unregistered
+    // the entry) must not write into the registry after the fact.
+    if (current !== handle) return outcome
     if (outcome.error !== undefined) {
       registry!.report(config.serverName, 'error', { error: String(outcome.error) })
     } else {
@@ -274,6 +299,21 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // When failOnStartupError is true, a failed initial attempt rejects the
   // fiber (Cordis rolls it back); otherwise the error is logged and the
   // supervisor enters its reconnect loop.
+  //
+  // With `deferStartupConnect`, activation returns right after the namespace
+  // reservation and registry.register above; the connect is kicked un-awaited
+  // and its settle continuation (guarded in `connect`) updates the registry
+  // and tools. `failOnStartupError` wins: deferral is ignored so the entire
+  // startup-options path stays blocking — that flag also flips the initial
+  // sync's `registrationFailure` to 'throw' (connection.ts), so a partial
+  // deferral would produce a fiber rollback nobody awaits.
+  if (config.deferStartupConnect === true && !config.failOnStartupError) {
+    // An unhandled rejection would kill the Node process; contain it loudly.
+    void connect().catch((error: unknown) => {
+      ctx.logger.warn(`mcp-client(${config.serverName}): deferred initial connect failed: ${String(error)}`)
+    })
+    return
+  }
   const outcome = await connect()
   if (outcome.error !== undefined && config.failOnStartupError) {
     throw new Error(`mcp-client(${config.serverName}): initial connection or tool synchronization failed`, { cause: outcome.error })
