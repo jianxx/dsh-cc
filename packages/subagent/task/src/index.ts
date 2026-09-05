@@ -18,6 +18,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { PinStore } from '@jianxx/dsh-cc-subagent-resume-pins'
+import {
+  collectorFor,
+  collectorsForSession,
+  registeredCollectorCount,
+} from './epoch-collector.ts'
 import { SpawnPinCapture, type ResumePinsConfig } from './resume-capture.ts'
 import { AgentRegistry } from './registry.ts'
 import { registerTaskTool } from './tool.ts'
@@ -39,6 +44,8 @@ export {
   collectorKey,
   registerCollector,
   unregisterCollector,
+  collectorsForSession,
+  registeredCollectorCount,
   markCollectedForSuppression,
   releaseCollectedForSuppression,
   isCollectedForSuppression,
@@ -87,6 +94,9 @@ export const BACKGROUND_SECTION_TEXT = [
   '- Control the child by that id: `list_agents` for status, `send_message` to continue the same',
   '  conversation (only the agent that started the child may continue it), `interrupt_agent` to',
   '  stop its current turn.',
+  '- A foreground wait may be user-promoted (Ctrl+B) to background while it runs: if a tool result',
+  '  carries `status: \'async_launched\'` with `backgroundedByUser: true`, treat it exactly like a',
+  '  background launch — the result arrives as a later wake; do not poll.',
   '- `subagent_type: "fork"` cannot run in the background (upstream harness issue #2124); use a',
   '  plain background spawn instead.',
   '- Exiting your session drains a background child\'s in-flight turn; its persisted session',
@@ -154,4 +164,37 @@ export function apply(ctx: Context, config: TaskPluginConfig = {}): void {
   mountBackgroundSection(ctx)
   mountStripWorkspaceInstructions(ctx)
   mountSettledNoticeSuppression(ctx)
+  publishCollectorRegistry(ctx)
+}
+
+/**
+ * Publish the Slice 3 promotion registry (collector doc §6) as the ROOT-realm
+ * `ccCollectorRegistry` service so the TUI busy-branch — a host-plane sibling
+ * that cannot resolve realm-interior mounts — queries the SAME live
+ * registration map the Task tool's collect path populates. Mirrors the
+ * command-agents `ccAgents` publication (CcPlugins pattern): first
+ * publication provides the name; a reclaim after an unload takes the slot
+ * back via `set`; the unload effect clears it so the TUI degrades to
+ * "nothing promotable" instead of holding a dead registry.
+ * @param ctx - the plug context.
+ */
+function publishCollectorRegistry(ctx: Context): void {
+  const root = ctx.root as unknown as {
+    get(key: string, optional?: boolean): unknown
+    provide(key: string, value: unknown): void
+    set(key: string, value: unknown): void
+  }
+  const registryService = {
+    collectorFor,
+    collectorsForSession,
+    registeredCollectorCount,
+  }
+  if (root.get('ccCollectorRegistry', false) === undefined) {
+    root.provide('ccCollectorRegistry', registryService)
+  } else {
+    root.set('ccCollectorRegistry', registryService)
+  }
+  ctx.effect(() => () => {
+    if (root.get('ccCollectorRegistry', false) === registryService) root.set('ccCollectorRegistry', undefined)
+  }, 'cc-subagent-task: clear host-realm ccCollectorRegistry publication on unload')
 }

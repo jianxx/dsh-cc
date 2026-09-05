@@ -203,6 +203,9 @@
       "@jianxx/dsh-cc-command-agents/snapshot": [
         "./packages/interaction/command-agents/src/snapshot.ts"
       ],
+      "@jianxx/dsh-cc-subagent-task": [
+        "./packages/subagent/task/src/index.ts"
+      ],
       "@jianxx/dsh-cc-command-tasks": [
         "./packages/interaction/command-tasks/src/index.ts"
       ],

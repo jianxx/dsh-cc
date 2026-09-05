@@ -1927,6 +1927,9 @@ importers:
       '@jianxx/dsh-cc-pi-tui':
         specifier: workspace:^
         version: link:../pi-tui
+      '@jianxx/dsh-cc-subagent-task':
+        specifier: workspace:^
+        version: link:../../subagent/task
       highlight.js:
         specifier: 11.12.0
         version: 11.12.0

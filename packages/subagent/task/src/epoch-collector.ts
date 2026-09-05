@@ -40,6 +40,7 @@ export interface EpochTerminal {
 export type EpochOutcome =
   | ({ kind: 'epoch' } & EpochTerminal)
   | { kind: 'aborted'; stopReason: 'aborted' }
+  | { kind: 'promoted' }
 
 /** Duck-typed interrupt surface on the subagents seam (harness `interrupt`). */
 export interface SubagentsInterruptLike {
@@ -168,6 +169,26 @@ export function collectorFor(key: string): CollectorRegistration | undefined {
   return registrations.get(key)
 }
 
+/**
+ * All live registrations of ONE parent session (the TUI busy-branch Ctrl+B
+ * query, F9): every armed collect whose compound key starts with the session
+ * prefix. A promoted/settled/aborted collect unregisters itself, so an
+ * armed entry here is exactly a promotable foreground wait.
+ */
+export function collectorsForSession(parentSessionId: string): CollectorRegistration[] {
+  const prefix = `${parentSessionId}\u0000`
+  const found: CollectorRegistration[] = []
+  for (const [key, handle] of registrations) {
+    if (key.startsWith(prefix)) found.push(handle)
+  }
+  return found
+}
+
+/** Instrumentation for tests and diagnostics: live registration count. */
+export function registeredCollectorCount(): number {
+  return registrations.size
+}
+
 // ── The collect loop (§3) ─────────────────────────────────────────────────
 
 export interface CollectFirstEpochDeps {
@@ -188,6 +209,15 @@ export interface CollectFirstEpochDeps {
    * caller, mirroring `startBackground`).
    */
   start: () => Promise<void>
+  /**
+   * The collecting parent session id — half of the promotion-registry key
+   * (§6). Both this and {@link CollectFirstEpochDeps.toolCallToken} must be
+   * provided for the collect to register itself as promotable; without them
+   * the collect is a plain Slice 2 collect (never discoverable by the TUI).
+   */
+  parentSessionId?: string
+  /** The tool-call token — the other half of the registry key (§6). */
+  toolCallToken?: string
 }
 
 /**
@@ -203,10 +233,43 @@ export async function collectFirstEpoch(deps: CollectFirstEpochDeps): Promise<Ep
     resolveEntry = resolve
   })
   let interrupted = false
+  let promoted = false
+  let settled = false
   let raceAbort: ((outcome: EpochOutcome) => void) | undefined
   const abortPromise = new Promise<EpochOutcome>(resolve => {
     raceAbort = resolve
   })
+  let resolvePromoted!: () => void
+  const promotedPromise = new Promise<void>(resolve => {
+    resolvePromoted = resolve
+  })
+  // The promotion-registry registration (§6): registered BEFORE start, so a
+  // Ctrl+B fired during the still-in-flight `startContinuable` finds the
+  // armed handle; unregistered on EVERY resolution path (settle, abort,
+  // promote, start-throw) — a resolved collect is never promotable.
+  const registrationKey = deps.parentSessionId !== undefined && deps.toolCallToken !== undefined
+    ? collectorKey(deps.parentSessionId, deps.toolCallToken)
+    : undefined
+  const registration: CollectorRegistration = {
+    childId,
+    promote(): void {
+      // Idempotent: a collect already resolved (settled) or already promoted
+      // never re-releases, re-un-suppresses, or re-resolves.
+      if (settled || promoted) return
+      promoted = true
+      // Release the watch: the runId-matched `subagent/end` arriving later
+      // resolves nothing — the epoch is no longer awaited (§6).
+      release(childId)
+      // The promoted child's eventual settlement notice flows NORMALLY
+      // (exactly-once, un-suppressed).
+      releaseCollectedForSuppression(childId)
+      resolvePromoted()
+    },
+    abort(): void {
+      if (settled || interrupted) return
+      onAbort()
+    },
+  }
   const onAbort = (): void => {
     if (interrupted) return
     interrupted = true
@@ -225,20 +288,36 @@ export async function collectFirstEpoch(deps: CollectFirstEpochDeps): Promise<Ep
   // Reserve BEFORE start (§8 race register).
   watches.set(childId, entry)
   ensureWatchers(bus)
+  if (registrationKey !== undefined) registerCollector(registrationKey, registration)
+  const finish = (): void => {
+    settled = true
+    if (registrationKey !== undefined) unregisterCollector(registrationKey)
+    signal.removeEventListener('abort', onAbort)
+  }
   try {
     await start()
   } catch (error) {
-    signal.removeEventListener('abort', onAbort)
+    finish()
     release(childId)
     releaseCollectedForSuppression(childId)
     throw error
   }
   if (signal.aborted) onAbort()
+  // Pre-acceptance promotion (§6): a promote() that fired while
+  // `startContinuable` was still in flight resolves the tool call AS SOON AS
+  // start resolves — the child is accepted, its id durable, the epoch never
+  // awaited. The watch was already released by promote(); the settled notice
+  // was already un-suppressed.
+  if (promoted) {
+    finish()
+    return { kind: 'promoted' }
+  }
   const outcome = await Promise.race([
     epochPromise.then((terminal): EpochOutcome => ({ kind: 'epoch', ...terminal })),
     abortPromise,
+    promotedPromise.then((): EpochOutcome => ({ kind: 'promoted' })),
   ])
-  signal.removeEventListener('abort', onAbort)
+  finish()
   if (outcome.kind === 'aborted') {
     // Keep the watch entry armed ONLY to drive suppression bookkeeping: the
     // child's real `subagent/end` arrives later and releases the entry.

@@ -59,6 +59,17 @@ export interface Driver {
    */
   recallQueued(): string | undefined
   /**
+   * Ctrl+B promotion of a foreground subagent wait (UX plan §3.4): promote
+   * EVERY armed foreground collect of the CURRENT session to background via
+   * the root-realm `ccCollectorRegistry`. Gated by the
+   * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` kill switch and by the registry
+   * being resolvable — with nothing promotable (no registry, no armed
+   * collect, or env kill switch armed) this is a `0` no-op. Returns the
+   * number of promoted collects (the TUI echoes one status line when > 0).
+   * Optional: drivers without the seam degrade to no promotion.
+   */
+  promoteForegroundCollects?(): number
+  /**
    * Advance the Shift+Tab permission-mode cycle. Mode writes are serialized
    * per driver; the returned promise settles when this step's write chain
    * (command-channel dispatch + engine setMode) has finished, so tests and

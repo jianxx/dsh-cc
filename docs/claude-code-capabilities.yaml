@@ -1690,6 +1690,8 @@ capabilities:
       - { type: test, path: packages/subagent/task/tests/epoch-collector.spec.ts }
       - { type: test, path: packages/subagent/task/tests/suppress-settled.spec.ts }
       - { type: test, path: packages/subagent/task/tests/integration.spec.ts }
+      - { type: test, path: packages/subagent/task/tests/registry-publication.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/promote-key.spec.ts }
       - { type: test, path: packages/subagent/resume-pins/tests/gate.spec.ts }
       - { type: test, path: packages/bundle/cc-shell/tests/resume-pins-composition.spec.ts }
     deviation:
@@ -1730,13 +1732,33 @@ capabilities:
         (the duplicated subagent-settled notice is dropped by a pop-once
         pre-step filter; a promoted child is removed from the set and
         delivers normally); (2) on exec.signal abort the child is interrupted
-        exactly once via ctx.subagents.interrupt({kind:'ancestor'}) and the
+        aborted exactly once via ctx.subagents.interrupt({kind:'ancestor'}) and the
         tool call resolves PROMPTLY with a synthetic stopReason "aborted"
         (never awaiting child quiescence; the real terminal arrives only as
         the suppressed notice); (3) a seam without interrupt degrades to a
         prompt resolve without child interrupt. Output schema gains optional
         backgroundedByUser: true (set by the Slice 3 promotion path, never by
         Slice 2 code paths).
+        Ctrl+B promotion (TUI-only surface): while the dialog is busy AND the
+        root-realm ccCollectorRegistry (published by the cc-subagent-task
+        plugin, CcPlugins pattern) has ≥1 armed foreground collect for THIS
+        session AND CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is unset, Ctrl+B
+        promotes EVERY armed collect of the session: the pending tool call
+        resolves { status: 'async_launched', agentId, backgroundedByUser:
+        true }, the watch is released (the runId-matched end later resolves
+        nothing), the child is REMOVED from the suppression set so its
+        settlement notice delivers exactly once normally, and the TUI echoes
+        one status line. Pre-acceptance promotion (Ctrl+B fired while
+        startContinuable is still in flight) resolves async_launched as soon
+        as start resolves. Repeated presses are idempotent (a promoted
+        collect unregisters itself; the second press is a consumed no-op).
+        Declared deviations: promotion is a TUI-only surface — non-TUI
+        clients have NO promotion path; busy Esc/Ctrl+C still interrupts
+        (every registered collect of the session aborts exactly-once with a
+        prompt synthetic aborted resolution); idle Ctrl+B is untouched (the
+        editor's tui.editor.cursorLeft binding); under tmux, Ctrl+B is the
+        default prefix — double-press passes a literal Ctrl+B through
+        (send-prefix) and the Ctrl+X Ctrl+B chord is P1 (not implemented).
         Env kill switch CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: a non-empty
         value other than case-insensitive 0/false disables the
         backgrounding-by-default pins (omissions collect in foreground) —

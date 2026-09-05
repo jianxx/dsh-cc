@@ -23,6 +23,7 @@ import { createPickersSection } from './driver-pickers.ts'
 import { createQueueSection } from './driver-queue.ts'
 import { createRunLocalSection } from './driver-run-local.ts'
 import { createAgentSection, attachSessionEvents } from './driver-agent.ts'
+import { backgroundTasksDisabled } from '@jianxx/dsh-cc-subagent-task'
 
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
@@ -421,6 +422,27 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   } satisfies DriverQueueCtx)
   actions.flushQueue = () => queue.flushQueue()
 
+  // --- Ctrl+B promotion (UX plan §3.4) ---------------------------------------
+  // Promote every armed foreground subagent collect of the CURRENT session to
+  // background. The collect path (Task tool) registers each in-flight
+  // foreground collect under parentSessionId + toolCallToken in the
+  // root-realm `ccCollectorRegistry` (published by the cc-subagent-task
+  // plugin, CcPlugins pattern); `promote()` on a handle releases the wait
+  // (`async_launched` + `backgroundedByUser: true` tool result) and leaves
+  // the child untouched — its settlement notice later delivers normally.
+  // Gated by the env kill switch; an absent registry or session change
+  // degrades to 0 (nothing promotable).
+  const promoteForegroundCollects = (): number => {
+    if (backgroundTasksDisabled()) return 0
+    const registry = (ctx.get('ccCollectorRegistry') as {
+      collectorsForSession?(parentSessionId: string): { promote(): void }[]
+    } | undefined)
+    if (registry?.collectorsForSession === undefined) return 0
+    const armed = registry.collectorsForSession(String(current.agent.session.id))
+    for (const handle of armed) handle.promote()
+    return armed.length
+  }
+
   return {
     get state() { return state },
     get statusLine() { return statusLineOf() },
@@ -438,6 +460,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     interrupt: queue.interrupt,
     steerQueued: queue.steerQueued,
     recallQueued: queue.recallQueued,
+    promoteForegroundCollects,
     cyclePermissionMode: () => modeSection.cyclePermissionMode(),
     toggleGlobalCollapse() { emit(toggleGlobalCollapse(state)) },
     toggleThinking() { emit(toggleThinking(state)) },

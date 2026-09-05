@@ -260,6 +260,9 @@ export function registerTaskTool(
       + 'when this turn needs that child\u2019s result \u2014 explicit true/false always win over the pin. '
       + 'Continue a background child later with `send_message` addressed to its id; inspect it with '
       + '`list_agents` and stop its current turn with `interrupt_agent`. '
+      + 'A foreground wait may be user-promoted to background while it runs: if a tool result '
+      + 'carries `status: \'async_launched\'` with `backgroundedByUser: true`, treat it exactly '
+      + 'like a background launch — the result arrives as a later wake; do not poll. '
       + 'Note: `fork` cannot run in the background (upstream harness issue #2124).',
     parameters: {
       subagent_type: {
@@ -304,7 +307,7 @@ export function registerTaskTool(
       ],
     },
     isConcurrencySafe: () => true,
-    async execute(args: TaskArgs, exec: { agent?: Agent; signal: AbortSignal }) {
+    async execute(args: TaskArgs, exec: { agent?: Agent; signal: AbortSignal; token?: unknown }) {
       const agent = exec.agent
       if (agent === undefined) {
         throw new Error('subagent_fork requires a calling agent (exec.agent was undefined)')
@@ -495,6 +498,34 @@ function stopReasonMessage(childId: string, stopReason: string): string {
 }
 
 /**
+ * The user-promotion result (Ctrl+B, UX plan §3.4): the foreground wait is
+ * released to background — the model sees the SAME contract as an explicit
+ * `run_in_background: true` launch, with `backgroundedByUser: true` marking
+ * the promotion. The child's report/finish notice arrives later as a wake
+ * (its suppression mark was removed by `promote()` — exactly-once delivery).
+ */
+function promotedResult(
+  childId: string,
+  captureWarning: string | undefined,
+): { text: string; status: 'async_launched'; agentId: string; backgroundedByUser: true } {
+  return {
+    text:
+      `Background subagent started (agentId: ${childId}). The user moved the foreground wait `
+      + 'to the background while it ran (status async_launched, backgroundedByUser: true); treat '
+      + 'this exactly like a background launch — the result arrives as a later waking message, '
+      + 'so do not compose on an inline result. '
+      + 'Control it by that id: `list_agents` for status, `send_message` to continue the same '
+      + 'conversation, `interrupt_agent` to stop its current turn.'
+      + (captureWarning !== undefined
+        ? `\nresume pin capture failed: ${captureWarning}; this child will resume with legacy semantics`
+        : ''),
+    status: 'async_launched',
+    agentId: childId,
+    backgroundedByUser: true,
+  }
+}
+
+/**
  * Project the collect path's epoch outcome onto the tool output shape
  * (`settle`'s contract): `completed` → the closing message's text blocks;
  * any other stop reason — including the abort path's prompt-synthetic
@@ -505,8 +536,10 @@ function outcomeToResult(
   outcome: EpochOutcome,
   captureWarning: string | undefined,
 ): { text: string; status: 'completed' } {
-  if (outcome.kind === 'aborted' || outcome.stopReason !== 'completed') {
-    throw new Error(stopReasonMessage(childId, outcome.kind === 'aborted' ? 'aborted' : outcome.stopReason))
+  // A promoted outcome never reaches here (the collect caller returns the
+  // async_launched result first); defensively it is an unexpected terminal.
+  if (outcome.kind !== 'epoch' || outcome.stopReason !== 'completed') {
+    throw new Error(stopReasonMessage(childId, outcome.kind === 'epoch' ? outcome.stopReason : outcome.kind))
   }
   const text = (outcome.output ?? [])
     .filter(block => block.type === 'text')
@@ -535,8 +568,8 @@ async function collectForeground(
   seam: SubagentsLike,
   request: BackgroundRequest,
   capture: SpawnPinCapture | undefined,
-  exec: { agent?: Agent; signal: AbortSignal },
-): Promise<{ text: string; status: 'completed' }> {
+  exec: { agent?: Agent; signal: AbortSignal; token?: unknown },
+): Promise<{ text: string; status: 'completed' } | { text: string; status: 'async_launched'; agentId: string; backgroundedByUser: true }> {
   const agent = exec.agent
   if (agent === undefined) {
     throw new Error('subagent_fork requires a calling agent (exec.agent was undefined)')
@@ -571,6 +604,11 @@ async function collectForeground(
       agent,
       signal,
       subagents: seam,
+      // The promotion-registry key (§6): parent session + this call's
+      // registry token, so the TUI busy-branch Ctrl+B can find (and promote
+      // or abort) every armed foreground collect of this session.
+      parentSessionId: agent.id,
+      toolCallToken: exec.token !== undefined ? String(exec.token) : randomUUID(),
       start: async () => {
         try {
           await seam.startContinuable!({
@@ -593,6 +631,7 @@ async function collectForeground(
         }
       },
     })
+    if (outcome.kind === 'promoted') return promotedResult(durableChildId, captureWarning)
     return outcomeToResult(durableChildId, outcome, captureWarning)
   } catch (error) {
     // §4.5 step 4 (parity with startBackground): a start that rolled back the

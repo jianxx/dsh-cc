@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   collectFirstEpoch,
+  collectorFor,
+  collectorKey,
+  collectorsForSession,
   epochWatchSize,
+  isCollectedForSuppression,
   registerCollector,
   unregisterCollector,
   type EpochOutcome,
@@ -199,5 +203,184 @@ describe('epoch collector', () => {
     })).rejects.toThrow('start failed')
     expect(epochWatchSize()).toBe(0)
     expect(bus.liveCount('subagent/end')).toBe(0)
+  })
+})
+
+describe('Slice 3 promotion (epoch-collector doc §6)', () => {
+  it('settle-wins: the epoch outcome resolves, the registration is removed, and the suppression mark stays for the pop-once listener', async () => {
+    const bus = new FakeBus()
+    const key = collectorKey('parent-1', 'call-s1')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-s1',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-s1',
+      start: async () => {},
+    })
+    bus.emit('subagent/start', { runId: 'rs1', provider: 'spawn', id: 'c-s1', local: true })
+    expect(collectorFor(key)?.childId).toBe('c-s1')
+    expect(isCollectedForSuppression('c-s1')).toBe(true)
+    bus.emit('subagent/end', {
+      runId: 'rs1', provider: 'spawn', id: 'c-s1', local: true,
+      stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'done' }],
+    })
+    await expect(done).resolves.toEqual({
+      kind: 'epoch', stopReason: 'completed', output: [{ type: 'text', text: 'done' }],
+    })
+    // Registry cleanup on settle: the resolved collect is never promotable.
+    expect(collectorFor(key)).toBeUndefined()
+    // Suppression mark persists (the pre-step waterfall pops it when the
+    // duplicated settled notice is dropped).
+    expect(isCollectedForSuppression('c-s1')).toBe(true)
+    expect(epochWatchSize()).toBe(0)
+  })
+
+  it('promote-wins: resolves { kind: promoted }, unregisters, un-suppresses, and the later runId-matched end resolves nothing', async () => {
+    const bus = new FakeBus()
+    const key = collectorKey('parent-1', 'call-p1')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-p1',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-p1',
+      start: async () => {},
+    })
+    bus.emit('subagent/start', { runId: 'rp1', provider: 'spawn', id: 'c-p1', local: true })
+    expect(isCollectedForSuppression('c-p1')).toBe(true)
+    collectorFor(key)!.promote()
+    await expect(done).resolves.toEqual({ kind: 'promoted' })
+    expect(collectorFor(key)).toBeUndefined()
+    // The promoted child's settlement notice is NOT suppressed: exactly-once
+    // delivery by construction.
+    expect(isCollectedForSuppression('c-p1')).toBe(false)
+    expect(epochWatchSize()).toBe(0)
+    // The later runId-matched end (the real terminal) resolves nothing.
+    bus.emit('subagent/end', { runId: 'rp1', provider: 'spawn', id: 'c-p1', local: true, stopReason: 'completed' })
+    expect(collectorsForSession('parent-1')).toEqual([])
+  })
+
+  it('promote-before-acceptance: a promote during in-flight start resolves as soon as start resolves', async () => {
+    const bus = new FakeBus()
+    let releaseStart!: () => void
+    const gate = new Promise<void>(resolve => { releaseStart = resolve })
+    const key = collectorKey('parent-1', 'call-pa')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-pa',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-pa',
+      start: async () => { await gate },
+    })
+    // Registered BEFORE start (reserve-before-start): Ctrl+B finds the armed
+    // handle even while startContinuable is still in flight.
+    const handle = collectorFor(key)
+    expect(handle).toBeDefined()
+    handle!.promote()
+    releaseStart()
+    await expect(done).resolves.toEqual({ kind: 'promoted' })
+    // No end event was needed, and the watch was already released.
+    expect(epochWatchSize()).toBe(0)
+    expect(collectorFor(key)).toBeUndefined()
+  })
+
+  it('abort-wins: the aborted outcome unregisters; a post-abort promote is a no-op and never un-suppresses', async () => {
+    const bus = new FakeBus()
+    const ac = new AbortController()
+    const key = collectorKey('parent-1', 'call-a1')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-a1',
+      agent,
+      signal: ac.signal,
+      subagents: {},
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-a1',
+      start: async () => {},
+    })
+    ac.abort()
+    await expect(done).resolves.toEqual({ kind: 'aborted', stopReason: 'aborted' })
+    expect(collectorFor(key)).toBeUndefined()
+    // A stale handle promote after abort is inert: the child stays suppressed
+    // (the aborted epoch's real terminal notice is still dropped).
+    collectorFor(key)?.promote()
+    expect(isCollectedForSuppression('c-a1')).toBe(true)
+  })
+
+  it('promote-then-abort: after promotion the collect is settled — abort is a no-op (child keeps running)', async () => {
+    const bus = new FakeBus()
+    const ac = new AbortController()
+    const key = collectorKey('parent-1', 'call-p2')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-p2',
+      agent,
+      signal: ac.signal,
+      subagents: {},
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-p2',
+      start: async () => {},
+    })
+    collectorFor(key)!.promote()
+    await expect(done).resolves.toEqual({ kind: 'promoted' })
+    ac.abort()
+    expect(isCollectedForSuppression('c-p2')).toBe(false)
+  })
+
+  it('repeated promote is idempotent: one resolution, one un-suppress, one unregister', async () => {
+    const bus = new FakeBus()
+    const key = collectorKey('parent-1', 'call-rp')
+    const done = collectFirstEpoch({
+      bus,
+      childId: 'c-rp',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-rp',
+      start: async () => {},
+    })
+    const handle = collectorFor(key)!
+    handle.promote()
+    expect(() => handle.promote()).not.toThrow()
+    await expect(done).resolves.toEqual({ kind: 'promoted' })
+    expect(isCollectedForSuppression('c-rp')).toBe(false)
+    expect(collectorFor(key)).toBeUndefined()
+  })
+
+  it('collectorsForSession returns exactly the armed collects of that session; other sessions unaffected', async () => {
+    const bus = new FakeBus()
+    const other = collectFirstEpoch({
+      bus,
+      childId: 'c-other',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-2',
+      toolCallToken: 'call-o',
+      start: async () => {},
+    })
+    const mine = collectFirstEpoch({
+      bus,
+      childId: 'c-mine',
+      agent,
+      signal: freshSignal(),
+      parentSessionId: 'parent-1',
+      toolCallToken: 'call-m',
+      start: async () => {},
+    })
+    expect(collectorsForSession('parent-1').map(h => h.childId)).toEqual(['c-mine'])
+    expect(collectorsForSession('parent-2').map(h => h.childId)).toEqual(['c-other'])
+    collectorFor(collectorKey('parent-1', 'call-m'))!.promote()
+    await mine
+    expect(collectorsForSession('parent-1')).toEqual([])
+    expect(collectorsForSession('parent-2').map(h => h.childId)).toEqual(['c-other'])
+    bus.emit('subagent/start', { runId: 'ro', provider: 'spawn', id: 'c-other', local: true })
+    bus.emit('subagent/end', { runId: 'ro', provider: 'spawn', id: 'c-other', local: true, stopReason: 'completed' })
+    await other
+    expect(collectorsForSession('parent-2')).toEqual([])
   })
 })

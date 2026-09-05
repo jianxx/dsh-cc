@@ -18,6 +18,7 @@ import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { AgentRegistry } from '../src/registry.ts'
 import { backgroundTasksDisabled, registerTaskTool, TASK_TOOL } from '../src/tool.ts'
 import { BACKGROUND_SECTION_TEXT } from '../src/index.ts'
+import { collectorsForSession } from '../src/epoch-collector.ts'
 
 /** A faithfully-capability-checking fake subagents seam (mirrors assertCapabilities). */
 interface FakeProvider {
@@ -1018,8 +1019,44 @@ describe('Task tool', () => {
       const { ctx, continuableStarts } = await mount()
       const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
       expect(result.isError).toBe(false)
-      expect(continuableStarts).toHaveLength(1)
+        expect(continuableStarts).toHaveLength(1)
+    })
+  })
+
+  describe('Ctrl+B promotion of a foreground collect (Slice 3)', () => {
+    function agentWithId(cwd: string, id: string): Agent {
+      return { id, session: { header: { cwd } } } as unknown as Agent
+    }
+
+    it('promote-wins: the pending collect resolves async_launched + backgroundedByUser and the later notice is not suppressed', async () => {
+      const { ctx, startedChildIds, emitEnd } = await mount({ seamProviders: [pendingProvider()] })
+      const pending = call(ctx, { description: 'x', prompt: 't' }, agentWithId('/any', 'parent-t'))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      const armed = collectorsForSession('parent-t')
+      expect(armed).toHaveLength(1)
+      armed[0]!.promote()
+      const result = await pending
+      expect(result.isError).toBe(false)
+      expect(result.content[0]!.text).toContain(`agentId: ${startedChildIds[0]}`)
+      expect(result.content[0]!.text).toContain('backgroundedByUser')
+      expect(result.content[0]!.text).toMatch(/later waking message/)
+      // The promoted child is un-suppressed: its real terminal arrives as the
+      // settlement notice (drop is NOT armed anymore).
+      emitEnd(startedChildIds[0]!, COMPLETED)
+      expect(collectorsForSession('parent-t')).toEqual([])
+    })
+
+    it('settle-wins: the collect resolves completed inline and the registry entry is removed', async () => {
+      const { ctx } = await mount()
+      const result = await call(ctx, { description: 'x', prompt: 't' }, agentWithId('/any', 'parent-s'))
+      expect(result.isError).toBe(false)
+      expect(result.content[0]!.text).toBe('done')
+      expect(collectorsForSession('parent-s')).toEqual([])
+    })
+
+    it('teaches the promotion clause in the tool description and the background section', () => {
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/backgroundedByUser: true/)
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/later wake/)
     })
   })
 })
-

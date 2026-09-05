@@ -22,6 +22,9 @@
       "path": "../pi-tui"
     },
     {
+      "path": "../../subagent/task"
+    },
+    {
       "path": "../../workspace/session-cwd"
     }
   ]
