@@ -152,6 +152,9 @@
       "path": "./packages/interaction/command-status"
     },
     {
+      "path": "./packages/interaction/command-agents"
+    },
+    {
       "path": "./packages/interaction/command-tasks"
     },
     {

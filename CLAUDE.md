@@ -54,6 +54,10 @@ another fork's result is the ONLY legal reason to serialize.
   `run_in_background: true`. Synthesize on the wake; do not poll.
 - A definition with `background: true` backgrounds on omit. If you need
   that child's result this turn, pass `run_in_background: false`.
+- `deep-reasoner` and `fast-worker` are pinned `background: true`: omitting
+  `run_in_background` backgrounds them. A mutating same-tree `fast-worker`
+  delegation MUST pass `run_in_background: false` so you can verify before
+  composing — `isolation: worktree` is not wired.
 - Keep the batching hard rule above (N independent Tasks in ONE
   assistant message). Do not background mutating `fast-worker` /
   same-tree edits: `isolation: worktree` is not wired.

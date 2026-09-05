@@ -30,10 +30,11 @@ describe('LOCAL_COMMANDS', () => {
     expect(resume!.argumentHint!.length).toBeGreaterThan(0)
   })
 
-  it('agents is listed with a subagent-activity description', () => {
+  it('agents is listed with a background-agents description', () => {
     const agents = LOCAL_COMMANDS.find(c => c.name === 'agents')
     expect(agents).toBeDefined()
-    expect(agents!.description.toLowerCase()).toContain('subagent')
+    expect(agents!.description.toLowerCase()).toContain('agents')
+    expect(agents!.argumentHint).toContain('stop')
   })
 
   it('cost is listed with a token-usage description', () => {

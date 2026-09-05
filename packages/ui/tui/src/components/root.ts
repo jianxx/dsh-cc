@@ -306,6 +306,24 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				return { consume: true }
 			}
 		}
+		if (matchesKey(data, Key.ctrl('b'))) {
+			// Ctrl+B promotion of a foreground subagent wait (plan §3.4). While
+			// busy, promote EVERY armed foreground collect of this session
+			// (via the driver → root-realm `ccCollectorRegistry`) and echo one
+			// status line; busy with nothing promotable (no armed collect,
+			// env kill switch, or driver without the seam) is a consumed
+			// no-op — Ctrl+B here is NEVER treated as Esc. Idle falls through
+			// to the editor's `tui.editor.cursorLeft` binding, unchanged.
+			// tmux: Ctrl+B is the default prefix — double-press passes a
+			// literal Ctrl+B through (`send-prefix`); the Ctrl+X Ctrl+B chord
+			// is P1 (not implemented).
+			if (!live.busy) return undefined
+			const promoted = driver.promoteForegroundCollects?.() ?? 0
+			if (promoted > 0) {
+				driver.showNotice(`Moved ${promoted} subagent(s) to background — /agents to inspect`)
+			}
+			return { consume: true }
+		}
 		if (matchesKey(data, Key.escape)) {
 			if (inShellMode()) {
 				// Bash mode owns Esc FIRST — this branch must stay above the

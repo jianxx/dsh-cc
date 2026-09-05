@@ -151,41 +151,53 @@ describe('createDriver subagent tracking', () => {
     const row = driver.state.rows.at(-1)
     expect(row?.kind).toBe('status')
     if (row?.kind === 'status') {
-      expect(row.text).toBe('No subagent activity this session.')
+      expect(row.text).toBe('No background agents.')
     }
   })
 
-  it('/agents with runs lists provider, short id, and stop reason', async () => {
+  it('/agents groups fold runs as Working / Ready with provider decorations', async () => {
+    const agent = makeFakeAgent()
+    const continuableChild = {
+      session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
+    }
+    const { ctx, emitStart, emitEnd } = makeCtx(agent, { 'tui-aaaaaaaa': continuableChild })
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-aaaaaaaa', local: true })
+    emitStart({ runId: 'r2', provider: 'anthropic', id: 'tui-bbbbbbbb', local: true })
+    emitEnd({ runId: 'r1', provider: 'openai', id: 'tui-aaaaaaaa', local: true, stopReason: 'end_turn' })
+    await driver.submit('/agents')
+    const row = driver.state.rows.at(-1)
+    expect(row?.kind).toBe('status')
+    if (row?.kind === 'status') {
+      expect(row.text).toContain('Background agents:')
+      const workingAt = row.text.indexOf('Working (')
+      const readyAt = row.text.indexOf('Ready (')
+      expect(workingAt).toBeGreaterThan(-1)
+      expect(readyAt).toBeGreaterThan(workingAt)
+      // The list is label-rendered; the running child appears by short id.
+      expect(row.text).toContain('tui-bbbbbbbb')
+      // No Done group: done/parked fold runs land in Ready.
+      expect(row.text).not.toContain('Done')
+      expect(row.text).not.toContain('Blocked')
+    }
+  })
+
+  it('/agents <id> detail decorates with fold provider and last epoch', async () => {
     const agent = makeFakeAgent()
     const { ctx, emitStart, emitEnd } = makeCtx(agent)
     const driver = await createDriver(ctx as never, {})
 
-    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
-    await driver.submit('/agents')
-    const running = driver.state.rows.at(-1)
-    expect(running?.kind).toBe('status')
-    if (running?.kind === 'status') {
-      expect(running.text).toContain('Subagent activity:')
-      expect(running.text).toContain('●')
-      expect(running.text).toContain('openai')
-      // short id follows the statusline shortenSession convention (prefix + first 8 hex).
-      expect(running.text).toContain('tui-abcdef01')
-      expect(running.text).not.toContain('end_turn')
-    }
-
-    emitEnd({
-      runId: 'r1',
-      provider: 'openai',
-      id: 'tui-abcdef01-dead-beef',
-      local: true,
-      stopReason: 'end_turn',
-    })
-    await driver.submit('/agents')
-    const done = driver.state.rows.at(-1)
-    expect(done?.kind).toBe('status')
-    if (done?.kind === 'status') {
-      expect(done.text).toContain('✓')
-      expect(done.text).toContain('end_turn')
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01', local: true })
+    emitEnd({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01', local: true, stopReason: 'end_turn' })
+    await driver.submit('/agents tui-abcdef01')
+    const row = driver.state.rows.at(-1)
+    expect(row?.kind).toBe('status')
+    if (row?.kind === 'status') {
+      expect(row.text).toContain('Agent tui-abcdef01')
+      expect(row.text).toContain('residency: ready')
+      expect(row.text).toContain('provider: openai')
+      expect(row.text).toContain('last epoch: end_turn')
     }
   })
 
@@ -255,7 +267,7 @@ describe('createDriver subagent tracking', () => {
     expect(driver.state.subagents[0]!.stopReason).toBe('end_turn')
   })
 
-  it('/agents renders ○ parked for a continuable epoch and ✓ done for one-shot', async () => {
+  it('parked and done fold runs both land in Ready; one-shots keep their epoch decoration', async () => {
     const agent = makeFakeAgent()
     const continuableChild = {
       session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
@@ -269,21 +281,67 @@ describe('createDriver subagent tracking', () => {
     const parkedRow = driver.state.rows.at(-1)
     expect(parkedRow?.kind).toBe('status')
     if (parkedRow?.kind === 'status') {
-      expect(parkedRow.text).toContain('○')
-      expect(parkedRow.text).toContain('[parked]')
+      // Settled continuable is Ready (resumable), not Done.
+      expect(parkedRow.text).toContain('Ready (1):')
+      expect(parkedRow.text).toContain('tui-abcdef01')
       expect(parkedRow.text).not.toContain('end_turn')
     }
 
-    // One-shot run (no continuable child) ends done.
+    // One-shot run (no continuable child) also lands in Ready.
     emitStart({ runId: 'r2', provider: 'anthropic', id: 'tui-99999999', local: true })
     emitEnd({ runId: 'r2', provider: 'anthropic', id: 'tui-99999999', local: true, stopReason: 'end_turn' })
     await driver.submit('/agents')
     const doneRow = driver.state.rows.at(-1)
     expect(doneRow?.kind).toBe('status')
     if (doneRow?.kind === 'status') {
-      expect(doneRow.text).toContain('✓')
-      expect(doneRow.text).toContain('end_turn')
+      expect(doneRow.text).toContain('Ready (2):')
+      expect(doneRow.text).toContain('tui-99999999')
     }
+  })
+
+  it('/agents stop on a non-running child explains the no-op and does not interrupt', async () => {
+    const agent = makeFakeAgent()
+    const continuableChild = {
+      session: { events: [{ type: 'subagent/descriptor', data: { mode: 'continuable' } }] },
+    }
+    const interrupt = vi.fn()
+    const { ctx, emitStart, emitEnd } = makeCtx(agent, { 'tui-abcdef01-dead-beef': continuableChild })
+    const ctxAny = ctx as unknown as { get: (key: string) => unknown }
+    const baseGet = ctxAny.get.bind(ctx)
+    ctxAny.get = (key: string) => (key === 'subagents' ? { interrupt } : baseGet(key))
+    const driver = await createDriver(ctx as never, {})
+
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true })
+    emitEnd({ runId: 'r1', provider: 'openai', id: 'tui-abcdef01-dead-beef', local: true, stopReason: 'end_turn' })
+    await driver.submit('/agents stop tui-abcdef01-dead-beef')
+    const row = driver.state.rows.at(-1)
+    expect(row?.kind).toBe('status')
+    if (row?.kind === 'status') {
+      expect(row.text).toContain('not running')
+      expect(row.text).toContain('resumable')
+    }
+    expect(interrupt).not.toHaveBeenCalled()
+  })
+
+  it('/agents executes locally while busy (busy-time local-execution regression)', async () => {
+    const agent = makeFakeAgent()
+    const { ctx, emitStart } = makeCtx(agent)
+    const driver = await createDriver(ctx as never, {})
+    emitStart({ runId: 'r1', provider: 'openai', id: 'tui-aaaaaaaa', local: true })
+
+    // Drive the dialog busy without a turn/end flush (mirrors driver-busy).
+    agent.status = 'running'
+    driver.state.busy = true
+    await driver.submit('/agents')
+    const row = driver.state.rows.at(-1)
+    expect(row?.kind).toBe('status')
+    if (row?.kind === 'status') {
+      // Local execution: rendered immediately, not parked in the outbox.
+      expect(row.text).toContain('Background agents:')
+    }
+    expect(driver.state.busy).toBe(true)
+    expect(agent.followup).not.toHaveBeenCalled()
+    expect(agent.steer).not.toHaveBeenCalled()
   })
 
   it('/tui-help mentions /agents', async () => {

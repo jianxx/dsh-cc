@@ -24,19 +24,37 @@
  * transitively: spawn and fork both support persona/toolFilter/depthLimit, so
  * every field this tool forwards is legal.
  *
+ * The background/collect start mechanics (env kill-switch parsing, capacity
+ * guard, pin preallocation, `startBackground`/`collectForeground`) live in
+ * `./background-start.ts`; the public policy names are re-exported here to
+ * keep the module's public surface unchanged.
+ *
  * @module @jianxx/dsh-cc-subagent-task/tool
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { AgentDefinition, ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { defineTool } from '@jianxx/dsh-cc-tools'
 import { cwdOf } from '@jianxx/dsh-cc-memory'
-import type { DetailedRoute, ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
+import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
 import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
 import { SpawnPinCapture } from './resume-capture.ts'
 import { sanitizeToolFilter } from './sanitize-filter.ts'
+import {
+  backgroundTasksDisabled,
+  collectForeground,
+  preparedBackground,
+  startBackground,
+  wantsBackground,
+  type SubagentsLike,
+} from './background-start.ts'
+
+export {
+  MAX_LIVE_CONTINUABLE_CHILDREN,
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,
+  backgroundTasksDisabled,
+} from './background-start.ts'
 
 /** The registered tool name (the CC display mapping surfaces it as `Task`). */
 export const TASK_TOOL = 'subagent_fork'
@@ -46,9 +64,6 @@ const GENERAL_PURPOSE = 'general-purpose'
 
 /** The sentinel a model uses to inherit the parent's completed-turn prefix. */
 const FORK_SENTINEL = 'fork'
-
-/** Fresh-child provider: no parent conversation (CC Task default). */
-const PROVIDER_SPAWN = 'spawn'
 
 /** The default delegation-depth cap for a Task child (matches the harness default). */
 const DEFAULT_MAX_DEPTH = 3
@@ -73,54 +88,6 @@ const FORK_BACKGROUND_ISSUE = 'deepseek-harness#2124'
  */
 const RESERVED_TOOL_NAMES = ['subagent', 'workflow'] as const
 
-/** A structural subset of the subagents seam the tool dispatches through. */
-interface ContinuableStart {
-  childId: string
-  messageId: string
-}
-
-interface SubagentsLike {
-  start(name: string, request: {
-    label?: string
-    prompt: readonly { type: 'text'; text: string }[]
-    parent: Agent
-    signal: AbortSignal
-    agentOptions?: Record<string, string>
-    toolFilter?: ToolRestriction
-    maxDepth?: number
-    persona?: string
-  }): Promise<{
-    result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }>
-  }>
-  /**
-   * Duck-typed continuable-creation entry (harness `ctx.subagents.startContinuable`):
-   * establishes a durable child that accepts follow-up turns by its `childId`.
-   * A seam without it cannot serve background dispatch.
-   */
-  startContinuable?(spec: {
-    provider: string
-    label: string
-    /** Caller-reserved durable id (becomes the child's session id). */
-    childId?: string
-    request: {
-      prompt: readonly { type: 'text'; text: string }[]
-      parent: Agent
-      agentOptions?: Record<string, string>
-      toolFilter?: ToolRestriction
-      maxDepth?: number
-      persona?: string
-    }
-    signal: AbortSignal
-  }): Promise<ContinuableStart>
-  getProvider(name: string): unknown
-  list(): string[]
-}
-
-/** A structural subset of a provider descriptor exposing the capability probe. */
-interface ProviderLike {
-  prepareContinuable?: unknown
-}
-
 interface TaskArgs {
   /** The CC agent type to dispatch to; omit for a plain spawn. */
   subagent_type?: string
@@ -134,18 +101,6 @@ interface TaskArgs {
    * Default false (foreground, wait for the final text).
    */
   run_in_background?: boolean
-}
-
-/**
- * Precedence for the background decision: explicit `run_in_background` always wins
- * (true and false alike), otherwise the definition's `background: true` pin applies,
- * otherwise foreground. A `true`-string pin cannot reach this check — the agents
- * parser rejects a non-boolean `background` at load time.
- */
-function wantsBackground(args: TaskArgs, definition?: { background?: boolean }): boolean {
-  if (args.run_in_background === true) return true
-  if (args.run_in_background === false) return false
-  return definition?.background === true
 }
 
 /**
@@ -203,6 +158,9 @@ export function registerTaskTool(
       + 'when this turn needs that child\u2019s result \u2014 explicit true/false always win over the pin. '
       + 'Continue a background child later with `send_message` addressed to its id; inspect it with '
       + '`list_agents` and stop its current turn with `interrupt_agent`. '
+      + 'A foreground wait may be user-promoted to background while it runs: if a tool result '
+      + 'carries `status: \'async_launched\'` with `backgroundedByUser: true`, treat it exactly '
+      + 'like a background launch — the result arrives as a later wake; do not poll. '
       + 'Note: `fork` cannot run in the background (upstream harness issue #2124).',
     parameters: {
       subagent_type: {
@@ -239,6 +197,7 @@ export function registerTaskTool(
           text: { type: 'string', required: true },
           status: { type: 'string', enum: ['completed', 'async_launched'] },
           agentId: { type: 'string' },
+          backgroundedByUser: { type: 'boolean' },
         },
       },
       render: (_args: TaskArgs, value: { text: string; status?: string; agentId?: string }) => [
@@ -246,7 +205,7 @@ export function registerTaskTool(
       ],
     },
     isConcurrencySafe: () => true,
-    async execute(args: TaskArgs, exec: { agent?: Agent; signal: AbortSignal }) {
+    async execute(args: TaskArgs, exec: { agent?: Agent; signal: AbortSignal; token?: unknown }) {
       const agent = exec.agent
       if (agent === undefined) {
         throw new Error('subagent_fork requires a calling agent (exec.agent was undefined)')
@@ -263,18 +222,18 @@ export function registerTaskTool(
         maxDepth: DEFAULT_MAX_DEPTH,
       }
 
+      const disabled = backgroundTasksDisabled()
       if (type === undefined || type.length === 0 || type === GENERAL_PURPOSE) {
-        if (wantsBackground(args)) {
+        if (wantsBackground(args, undefined, disabled)) {
           return startBackground(seam, preparedBackground(base, capture), capture)
         }
-        const run = await seam.start(PROVIDER_SPAWN, base)
-        return settle(run)
+        return collectForeground(ctx, seam, preparedBackground(base, capture), capture, exec)
       }
 
       if (type === FORK_SENTINEL) {
         // Rejected BEFORE any seam call: fork children are one-shot until the
         // upstream harness continuable-fork prefix-reuse issue lands.
-        if (wantsBackground(args)) {
+        if (wantsBackground(args, undefined, disabled)) {
           throw new Error(
             'subagent_type "fork" cannot run in the background: fork children are one-shot '
             + `until upstream harness issue ${FORK_BACKGROUND_ISSUE} resolves. Workaround: use a `
@@ -312,152 +271,12 @@ export function registerTaskTool(
           : {}),
         ...(agentOptions !== undefined ? { agentOptions } : {}),
       }
-      if (wantsBackground(args, definition)) {
+      if (wantsBackground(args, definition, disabled)) {
         return startBackground(seam, preparedBackground(folded, capture, definition, routes), capture)
       }
-      const run = await seam.start(PROVIDER_SPAWN, folded)
-      return settle(run)
+      return collectForeground(ctx, seam, preparedBackground(folded, capture, definition, routes), capture, exec)
     },
   }))
-}
-
-/**
- * The background request shape: everything `startContinuable` forwards except
- * the provider/label envelope and the signal, which live at the spec level.
- */
-type BackgroundRequest = {
-  label: string
-  prompt: readonly { type: 'text'; text: string }[]
-  parent: Agent
-  signal: AbortSignal
-  maxDepth?: number
-  persona?: string
-  agentOptions?: Record<string, string>
-  toolFilter?: ToolRestriction
-  /**
-   * Caller-reserved durable child id — preallocated by the capture flow so
-   * the pin can be written before the child exists (plan §4.5 step 1).
-   */
-  childId?: string
-  /** Capture-only metadata (never forwarded to the seam): definition. */
-  captureDefinition?: AgentDefinition
-  /** Capture-only metadata: the atomic model-selector resolution. */
-  captureSelector?: DetailedRoute
-}
-
-/**
- * Thread the preallocated childId and the capture metadata into a background
- * request. Without capture (no `resumePins` config) the request is returned
- * unchanged — zero behavior difference.
- */
-function preparedBackground(
-  request: BackgroundRequest,
-  capture: SpawnPinCapture | undefined,
-  definition?: AgentDefinition,
-  routes?: ModelRoutes,
-): BackgroundRequest {
-  if (capture === undefined) return request
-  return {
-    ...request,
-    childId: capture.preallocateChildId(),
-    ...(definition !== undefined ? { captureDefinition: definition } : {}),
-    captureSelector: routes !== undefined
-      ? routes.resolveDetailed(definition?.model)
-      : SpawnPinCapture.inheritSelector(definition?.model),
-  }
-}
-
-/**
- * Dispatch a background call as a durable continuable child on the `spawn`
- * provider. The definition folding (persona, sanitized toolFilter,
- * alias-resolved agentOptions, maxDepth) happened before this call — cold
- * resume never re-captures the parent's policy, so the creation input must
- * already be final. Resolves once the child accepted its initial prompt.
- * Capability gaps (seam without `startContinuable`, provider without
- * `prepareContinuable`) surface as actionable tool errors naming the cause.
- */
-async function startBackground(
-  seam: SubagentsLike,
-  request: BackgroundRequest,
-  capture?: SpawnPinCapture,
-): Promise<{ text: string; status: 'async_launched'; agentId: string }> {
-  if (typeof seam.startContinuable !== 'function') {
-    throw new Error(
-      'background subagents are unavailable: the subagents seam does not expose '
-      + 'startContinuable. Background subagents require a subagent service with the '
-      + 'continuable-creation capability (prepareContinuable on the provider) and a '
-      + 'session-persistence backend; run this Task in the foreground instead.',
-    )
-  }
-  const provider = seam.getProvider(PROVIDER_SPAWN) as ProviderLike | undefined
-  if (provider !== undefined && provider !== null && provider.prepareContinuable === undefined) {
-    throw new Error(
-      `background subagents are unavailable: provider "${PROVIDER_SPAWN}" does not support `
-      + 'continuable children (UNSUPPORTED_CAPABILITY: no prepareContinuable). Background '
-      + 'subagents require a provider that implements the continuable-creation capability '
-      + 'and a session-persistence backend; run this Task in the foreground instead.',
-    )
-  }
-  const { label, prompt, parent, signal, childId, captureDefinition, captureSelector, ...rest } = request
-  // §4.5 step 2: the pin is written BEFORE the creation call (crash
-  // consistency). A failed capture keeps the spawn alive but must never be
-  // silent: the returned reason becomes an explicit captureWarning line in
-  // the tool result ("this child will resume with legacy semantics").
-  let captureWarning: string | undefined
-  if (capture !== undefined && childId !== undefined && captureSelector !== undefined) {
-    captureWarning = await capture.write({
-      parentSessionId: parent.id,
-      label,
-      childId,
-      definition: captureDefinition,
-      selector: captureSelector,
-      parentRoute: parent.options,
-      toolFilter: 'toolFilter' in rest ? rest.toolFilter : undefined,
-      cwd: cwdOf(parent),
-    })
-  }
-  let started: ContinuableStart
-  try {
-    started = await seam.startContinuable({
-      provider: PROVIDER_SPAWN,
-      label,
-      ...(childId !== undefined ? { childId } : {}),
-      request: {
-        prompt,
-        parent,
-        ...('persona' in rest ? { persona: rest.persona } : {}),
-        ...('toolFilter' in rest ? { toolFilter: rest.toolFilter } : {}),
-        ...('agentOptions' in rest ? { agentOptions: rest.agentOptions } : {}),
-        ...('maxDepth' in rest ? { maxDepth: rest.maxDepth } : {}),
-      },
-      signal,
-    })
-  } catch (error) {
-    // §4.5 step 4: the creation rolled back fully (no child id), so the pin
-    // must not survive it — tombstone, then rethrow the error unchanged.
-    if (capture !== undefined && childId !== undefined) await capture.tombstone(childId)
-    const message = (error as Error).message ?? String(error)
-    if (message.includes('UNSUPPORTED_CAPABILITY') || message.includes('does not support continuable')) {
-      throw new Error(
-        `background subagents are unavailable: ${message}. Background subagents require a `
-        + 'provider that implements the continuable-creation capability (prepareContinuable) '
-        + 'and a session-persistence backend; run this Task in the foreground instead.',
-      )
-    }
-    throw error
-  }
-  return {
-    text:
-      `Background subagent started (agentId: ${started.childId}). It is running in the `
-      + 'background; its report or finish notice will arrive as a waking message. Control it '
-      + 'by that id: `list_agents` for status, `send_message` to continue the same '
-      + 'conversation, `interrupt_agent` to stop its current turn.'
-      + (captureWarning !== undefined
-        ? `\nresume pin capture failed: ${captureWarning}; this child will resume with legacy semantics`
-        : ''),
-    status: 'async_launched',
-    agentId: started.childId,
-  }
 }
 
 /** Await a run's terminal result and project it onto the tool output shape. */
@@ -477,4 +296,3 @@ async function settle(run: { result: Promise<{ stopReason: string; output?: read
     .join('')
   return { text, status: 'completed' as const }
 }
-

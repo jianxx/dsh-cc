@@ -203,6 +203,15 @@
       "@jianxx/dsh-cc-command-mcp/mcp": [
         "./packages/interaction/command-mcp/src/mcp.ts"
       ],
+      "@jianxx/dsh-cc-command-agents": [
+        "./packages/interaction/command-agents/src/index.ts"
+      ],
+      "@jianxx/dsh-cc-command-agents/snapshot": [
+        "./packages/interaction/command-agents/src/snapshot.ts"
+      ],
+      "@jianxx/dsh-cc-subagent-task": [
+        "./packages/subagent/task/src/index.ts"
+      ],
       "@jianxx/dsh-cc-command-tasks": [
         "./packages/interaction/command-tasks/src/index.ts"
       ],

@@ -23,6 +23,7 @@ import { createPickersSection } from './driver-pickers.ts'
 import { createQueueSection } from './driver-queue.ts'
 import { createRunLocalSection } from './driver-run-local.ts'
 import { createAgentSection, attachSessionEvents } from './driver-agent.ts'
+import { createPromoteSection } from './driver-promote.ts'
 
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
@@ -178,8 +179,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // Per-project input history: prompts and bash commands are bucketed by the
   // session's project (the main git root — worktrees collapse onto it), so
   // ↑/↓ recall never leaks across working directories. An explicit
-  // config.historyDir stays an override (tests, embedding): no git probe, no
-  // legacy-global cold cut, no rebinding.
+  // config.historyDir stays an override (tests, embedding).
   let historyDir = config.historyDir
   let historyProjectKey: string | undefined
   if (historyDir === undefined) {
@@ -223,8 +223,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
-  // user prompt — never on an empty fresh boot. The agent section owns the
-  // binding; seed true + persist only when this boot resumed.
+  // user prompt — never on an empty fresh boot; seed true + persist only on resume.
   if (resumed) {
     agent.setMarkedContent(true)
     agent.persistResumeTarget()
@@ -245,9 +244,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
   }))
   // If no model could be resolved at all (no explicit config, no resolved agent
-  // options, no deployment default), surface a one-time boot notice so the
-  // previously-silent failure is impossible to miss — F2 (/model) picks one.
-  // Fires only at driver create, never on per-event emits.
+  // options, no deployment default), surface a one-time boot notice — F2 (/model)
+  // picks one. Fires only at driver create, never on per-event emits.
   if (selection.current === undefined) {
     emit(upsertRow(state, {
       kind: 'status',
@@ -421,6 +419,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   } satisfies DriverQueueCtx)
   actions.flushQueue = () => queue.flushQueue()
 
+  // --- Ctrl+B promotion (UX plan §3.4): see harness/driver-promote.ts --------
+  // The collect path (Task tool) registers each in-flight foreground collect
+  // of this session in the root-realm `ccCollectorRegistry`; promote() on a
+  // handle releases the wait and leaves the child untouched.
+  const promoteForegroundCollects = createPromoteSection(ctx, current)
+
   return {
     get state() { return state },
     get statusLine() { return statusLineOf() },
@@ -438,6 +442,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     interrupt: queue.interrupt,
     steerQueued: queue.steerQueued,
     recallQueued: queue.recallQueued,
+    promoteForegroundCollects,
     cyclePermissionMode: () => modeSection.cyclePermissionMode(),
     toggleGlobalCollapse() { emit(toggleGlobalCollapse(state)) },
     toggleThinking() { emit(toggleThinking(state)) },

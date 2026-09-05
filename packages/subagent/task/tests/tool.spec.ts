@@ -16,8 +16,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@jianxx/dsh-cc-tools'
 import type { ToolRestriction } from '@jianxx/dsh-cc-claude-code-agents'
 import { AgentRegistry } from '../src/registry.ts'
-import { registerTaskTool, TASK_TOOL } from '../src/tool.ts'
+import { backgroundTasksDisabled, registerTaskTool, TASK_TOOL } from '../src/tool.ts'
 import { BACKGROUND_SECTION_TEXT } from '../src/index.ts'
+import { collectorsForSession } from '../src/epoch-collector.ts'
 
 /** A faithfully-capability-checking fake subagents seam (mirrors assertCapabilities). */
 interface FakeProvider {
@@ -44,9 +45,26 @@ interface FakeRun {
   result: Promise<{ stopReason: string; output?: readonly { type: string; text?: string }[] }>
 }
 
-function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[]; continuableStarts: RecordedContinuable[] } {
+interface EpochShape {
+  stopReason: string
+  output?: readonly { type: string; text?: string }[]
+}
+
+function makeSeam(
+  providers: FakeProvider[],
+  emit?: (event: string, info: Record<string, unknown>) => void,
+): {
+  seam: unknown
+  runs: StartedRun[]
+  continuableStarts: RecordedContinuable[]
+  /** The durable child ids handed out by startContinuable, in order. */
+  startedChildIds: string[]
+  emitEnd: (childId: string, epoch: EpochShape) => void
+} {
   const runs: StartedRun[] = []
   const continuableStarts: RecordedContinuable[] = []
+  const startedChildIds: string[] = []
+  const runIdByChild = new Map<string, string>()
   const byName = new Map(providers.map(p => [p.name, p]))
   const seam: Record<string, unknown> = {
     async start(name: string, request: Record<string, unknown>): Promise<FakeRun> {
@@ -71,17 +89,54 @@ function makeSeam(providers: FakeProvider[]): { seam: unknown; runs: StartedRun[
         error.code = 'UNSUPPORTED_CAPABILITY'
         throw error
       }
+      const childId = (spec['childId'] as string | undefined) ?? `child-${continuableStarts.length + 1}`
+      const runId = `run-${continuableStarts.length + 1}`
+      // Mirror the harness: `subagent/start` fires for the first epoch; the
+      // epoch settles synchronously here so the collector (which reserved
+      // before start) catches the end event like an immediate settle.
+      emit?.('subagent/start', { runId, provider: providerName, id: childId, local: true })
       continuableStarts.push({
         provider: providerName,
         label: spec['label'] as string,
         request: spec['request'] as Record<string, unknown>,
       })
-      return { childId: 'child-1', messageId: 'm-1' }
+      startedChildIds.push(childId)
+      runIdByChild.set(childId, runId)
+      // The epoch's terminal is emitted asynchronously — startContinuable
+      // itself returns once the child accepted its prompt (never awaiting
+      // the epoch), and a pending provider keeps its epoch unsettled.
+      void (async () => {
+        const settled = await (await provider.start(spec['request'] ?? {})).result
+        emit?.('subagent/end', {
+          runId,
+          provider: providerName,
+          id: childId,
+          local: true,
+          stopReason: settled.stopReason,
+          ...(settled.output !== undefined ? { lastAssistantMessage: settled.output } : {}),
+        })
+      })()
+      return { childId, messageId: 'm-1' }
     },
     getProvider(name: string) { return byName.get(name) },
     list() { return [...byName.keys()] },
   }
-  return { seam, runs, continuableStarts }
+  return {
+    seam,
+    runs,
+    continuableStarts,
+    startedChildIds,
+    emitEnd(childId, epoch) {
+      emit?.('subagent/end', {
+        runId: runIdByChild.get(childId) ?? `run-?${childId}`,
+        provider: 'spawn',
+        id: childId,
+        local: true,
+        stopReason: epoch.stopReason,
+        ...(epoch.output !== undefined ? { lastAssistantMessage: epoch.output } : {}),
+      })
+    },
+  }
 }
 
 /** A capable in-process provider with a captured result. */
@@ -95,6 +150,16 @@ function capableProvider(
     capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
     ...(continuable ? { prepareContinuable: async () => ({}) } : {}),
     start: async () => ({ result: Promise.resolve(result) }),
+  }
+}
+
+/** A continuable provider whose epoch never settles (for the abort race). */
+function pendingProvider(name = 'spawn'): FakeProvider {
+  return {
+    name,
+    capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+    prepareContinuable: async () => ({}),
+    start: async () => ({ result: new Promise(() => {}) }),
   }
 }
 
@@ -142,19 +207,22 @@ async function mount(opts: {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  const { seam, runs, continuableStarts } = makeSeam(opts.seamProviders ?? defaultProviders())
+  const emit = (event: string, info: Record<string, unknown>): void => {
+    ;(ctx as unknown as { emit(event: string, info: unknown): void }).emit(event, info)
+  }
+  const { seam, runs, continuableStarts, startedChildIds, emitEnd } = makeSeam(opts.seamProviders ?? defaultProviders(), emit)
   if (opts.omitStartContinuable === true) delete (seam as Record<string, unknown>)['startContinuable']
   ctx.provide('subagents', seam)
   if (opts.routes !== undefined) ctx.provide('ccModelRoutes', opts.routes)
   const registry = new AgentRegistry()
   registerTaskTool(ctx, registry)
-  return { ctx, runs, continuableStarts, registry }
+  return { ctx, runs, continuableStarts, startedChildIds, emitEnd, registry }
 }
 
 let callCounter = 0
-async function call(ctx: Context, args: Record<string, unknown>, agent?: Agent) {
+async function call(ctx: Context, args: Record<string, unknown>, agent?: Agent, signal?: AbortSignal) {
   const result = await ctx.tools.execute({
-    signal: new AbortController().signal,
+    signal: signal ?? new AbortController().signal,
     callId: `call-${++callCounter}` as never,
     name: TASK_TOOL,
     arguments: args,
@@ -201,30 +269,36 @@ async function assertRestrictable(ctx: Context, filter: ToolRestriction): Promis
 
 describe('Task tool', () => {
   it('spawns a fresh child when subagent_type is omitted', async () => {
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     const result = await call(ctx, { description: 'do thing', prompt: 'task body' }, agentAt('/any'))
     expect(result.content[0]!.text).toBe('done')
-    expect(runs).toHaveLength(1)
-    expect(runs[0]!.provider).toBe('spawn')
-    expect(runs[0]!.request['persona']).toBeUndefined()
-    expect(runs[0]!.request['agentOptions']).toBeUndefined()
-    expect(runs[0]!.request['toolFilter']).toBeUndefined()
-    expect(runs[0]!.request['prompt']).toEqual([{ type: 'text', text: 'task body' }])
+    // Foreground non-fork dispatch now collects the first epoch of a
+    // continuable child (Slice 2 collect refit): the one-shot seam.start is
+    // fork-only.
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts).toHaveLength(1)
+    expect(continuableStarts[0]!.provider).toBe('spawn')
+    expect(continuableStarts[0]!.request['persona']).toBeUndefined()
+    expect(continuableStarts[0]!.request['agentOptions']).toBeUndefined()
+    expect(continuableStarts[0]!.request['toolFilter']).toBeUndefined()
+    expect(continuableStarts[0]!.request['prompt']).toEqual([{ type: 'text', text: 'task body' }])
   })
 
   it('spawns a fresh child for the general-purpose sentinel', async () => {
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     await call(ctx, { subagent_type: 'general-purpose', description: 'x', prompt: 'task' }, agentAt('/any'))
-    expect(runs[0]!.provider).toBe('spawn')
-    expect(runs[0]!.request['persona']).toBeUndefined()
-    expect(runs[0]!.request['toolFilter']).toBeUndefined()
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.provider).toBe('spawn')
+    expect(continuableStarts[0]!.request['persona']).toBeUndefined()
+    expect(continuableStarts[0]!.request['toolFilter']).toBeUndefined()
   })
 
   it('spawns a fresh child for a blank subagent_type', async () => {
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     await call(ctx, { subagent_type: '   ', description: 'x', prompt: 'task' }, agentAt('/any'))
-    expect(runs[0]!.provider).toBe('spawn')
-    expect(runs[0]!.request['persona']).toBeUndefined()
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.provider).toBe('spawn')
+    expect(continuableStarts[0]!.request['persona']).toBeUndefined()
   })
 
   it('the fork sentinel inherits completed parent turns and never consults the registry', async () => {
@@ -244,11 +318,12 @@ describe('Task tool', () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'deep-reasoner', '---\nname: deep-reasoner\ndescription: Review heavy work\nmodel: opus\n---\nYou are a Staff Engineer.\n')
     const routes = { resolve: (m: string | undefined) => m === 'opus' ? { provider: 'orchestrix', model: 'glm-5.2' } : undefined }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     const result = await call(ctx, { subagent_type: 'deep-reasoner', description: 'review', prompt: 'audit the doc' }, agentAt(ws))
     expect(result.content[0]!.text).toBe('done')
-    expect(runs[0]!.provider).toBe('spawn')
-    const req = runs[0]!.request
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.provider).toBe('spawn')
+    const req = continuableStarts[0]!.request
     expect(req['persona']).toBe('You are a Staff Engineer.')
     expect(req['prompt']).toEqual([{ type: 'text', text: 'audit the doc' }])
     expect(req['agentOptions']).toEqual({ provider: 'orchestrix', model: 'glm-5.2' })
@@ -259,9 +334,10 @@ describe('Task tool', () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'fast-worker', '---\nname: fast-worker\ndescription: Mechanical\nmodel: sonnet\n---\nFast.\n')
     const routes = { resolve: () => undefined }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     await call(ctx, { subagent_type: 'fast-worker', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs[0]!.request['agentOptions']).toBeUndefined()
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['agentOptions']).toBeUndefined()
   })
 
   it('stamps the alias-resolved reasoningEffort onto agentOptions', async () => {
@@ -272,9 +348,10 @@ describe('Task tool', () => {
         ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' }
         : undefined,
     }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     await call(ctx, { subagent_type: 'deep-reasoner', description: 'review', prompt: 'audit' }, agentAt(ws))
-    expect(runs[0]!.request['agentOptions']).toEqual({
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['agentOptions']).toEqual({
       provider: 'orchestrix',
       model: 'glm-5.3',
       reasoningEffort: 'max',
@@ -289,9 +366,9 @@ describe('Task tool', () => {
         ? { model: 'glm-5.3-flash', reasoningEffort: 'max' }
         : undefined,
     }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     await call(ctx, { subagent_type: 'fast-worker', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs[0]!.request['agentOptions']).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
+    expect(continuableStarts[0]!.request['agentOptions']).toEqual({ model: 'glm-5.3-flash', reasoningEffort: 'max' })
   })
 
   it('inherit still omits agentOptions entirely even when a sibling alias carries effort', async () => {
@@ -303,42 +380,45 @@ describe('Task tool', () => {
         ? { provider: 'orchestrix', model: 'glm-5.3', reasoningEffort: 'max' }
         : undefined,
     }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     await call(ctx, { subagent_type: 'fast-worker', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs[0]!.request['agentOptions']).toBeUndefined()
+    expect(continuableStarts[0]!.request['agentOptions']).toBeUndefined()
   })
 
   it('works when no ccModelRoutes service is mounted', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'plain', '---\nname: plain\ndescription: No model\n---\nPlain.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     const result = await call(ctx, { subagent_type: 'plain', description: 'x', prompt: 't' }, agentAt(ws))
     expect(result.content[0]!.text).toBe('done')
-    expect(runs[0]!.request['persona']).toBe('Plain.')
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['persona']).toBe('Plain.')
   })
 
   it('errors with the available type list for an unknown subagent_type', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'deep-reasoner', '---\nname: deep-reasoner\ndescription: Review\n---\nBody.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     const first = await call(ctx, { subagent_type: 'nope', description: 'x', prompt: 't' }, agentAt(ws))
     expect(first.isError).toBe(true)
     expect(first.content[0]!.text).toMatch(/unknown subagent_type "nope"/)
     expect(first.content[0]!.text).toMatch(/deep-reasoner/)
     expect(first.content[0]!.text).toMatch(/explore/)
     expect(runs).toHaveLength(0)
+    expect(continuableStarts).toHaveLength(0)
   })
 
   it('dispatches the bundled explore agent on a bare workspace with haiku route stamps', async () => {
     const ws = freshWorkspace()
     const routes = { resolve: (m: string | undefined) => m === 'haiku' ? { provider: 'p', model: 'cheap' } : undefined }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     reserveNames(ctx, 'read', 'read_image', 'glob', 'grep')
     const result = await call(ctx, { subagent_type: 'explore', description: 'find it', prompt: 'where is X defined?' }, agentAt(ws))
     expect(result.content[0]!.text).toBe('done')
-    expect(runs[0]!.request['agentOptions']).toEqual({ provider: 'p', model: 'cheap' })
-    expect(runs[0]!.request['persona']).toContain('read-only codebase scout')
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[] } | undefined
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['agentOptions']).toEqual({ provider: 'p', model: 'cheap' })
+    expect(continuableStarts[0]!.request['persona']).toContain('read-only codebase scout')
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[] } | undefined
     expect(filter?.allow).toEqual(expect.arrayContaining(['read', 'read_image', 'glob', 'grep']))
     expect(filter?.allow?.includes('write')).toBe(false)
     await assertRestrictable(ctx, filter as ToolRestriction)
@@ -347,10 +427,11 @@ describe('Task tool', () => {
   it('omits agentOptions for a bundled agent when the alias does not resolve', async () => {
     const ws = freshWorkspace()
     const routes = { resolve: () => undefined }
-    const { ctx, runs } = await mount({ routes })
+    const { ctx, runs, continuableStarts } = await mount({ routes })
     reserveNames(ctx, 'read', 'read_image', 'glob', 'grep')
     await call(ctx, { subagent_type: 'explore', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs[0]!.request['agentOptions']).toBeUndefined()
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['agentOptions']).toBeUndefined()
   })
 
   it('maps a child failure stopReason to an isError result', async () => {
@@ -358,7 +439,7 @@ describe('Task tool', () => {
     const { ctx } = await mount({ seamProviders })
     const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
     expect(result.isError).toBe(true)
-    expect(result.content[0]!.text).toMatch(/stopped with reason "error"/)
+    expect(result.content[0]!.text).toMatch(/run failed.*stopReason "error"/s)
   })
 
   it('extracts only text blocks from the child output', async () => {
@@ -380,11 +461,12 @@ describe('Task tool', () => {
     // tool. `read`/`read_image`/`bash` must be mounted (registered or
     // reserved) or sanitization drops them — here they are reserved, as the
     // cc preset registers them.
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'read', 'read_image', 'bash')
     await call(ctx, { subagent_type: 'guarded', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs).toHaveLength(1)
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts).toHaveLength(1)
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toBeDefined()
     expect(filter?.allow).toContain('read')
     expect(filter?.allow).toContain('read_image')
@@ -397,21 +479,21 @@ describe('Task tool', () => {
   it('drops a frontmatter name that is not mounted (typo defence)', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'typoed', '---\nname: typoed\ndescription: Typo\ntools: [Read, Tas]\n---\nTypo.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'read', 'read_image')
     await call(ctx, { subagent_type: 'typoed', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toEqual(['read', 'read_image'])
   })
 
   it('keeps an exact mounted MCP public name and auto-includes mounted ToolSearch', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [Read, mcp__github__create_issue]\n---\nMCP.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'mcp__github__create_issue', 'mcp__github__search', 'read', 'read_image', 'ToolSearch')
     const warn = captureWarn(ctx)
     await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toContain('read')
     expect(filter?.allow).toContain('read_image')
     expect(filter?.allow).toContain('mcp__github__create_issue')
@@ -425,12 +507,12 @@ describe('Task tool', () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'wild-a', '---\nname: wild-a\ndescription: A\ntools: [mcp__github]\n---\nA.\n')
     writeAgent(ws, 'wild-b', '---\nname: wild-b\ndescription: B\ntools: [mcp__github__*]\n---\nB.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'mcp__github__create_issue', 'mcp__github__search', 'ToolSearch')
     await call(ctx, { subagent_type: 'wild-a', description: 'x', prompt: 't' }, agentAt(ws))
     await call(ctx, { subagent_type: 'wild-b', description: 'x', prompt: 't' }, agentAt(ws))
-    for (const run of runs) {
-      const filter = run.request['toolFilter'] as { allow?: string[] } | undefined
+    for (const start of continuableStarts) {
+      const filter = start.request['toolFilter'] as { allow?: string[] } | undefined
       expect(filter?.allow).toContain('mcp__github__create_issue')
       expect(filter?.allow).toContain('mcp__github__search')
       expect(filter?.allow).toContain('ToolSearch')
@@ -441,7 +523,7 @@ describe('Task tool', () => {
   it('sees MCP names reserved on an ancestor standing-scope layer', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [mcp__github__create_issue]\n---\nMCP.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     // Production shape: mcp-client registers on the cc standing-scope layer,
     // and the calling session agent is a child of that standing key. `view()`
     // without the calling agent only sees the global layer and would drop
@@ -458,7 +540,7 @@ describe('Task tool', () => {
     standing.ctx.tools.reserve('mcp__github__create_issue')
     standing.ctx.tools.reserve('ToolSearch')
     await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, caller)
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toContain('mcp__github__create_issue')
     expect(filter?.allow).toContain('ToolSearch')
     await child.dispose()
@@ -468,10 +550,10 @@ describe('Task tool', () => {
   it('never auto-includes ToolSearch when it is not mounted', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'mcp-user', '---\nname: mcp-user\ndescription: MCP\ntools: [mcp__github__create_issue]\n---\nMCP.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'mcp__github__create_issue')
     await call(ctx, { subagent_type: 'mcp-user', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.allow).toContain('mcp__github__create_issue')
     expect(filter?.allow).not.toContain('ToolSearch')
     await assertRestrictable(ctx, filter!)
@@ -480,10 +562,10 @@ describe('Task tool', () => {
   it('emits a deny-all allow list (with a warning) when the allow-list matches no mounted tools', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'missing', '---\nname: missing\ndescription: M\ntools: [mcp__missing__foo]\n---\nM.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     const warn = captureWarn(ctx)
     await call(ctx, { subagent_type: 'missing', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter).toEqual({ allow: [] })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('mcp__missing__foo'))
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no mounted tools'))
@@ -493,10 +575,10 @@ describe('Task tool', () => {
   it('keeps a mounted MCP name in a disallowedTools deny-list', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'mcp-denied', '---\nname: mcp-denied\ndescription: D\ndisallowedTools: [mcp__github__search]\n---\nD.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     reserveNames(ctx, 'mcp__github__search')
     await call(ctx, { subagent_type: 'mcp-denied', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter?.deny).toContain('mcp__github__search')
     await assertRestrictable(ctx, filter!)
   })
@@ -504,18 +586,19 @@ describe('Task tool', () => {
   it('passes no toolFilter when the definition declares no tools key', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'plain', '---\nname: plain\ndescription: P\n---\nP.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     await call(ctx, { subagent_type: 'plain', description: 'x', prompt: 't' }, agentAt(ws))
-    expect(runs[0]!.request['toolFilter']).toBeUndefined()
+    expect(runs).toHaveLength(0)
+    expect(continuableStarts[0]!.request['toolFilter']).toBeUndefined()
   })
 
   it('rejects a bare mcp__ wildcard with a deny-all allow list', async () => {
     const ws = freshWorkspace()
     writeAgent(ws, 'bare', '---\nname: bare\ndescription: B\ntools: [mcp__]\n---\nB.\n')
-    const { ctx, runs } = await mount()
+    const { ctx, runs, continuableStarts } = await mount()
     const warn = captureWarn(ctx)
     await call(ctx, { subagent_type: 'bare', description: 'x', prompt: 't' }, agentAt(ws))
-    const filter = runs[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
+    const filter = continuableStarts[0]!.request['toolFilter'] as { allow?: string[]; deny?: string[] } | undefined
     expect(filter).toEqual({ allow: [] })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid MCP wildcard'))
     await assertRestrictable(ctx, filter!)
@@ -637,11 +720,13 @@ describe('Task tool', () => {
       const { ctx, runs, continuableStarts } = await mount()
       const omitted = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
       const explicitFalse = await call(ctx, { description: 'x', prompt: 't', run_in_background: false }, agentAt('/any'))
+      // Slice 2 collect refit: both omissions collect the first epoch of a
+      // continuable child inline — same continuable substrate as background.
       expect(omitted.content[0]!.text).toBe('done')
       expect(explicitFalse.content[0]!.text).toBe('done')
-      expect(runs).toHaveLength(2)
-      expect(runs.every(r => r.provider === 'spawn')).toBe(true)
-      expect(continuableStarts).toHaveLength(0)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(2)
+      expect(continuableStarts.every(s => s.provider === 'spawn')).toBe(true)
     })
 
     it('renders the background contract text naming the durable id and the control loop', async () => {
@@ -698,10 +783,10 @@ describe('Task tool', () => {
       const { ctx, runs, continuableStarts } = await mount()
       const result = await call(ctx, { subagent_type: 'scout', description: 'pinned', prompt: 't', run_in_background: false }, agentAt(ws))
       expect(result.content[0]!.text).toBe('done')
-      expect(runs).toHaveLength(1)
-      expect(runs[0]!.provider).toBe('spawn')
-      expect(runs[0]!.request['persona']).toBe('You are a pinned scout.')
-      expect(continuableStarts).toHaveLength(0)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
+      expect(continuableStarts[0]!.request['persona']).toBe('You are a pinned scout.')
     })
 
     it('explicit run_in_background: true also backgrounds a pinned definition', async () => {
@@ -719,26 +804,26 @@ describe('Task tool', () => {
       writeAgent(ws, 'plain', '---\nname: plain\ndescription: No pin\n---\nPlain body.\n')
       const { ctx, runs, continuableStarts } = await mount()
       await call(ctx, { subagent_type: 'plain', description: 'x', prompt: 't' }, agentAt(ws))
-      expect(runs).toHaveLength(1)
-      expect(runs[0]!.provider).toBe('spawn')
-      expect(continuableStarts).toHaveLength(0)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
     })
 
     it('the bundled explore agent stays foreground on omit (no pin)', async () => {
       const ws = freshWorkspace()
       const { ctx, runs, continuableStarts } = await mount()
       await call(ctx, { subagent_type: 'explore', description: 'find it', prompt: 'where is X?' }, agentAt(ws))
-      expect(runs).toHaveLength(1)
-      expect(runs[0]!.provider).toBe('spawn')
-      expect(runs[0]!.request['persona']).toContain('read-only codebase scout')
-      expect(continuableStarts).toHaveLength(0)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.provider).toBe('spawn')
+      expect(continuableStarts[0]!.request['persona']).toContain('read-only codebase scout')
     })
 
     it('general-purpose with omit stays foreground (no definition to pin)', async () => {
       const { ctx, runs, continuableStarts } = await mount()
       await call(ctx, { subagent_type: 'general-purpose', description: 'x', prompt: 't' }, agentAt('/any'))
-      expect(runs).toHaveLength(1)
-      expect(continuableStarts).toHaveLength(0)
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
     })
 
     it('registers the prompt contract: background section carries the human heuristic and the pin escape hatch', () => {
@@ -762,6 +847,216 @@ describe('Task tool', () => {
       expect(param).toBeDefined()
       expect(param.description.toLowerCase()).not.toContain('default false')
       expect(param.description).toMatch(/false|pin/)
+    })
+  })
+
+  describe('foreground collect through the epoch collector', () => {
+    it('collects the first epoch inline from the continuable child (no one-shot start)', async () => {
+      const { ctx, runs, continuableStarts } = await mount()
+      const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
+      expect(result.content[0]!.text).toBe('done')
+      expect(runs).toHaveLength(0)
+      expect(continuableStarts).toHaveLength(1)
+      expect(continuableStarts[0]!.request['prompt']).toEqual([{ type: 'text', text: 't' }])
+    })
+
+    it('pins per-reason stop-reason messages (max-tokens / refusal / aborted)', async () => {
+      for (const [stopReason, pattern] of [
+        ['max-tokens', /stopped with reason "max-tokens".*token ceiling/s],
+        ['refusal', /stopped with reason "refusal".*declined the task/s],
+        ['aborted', /was interrupted \(stopReason "aborted"\).*may still be resumed/s],
+      ] as const) {
+        const seamProviders = defaultProviders({ stopReason, output: [{ type: 'text', text: 'x' }] })
+        const { ctx } = await mount({ seamProviders })
+        const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
+        expect(result.isError).toBe(true)
+        expect(result.content[0]!.text).toMatch(pattern)
+      }
+    })
+
+    it('keeps the fork path on the one-shot seam (collect refit does not touch fork)', async () => {
+      const seamProviders = defaultProviders({ stopReason: 'error' })
+      const { ctx, runs, continuableStarts } = await mount({ seamProviders })
+      const result = await call(ctx, { subagent_type: 'fork', description: 'x', prompt: 't' }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/stopped with reason "error"/)
+      expect(runs).toHaveLength(1)
+      expect(continuableStarts).toHaveLength(0)
+    })
+
+    it('maps exec.signal abort to exactly-one interrupt and a prompt synthetic aborted result', async () => {
+      const ac = new AbortController()
+      const { ctx, startedChildIds, emitEnd } = await mount({ seamProviders: [pendingProvider()] })
+      const interrupts: [string, unknown][] = []
+      const seam = ctx.get('subagents') as Record<string, unknown>
+      seam['interrupt'] = (childId: string, authority: unknown) => {
+        interrupts.push([childId, authority])
+      }
+      const pending = call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'), ac.signal)
+      // Let the collect reserve + start, then abort (Esc).
+      await new Promise(resolve => setTimeout(resolve, 10))
+      ac.abort()
+      const result = await pending
+      // Prompt synthetic resolution — the never-settling epoch never resolved.
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/interrupted.*may still be resumed/s)
+      expect(interrupts).toEqual([
+        [startedChildIds[0], { kind: 'ancestor', agent: expect.objectContaining({ session: expect.anything() }) }],
+      ])
+      expect(interrupts[0]![1]).toMatchObject({ kind: 'ancestor' })
+      // The real terminal arrives later; the tool call is already resolved.
+      emitEnd(startedChildIds[0]!, { stopReason: 'aborted' })
+    })
+
+    it('degrades observably when the seam lacks interrupt (prompt resolve, no hang, no silent success)', async () => {
+      const ac = new AbortController()
+      const { ctx, startedChildIds, emitEnd } = await mount({ seamProviders: [pendingProvider()] })
+      const pending = call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'), ac.signal)
+      await new Promise(resolve => setTimeout(resolve, 10))
+      ac.abort()
+      const result = await pending
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toMatch(/interrupted/)
+      // The real terminal arrives later and releases the armed watcher entry.
+      emitEnd(startedChildIds[0]!, { stopReason: 'aborted' })
+    })
+  })
+
+  describe('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS kill switch', () => {
+    const PARSING: [string | undefined, boolean][] = [
+      [undefined, false],
+      ['', false],
+      ['0', false],
+      ['false', false],
+      ['FALSE', false],
+      ['False', false],
+      ['1', true],
+      ['true', true],
+      ['TRUE', true],
+      ['yes', true],
+      [' ', true],
+    ]
+    it.each(PARSING)('parses CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=%p as %p', (value, expected) => {
+      const env = value === undefined ? {} : { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: value }
+      expect(backgroundTasksDisabled(env)).toBe(expected)
+    })
+
+    it('disables the definition pin (omissions collect in foreground) but honors explicit arguments', async () => {
+      const prev = process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+      process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
+      try {
+        const ws = freshWorkspace()
+        writeAgent(ws, 'scout', '---\nname: scout\ndescription: Pinned\nbackground: true\n---\nPinned scout.\n')
+        const { ctx, runs, continuableStarts } = await mount()
+        // Pin ignored: omit collects in foreground (inline result).
+        const omitted = await call(ctx, { subagent_type: 'scout', description: 'x', prompt: 't' }, agentAt(ws))
+        expect(omitted.content[0]!.text).toBe('done')
+        expect(runs).toHaveLength(0)
+        expect(continuableStarts).toHaveLength(1)
+        // Explicit true still honored both ways.
+        const explicit = await call(ctx, { subagent_type: 'scout', description: 'x', prompt: 't', run_in_background: true }, agentAt(ws))
+        expect(explicit.content[0]!.text).toContain('Background subagent started')
+        expect(continuableStarts).toHaveLength(2)
+        // Explicit false still foreground.
+        const forced = await call(ctx, { subagent_type: 'scout', description: 'x', prompt: 't', run_in_background: false }, agentAt(ws))
+        expect(forced.content[0]!.text).toBe('done')
+        expect(continuableStarts).toHaveLength(3)
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+        else process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = prev
+      }
+    })
+  })
+
+  describe('capacity guard (25 live continuable children)', () => {
+    function childRow(activity: string): { kind: string; activity: string } {
+      return { kind: 'child', activity }
+    }
+    function withListChildren(rows: { kind: string; activity?: string }[]): { seam: Record<string, unknown>; listChildren: ReturnType<typeof vi.fn> } {
+      const listChildren = vi.fn(async () => rows)
+      return { seam: { listChildren }, listChildren }
+    }
+
+    it('refuses a background start at 25 running children with the actionable error', async () => {
+      const { ctx } = await mount()
+      const rows = Array.from({ length: 25 }, () => childRow('running'))
+      const { listChildren } = withListChildren(rows)
+      const seam = ctx.get('subagents') as Record<string, unknown>
+      seam['listChildren'] = listChildren
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain(
+        'parent has 25 live subagents; /agents stop <id> to release one, or let children settle',
+      )
+      expect(listChildren).toHaveBeenCalled()
+    })
+
+    it('refuses a foreground collect start at the same limit', async () => {
+      const { ctx } = await mount()
+      const rows = Array.from({ length: 25 }, () => childRow('running'))
+      const seam = ctx.get('subagents') as Record<string, unknown>
+      seam['listChildren'] = vi.fn(async () => rows)
+      const result = await call(ctx, { description: 'x', prompt: 't' }, agentAt('/any'))
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain('parent has 25 live subagents')
+    })
+
+    it('does not count inactive or non-child rows and admits at 24', async () => {
+      const { ctx, continuableStarts } = await mount()
+      const rows = [
+        ...Array.from({ length: 24 }, () => childRow('running')),
+        childRow('inactive'),
+        { kind: 'diagnostic', id: 'x' },
+      ]
+      const seam = ctx.get('subagents') as Record<string, unknown>
+      seam['listChildren'] = vi.fn(async () => rows)
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      expect(result.isError).toBe(false)
+      expect(continuableStarts).toHaveLength(1)
+    })
+
+    it('degrades open when the seam lacks listChildren', async () => {
+      const { ctx, continuableStarts } = await mount()
+      const result = await call(ctx, { description: 'x', prompt: 't', run_in_background: true }, agentAt('/any'))
+      expect(result.isError).toBe(false)
+        expect(continuableStarts).toHaveLength(1)
+    })
+  })
+
+  describe('Ctrl+B promotion of a foreground collect (Slice 3)', () => {
+    function agentWithId(cwd: string, id: string): Agent {
+      return { id, session: { header: { cwd } } } as unknown as Agent
+    }
+
+    it('promote-wins: the pending collect resolves async_launched + backgroundedByUser and the later notice is not suppressed', async () => {
+      const { ctx, startedChildIds, emitEnd } = await mount({ seamProviders: [pendingProvider()] })
+      const pending = call(ctx, { description: 'x', prompt: 't' }, agentWithId('/any', 'parent-t'))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      const armed = collectorsForSession('parent-t')
+      expect(armed).toHaveLength(1)
+      armed[0]!.promote()
+      const result = await pending
+      expect(result.isError).toBe(false)
+      expect(result.content[0]!.text).toContain(`agentId: ${startedChildIds[0]}`)
+      expect(result.content[0]!.text).toContain('backgroundedByUser')
+      expect(result.content[0]!.text).toMatch(/later waking message/)
+      // The promoted child is un-suppressed: its real terminal arrives as the
+      // settlement notice (drop is NOT armed anymore).
+      emitEnd(startedChildIds[0]!, COMPLETED)
+      expect(collectorsForSession('parent-t')).toEqual([])
+    })
+
+    it('settle-wins: the collect resolves completed inline and the registry entry is removed', async () => {
+      const { ctx } = await mount()
+      const result = await call(ctx, { description: 'x', prompt: 't' }, agentWithId('/any', 'parent-s'))
+      expect(result.isError).toBe(false)
+      expect(result.content[0]!.text).toBe('done')
+      expect(collectorsForSession('parent-s')).toEqual([])
+    })
+
+    it('teaches the promotion clause in the tool description and the background section', () => {
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/backgroundedByUser: true/)
+      expect(BACKGROUND_SECTION_TEXT).toMatch(/later wake/)
     })
   })
 })

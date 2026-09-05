@@ -10,6 +10,9 @@
   ],
   "references": [
     {
+      "path": "../../interaction/command-agents"
+    },
+    {
       "path": "../../interaction/command-permissions"
     },
     {
@@ -17,6 +20,9 @@
     },
     {
       "path": "../pi-tui"
+    },
+    {
+      "path": "../../subagent/task"
     },
     {
       "path": "../../workspace/session-cwd"
