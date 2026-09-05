@@ -25,7 +25,7 @@ export interface AutoModeClassifierSettings {
   enabled?: boolean
   /** Model route used for classification (default `'haiku'`). */
   route?: string
-  /** Per-call timeout in milliseconds (default `5000`). */
+  /** Per-call timeout in milliseconds (default `8000`). */
   timeoutMs?: number
   /** Verdict cache size in entries (default `256`). */
   cacheMaxEntries?: number
@@ -60,7 +60,7 @@ export interface ClassifierAuditEventData {
   /** sha256 of the rendered classifier input (absent on the arming `unarmed` record). */
   digest?: string
   verdict: 'allow' | 'ask'
-  failure?: 'timeout' | 'error' | 'malformed' | 'unarmed' | 'breaker'
+  failure?: 'timeout' | 'error' | 'malformed' | 'unarmed' | 'breaker' | 'cancelled'
   route?: string
   provider?: string
   model?: string
@@ -118,6 +118,11 @@ export type AutoStageDeps = {
   warn(message: string): void
   /** Durable audit sink (session append face, listener-owned). */
   audit(session: Session, event: ClassifierAuditEventData): void
+  /**
+   * Optional env-gated process-log sink for raw classifier output (R5) —
+   * never session events; wired only when DSH_PERMISSION_CLASSIFIER_DEBUG=1.
+   */
+  debug?: (message: string) => void
 }
 
 /** The stage's contribution to one pre-execute decision: allow, an escalated ask, or nothing (legacy path). */
@@ -152,11 +157,37 @@ function readSlice(settings: { autoMode?: AutoModeSettings }): AutoModeSlice {
   return {
     softDeny,
     route: classifier?.route ?? 'haiku',
-    timeoutMs: classifier?.timeoutMs ?? 5000,
+    timeoutMs: classifier?.timeoutMs ?? 8000,
     cacheMaxEntries: classifier?.cacheMaxEntries ?? 256,
     enabled: classifier?.enabled === true,
     raw: JSON.stringify([autoMode?.soft_deny, classifier]),
   }
+}
+
+/** The failure tags the breaker counts; `cancelled`/`unarmed` are host noise and never count. */
+const BREAKER_FAILURE_TAGS: readonly NonNullable<ClassifierAuditEventData['failure']>[] = ['malformed', 'error', 'timeout']
+
+/**
+ * Trailing consecutive per-route failure streak over attributed classifier
+ * audit records (R3, pure fold — unit-testable). Only events carrying
+ * `provider`/`model` attribution matching `routeKey` count (unattributed
+ * legacy events predate route keying — skipped entirely); a parsed verdict or
+ * cache hit resets the streak; malformed/error/timeout increment it; other
+ * tags (`cancelled`, `breaker`, `unarmed`) are neutral. Capped at `threshold`.
+ */
+export function trailingRouteFailureStreak(
+  events: readonly ClassifierAuditEventData[],
+  routeKey: string,
+  threshold: number,
+): number {
+  let streak = 0
+  for (const event of events) {
+    if (event.provider === undefined || event.model === undefined) continue
+    if (`${event.provider}/${event.model}` !== routeKey) continue
+    if (event.failure === undefined) streak = 0
+    else if (BREAKER_FAILURE_TAGS.includes(event.failure)) streak = Math.min(streak + 1, threshold)
+  }
+  return streak
 }
 
 /**
@@ -179,6 +210,8 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
   const breakerAudited = new Set<string>()
   /** Warned-once flag for an opened breaker (per process). */
   let warnedBreaker = false
+  /** Session ids whose durable log already seeded this process's breaker state (R3). */
+  const seededSessions = new Set<string>()
 
   const ensureClassifier = (): LlmClassifier => {
     if (classifier !== undefined && builtRaw === slice.raw) return classifier
@@ -195,6 +228,7 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
       softDeny: slice.softDeny,
       timeoutMs: slice.timeoutMs,
       cacheMaxEntries: slice.cacheMaxEntries,
+      ...(deps.debug === undefined ? {} : { debug: deps.debug }),
     })
     builtRaw = slice.raw
     return classifier
@@ -215,6 +249,39 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
         cacheHit: false,
       })
     }
+  }
+
+  /**
+   * Seed the per-route breaker state from the session's durable log (R3) —
+   * lazily, once per session, on its first breaker-eligible call. Synchronous
+   * guard: the session id enters `seededSessions` BEFORE any suspension and
+   * the fold is over in-memory events, so concurrent first-calls cannot
+   * double-seed. A restored streak ≥ threshold opens the route at seed time
+   * (its first real call then audits/warns/notices exactly once); a log that
+   * already holds a `breaker` event pre-joins `breakerAudited` so replay never
+   * re-audits the same open. Never overwrites a live counter: seed only when
+   * the session is unseen AND the route counter is 0/absent — in-process
+   * accrual is fresher (fail-open undercounting is the accepted direction).
+   */
+  function seedBreakerFromLog(exec: ToolExecution, routeKey: string, route: ClassifierRoute): void {
+    const session = exec.agent?.session
+    if (session === undefined) return
+    const sessionId = String(session.header.id)
+    if (seededSessions.has(sessionId)) return
+    seededSessions.add(sessionId)
+    if ((routeFailures.get(routeKey) ?? 0) > 0) return
+    const events = foldClassifiers(session.events)
+    if (events.some(event => event.failure === 'breaker')) breakerAudited.add(sessionId)
+    const streak = trailingRouteFailureStreak(events, routeKey, CLASSIFIER_BREAKER_THRESHOLD)
+    if (streak <= 0) return
+    routeFailures.set(routeKey, streak)
+    if (streak < CLASSIFIER_BREAKER_THRESHOLD) return
+    breakerOpen.add(routeKey)
+    if (!warnedBreaker) {
+      warnedBreaker = true
+      deps.warn(`permission classifier: route ${routeKey} restored with ${streak} consecutive failures from the session log; breaker open for this route, auto mode uses the legacy path`)
+    }
+    auditBreakerOnce(exec, routeKey, route)
   }
 
   return {
@@ -257,6 +324,7 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
       // round-trip adds latency with zero safety — the legacy path applies.
       if (decided.isReadOnly) return undefined
       const routeKey = `${route.provider}/${route.model}`
+      seedBreakerFromLog(exec, routeKey, route)
       if (breakerOpen.has(routeKey)) {
         auditBreakerOnce(exec, routeKey, route)
         return undefined
@@ -264,11 +332,11 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
       const verdict = await ensureClassifier().classify(exec, { route })
       // F4 per-route breaker bookkeeping, attributed to THIS call's route:
       // any success (parsed verdict, cache hit included) resets the streak;
-      // malformed/error/timeout increment it; `unarmed` never counts here
-      // (it never reaches this path — it is a disarm outcome above).
+      // malformed/error/timeout increment it; `cancelled` is caller noise and
+      // `unarmed` is a disarm outcome — neither is counted (nor resets).
       if (verdict.failure === undefined) {
         routeFailures.set(routeKey, 0)
-      } else {
+      } else if (BREAKER_FAILURE_TAGS.includes(verdict.failure)) {
         const count = (routeFailures.get(routeKey) ?? 0) + 1
         routeFailures.set(routeKey, count)
         if (count >= CLASSIFIER_BREAKER_THRESHOLD) {

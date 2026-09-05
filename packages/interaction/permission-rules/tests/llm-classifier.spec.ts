@@ -111,7 +111,75 @@ describe('createLlmClassifier', () => {
     execSignal.abort()
     const v = await pending
     expect(v.verdict).toBe('ask')
-    expect(v.failure).toBe('error')
+    // R2: the caller's abort wins the catch-path attribution too.
+    expect(v.failure).toBe('cancelled')
+    expect(v.reason).toBe('classification cancelled by caller')
+  })
+
+  it('R2: timer fires but the stream silently resolves garbage ⇒ timeout, never malformed (pre-parse)', async () => {
+    const execSignal = new AbortController()
+    const { cls } = make({
+      timeoutMs: 20,
+      stream: vi.fn(async (opts: StreamOpts) => {
+        // The stream adapter ends quietly at the abort boundary instead of
+        // throwing (the D2 production bug): resolve with truncated text.
+        return await new Promise<string>(resolve => {
+          opts.signal?.addEventListener('abort', () => setTimeout(() => resolve('{"verdict":"al'), 1))
+        })
+      }),
+    })
+    const v = await cls.classify(fakeExec('Bash', { command: 'sleep' }, execSignal.signal), { route: ROUTE })
+    expect(v.verdict).toBe('ask')
+    expect(v.failure).toBe('timeout')
+    expect(v.reason).toBe('classifier timed out')
+  })
+
+  it('R2: caller abort mid-flight with a clean resolve ⇒ cancelled, not timeout/malformed', async () => {
+    const execSignal = new AbortController()
+    const { cls } = make({
+      timeoutMs: 30_000,
+      stream: vi.fn(async () => {
+        return await new Promise<string>(resolve => {
+          setTimeout(() => resolve('{"verdict":"allow","reason":"late"}'), 5)
+        })
+      }),
+    })
+    const pending = cls.classify(fakeExec('Bash', { command: 'sleep' }, execSignal.signal), { route: ROUTE })
+    execSignal.abort()
+    const v = await pending
+    expect(v.verdict).toBe('ask')
+    expect(v.failure).toBe('cancelled')
+    expect(v.reason).toBe('classification cancelled by caller')
+    expect(v.cacheHit).toBe(false)
+  })
+
+  it('R5: debug sink present ⇒ raw output logged with the prefix, truncated to 2 KiB (success path)', async () => {
+    const debugMessages: string[] = []
+    const longReason = 'x'.repeat(5000)
+    const { cls } = make({
+      stream: streamFake([`{"verdict":"allow","reason":"${longReason}"}`]),
+      debug: (message) => { debugMessages.push(message) },
+    })
+    await cls.classify(fakeExec('Bash', { command: 'ls' }), { route: ROUTE })
+    expect(debugMessages).toHaveLength(1)
+    expect(debugMessages[0]!.startsWith('[dsh:classifier:raw] ')).toBe(true)
+    expect(debugMessages[0]!.length).toBe('[dsh:classifier:raw] '.length + 2048)
+  })
+
+  it('R5: debug sink also captures malformed (failure-path) raw output', async () => {
+    const debugMessages: string[] = []
+    const { cls } = make({
+      stream: streamFake(['garbage-not-json']),
+      debug: (message) => { debugMessages.push(message) },
+    })
+    await cls.classify(fakeExec('Bash', { command: 'ls' }), { route: ROUTE })
+    expect(debugMessages).toHaveLength(1)
+    expect(debugMessages[0]).toContain('[dsh:classifier:raw] garbage-not-json')
+  })
+
+  it('R5: no debug sink ⇒ default silence (classify never throws for its absence)', async () => {
+    const { cls } = make()
+    await expect(cls.classify(fakeExec('Bash', { command: 'ls' }), { route: ROUTE })).resolves.toMatchObject({ verdict: 'allow' })
   })
 
   it('unresolvable route ⇒ unarmed marker, stream never called', async () => {

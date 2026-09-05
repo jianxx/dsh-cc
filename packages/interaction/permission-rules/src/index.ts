@@ -262,6 +262,14 @@ export class PermissionRulesService extends Service {
         return toOneShotRoute(resolveAlias(this.ctx, route), parent)
       },
       warn: (message) => this.ctx.logger.warn(message),
+      // R5 debug channel: opt-in via DSH_PERMISSION_CLASSIFIER_DEBUG=1, from
+      // the plugin's scoped process logger — raw classifier output NEVER
+      // enters session events (the digest-only audit contract stands). Raw
+      // output may echo tool input (including secrets), so this stays an
+      // explicitly opt-in channel with no redaction machinery.
+      ...(process.env.DSH_PERMISSION_CLASSIFIER_DEBUG === '1'
+        ? { debug: (message) => (this.ctx.logger as { debug?: (msg: string) => void }).debug?.(`[permission-rules] ${message}`) }
+        : {}),
       audit: (session, event) => {
         appendSessionClassifier(session, event)
       },

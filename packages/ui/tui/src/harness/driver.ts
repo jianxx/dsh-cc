@@ -289,6 +289,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     liveMode: liveModeWithDefault(ctx),
     presenters: agent.presenters,
     flushQueue: () => actions.flushQueue(),
+    showNotice,
   })
 
   // --- Modal pipeline: approvals + questions share one FIFO ------------------

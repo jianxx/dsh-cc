@@ -9,7 +9,9 @@ import {
   createAutoStage,
   foldClassifiers,
   appendSessionClassifier,
+  trailingRouteFailureStreak,
   type AutoStageDeps,
+  type ClassifierAuditEventData,
 } from '../src/auto-stage.ts'
 
 function exec(opts: { name?: string; args?: unknown; session?: Session; signal?: AbortSignal } = {}): ToolExecution {
@@ -469,5 +471,187 @@ describe('F4 per-route failure breaker', () => {
     expect(h.warnings).toHaveLength(2)
     const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
     expect(calls.filter(([s, e]) => s === sessionA && e.failure === 'breaker')).toHaveLength(2)
+  })
+})
+
+describe('R2 cancelled classifications are breaker-neutral', () => {
+
+  function scriptHarness(
+    script: Array<(opts: { signal?: AbortSignal }) => Promise<string>>,
+    routes: { [tool: string]: { provider: string; model: string } },
+  ): Harness {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true, timeoutMs: 30 } } }
+    let i = 0
+    h.deps.stream = async (opts: { signal?: AbortSignal }) => {
+      h.streams += 1
+      const next = script[i]
+      i += 1
+      if (next === undefined) throw new Error('script exhausted')
+      return await next(opts)
+    }
+    h.deps.resolveRoute = (e: ToolExecution) => routes[e.name] ?? h.route
+    return h
+  }
+
+  const malformed = async () => 'not json at all'
+  it('caller aborts mid-flight never count toward the breaker (ESC-spam safe)', async () => {
+    const a1 = new AbortController(); const a2 = new AbortController(); const a3 = new AbortController()
+    const h = scriptHarness([
+      async () => { a1.abort(); return '{"verdict":"allow","reason":"late"}' },
+      async () => { a2.abort(); return '{"verdict":"allow","reason":"late"}' },
+      async () => { a3.abort(); return '{"verdict":"allow","reason":"late"}' },
+      async () => '{"verdict":"allow","reason":"ok"}',
+    ], { Bash: { provider: 'p1', model: 'm1' } })
+    const stage = createAutoStage(h.deps)
+    const mk = (ctrl: AbortController, id: string) => exec({ signal: ctrl.signal, args: { command: id } })
+    // Three caller-cancelled classifications: each resolves cleanly but with
+    // the caller's signal already aborted ⇒ 'cancelled' (fail-to-ask, benign
+    // reason), and never counted toward the breaker.
+    for (const [ctrl, id] of [[a1, 'c1'], [a2, 'c2'], [a3, 'c3']] as const) {
+      expect(await stage.maybeEscalate(decided(), mk(ctrl, id))).toEqual({ kind: 'ask', reason: 'classification cancelled by caller' })
+    }
+    // The breaker never opened: the 4th call still reaches the stream.
+    expect(await stage.maybeEscalate(decided(), exec({ args: { command: 'c4' } }))).toBe('allow')
+    expect(h.streams).toBe(4)
+    expect(h.warnings).toHaveLength(0)
+  })
+})
+
+describe('R3 restart-durable breaker seeding (session-log)', () => {
+
+  function scriptHarness(
+    script: Array<(opts: { signal?: AbortSignal }) => Promise<string>>,
+    routes: { [tool: string]: { provider: string; model: string } },
+  ): Harness {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true, timeoutMs: 30 } } }
+    let i = 0
+    h.deps.stream = async (opts: { signal?: AbortSignal }) => {
+      h.streams += 1
+      const next = script[i]
+      i += 1
+      if (next === undefined) throw new Error('script exhausted')
+      return await next(opts)
+    }
+    h.deps.resolveRoute = (e: ToolExecution) => routes[e.name] ?? h.route
+    return h
+  }
+
+  const malformed = async () => 'not json at all'
+  function seedLog(session: Session, events: Array<Partial<ClassifierAuditEventData>>): void {
+    for (const event of events) {
+      appendSessionClassifier(session, {
+        tool: 'Bash',
+        verdict: 'ask',
+        latencyMs: 10,
+        cacheHit: false,
+        ...event,
+      } as ClassifierAuditEventData)
+    }
+  }
+  const fail = (route?: { provider: string; model: string }) => ({
+    ...(route === undefined ? {} : { route: `${route.provider}/${route.model}`, provider: route.provider, model: route.model }),
+    failure: 'malformed' as const,
+  })
+
+  it('pure fold: trailing streak counts attributed failures, resets on success, caps at threshold', () => {
+    const route = { provider: 'p1', model: 'm1' }
+    const attributed = (failure?: ClassifierAuditEventData['failure']) => ({
+      provider: 'p1', model: 'm1', ...(failure === undefined ? {} : { failure }),
+    })
+    const threshold = 3
+    expect(trailingRouteFailureStreak([attributed('malformed'), attributed('malformed')], 'p1/m1', threshold)).toBe(2)
+    expect(trailingRouteFailureStreak([attributed('malformed'), attributed('malformed'), attributed()], 'p1/m1', threshold)).toBe(0)
+    expect(trailingRouteFailureStreak([attributed('malformed'), attributed('cancelled'), attributed('malformed')], 'p1/m1', threshold)).toBe(2)
+    expect(trailingRouteFailureStreak(
+      [attributed('malformed'), attributed('malformed'), attributed('malformed'), attributed('malformed')],
+      'p1/m1',
+      threshold,
+    )).toBe(3)
+    // Unattributed legacy events and other routes never count.
+    expect(trailingRouteFailureStreak([{ failure: 'malformed' }, { provider: 'x', model: 'y', failure: 'malformed' }], 'p1/m1', threshold)).toBe(0)
+  })
+
+  it('fresh process + log with 2 attributed trailing failures ⇒ one more failure trips immediately', async () => {
+    const h = scriptHarness([malformed], { Bash: { provider: 'p1', model: 'm1' } })
+    const session = sessionOf('seed-trip')
+    seedLog(session, [fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' })])
+    const stage = createAutoStage(h.deps)
+    // The third (live) failure itself still returns its verdict; the breaker
+    // opens for every call after it.
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'one' } }))).toMatchObject({ kind: 'ask' })
+    expect(h.streams).toBe(1)
+    expect(h.warnings).toHaveLength(1)
+    expect(h.warnings[0]).toMatch(/breaker|restored|consecutive/i)
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'two' } }))).toBeUndefined()
+    expect(h.streams).toBe(1)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
+    expect(calls.filter(([, e]) => e.failure === 'breaker')).toHaveLength(1)
+  })
+
+  it('log with fail,fail,success ⇒ streak 0: no seeding effect', async () => {
+    const h = scriptHarness([malformed], { Bash: { provider: 'p1', model: 'm1' } })
+    const session = sessionOf('seed-reset')
+    seedLog(session, [fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' }), { provider: 'p1', model: 'm1', verdict: 'allow' }])
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'one' } }))).toMatchObject({ kind: 'ask' })
+    expect(h.streams).toBe(1)
+    expect(h.warnings).toHaveLength(0)
+  })
+
+  it('unattributed legacy events never seed anything', async () => {
+    const h = scriptHarness([malformed], { Bash: { provider: 'p1', model: 'm1' } })
+    const session = sessionOf('seed-legacy')
+    seedLog(session, [fail(), fail(), fail()])
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'one' } }))).toMatchObject({ kind: 'ask' })
+    expect(h.streams).toBe(1)
+    expect(h.warnings).toHaveLength(0)
+  })
+
+  it('concurrent first-calls seed once (synchronous guard) and trip exactly once', async () => {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true, timeoutMs: 30 } } }
+    h.deps.resolveRoute = () => ({ provider: 'p1', model: 'm1' })
+    const gates: Array<(value: string) => void> = []
+    h.deps.stream = () => new Promise<string>(resolve => { gates.push(resolve) })
+    const session = sessionOf('seed-conc')
+    seedLog(session, [fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' })])
+    const stage = createAutoStage(h.deps)
+    const pA = stage.maybeEscalate(decided(), exec({ session, args: { command: 'a' } }))
+    const pB = stage.maybeEscalate(decided(), exec({ session, args: { command: 'b' } }))
+    gates[1]!('not json at all')
+    gates[0]!('not json at all')
+    // Both calls classify (seeded streak 2 + one live failure each ⇒ trip);
+    // the breakers open with exactly ONE warn and ONE breaker audit event.
+    expect(await pA).toMatchObject({ kind: 'ask' })
+    expect(await pB).toMatchObject({ kind: 'ask' })
+    expect(h.warnings).toHaveLength(1)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
+    expect(calls.filter(([, e]) => e.failure === 'breaker')).toHaveLength(1)
+  })
+
+  it("log already holding a 'breaker' event ⇒ open at first call, no second audit", async () => {
+    const h = scriptHarness([], { Bash: { provider: 'p1', model: 'm1' } })
+    const session = sessionOf('seed-prejoin')
+    seedLog(session, [fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' }), { provider: 'p1', model: 'm1', failure: 'breaker' }])
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'one' } }))).toBeUndefined()
+    expect(h.streams).toBe(0)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
+    expect(calls.filter(([, e]) => e.failure === 'breaker')).toHaveLength(0)
+  })
+
+  it("seeded-open (log failures, no breaker event) first call audits + notices exactly once", async () => {
+    const h = scriptHarness([], { Bash: { provider: 'p1', model: 'm1' } })
+    const session = sessionOf('seed-open')
+    seedLog(session, [fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' }), fail({ provider: 'p1', model: 'm1' })])
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided(), exec({ session, args: { command: 'one' } }))).toBeUndefined()
+    expect(h.streams).toBe(0)
+    expect(h.warnings).toHaveLength(1)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
+    expect(calls.filter(([, e]) => e.failure === 'breaker')).toHaveLength(1)
   })
 })

@@ -18,7 +18,7 @@ export interface AutoModeClassifier {
   enabled?: boolean
   /** Model route used for classification (default `'haiku'`). */
   route?: string
-  /** Per-call timeout in milliseconds (default `5000`). */
+  /** Per-call timeout in milliseconds (default `8000`). */
   timeoutMs?: number
   /** Verdict cache size in entries (default `256`). */
   cacheMaxEntries?: number
@@ -44,7 +44,7 @@ export interface AutoMode {
 export const AutoModeClassifierSchema: z<AutoModeClassifier> = z.object({
   enabled: z.boolean().default(false),
   route: z.string().default('haiku'),
-  timeoutMs: z.number().default(5000),
+  timeoutMs: z.number().default(8000),
   cacheMaxEntries: z.number().default(256),
 })
 

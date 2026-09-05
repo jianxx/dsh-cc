@@ -53,6 +53,12 @@ export function attachSessionEvents(rt: DriverSessionEventsCtx): void {
   // and its `compaction/end` clears that anchor and flushes the outbox. An
   // auto-compact riding a live turn never touches the anchor.
   let compactOwnedTurn = false
+  // Sessions that already showed the classifier-breaker fallback notice (R4):
+  // ONE per session per process, on live-appended events only — the initial
+  // fold/replay never routes through this listener, so a resume never re-shows
+  // a notice for a long-fixed lane.
+  const breakerNoticed = new Set<unknown>()
+  const CLASSIFIER_BREAKER_NOTICE = 'classifier lane failed repeatedly; auto mode continues without LLM vetting until settings change'
   rt.ctx.on('session/event', (session, event: SessionEvent) => {
     // Late events from a disposed session are dropped by id mismatch.
     if (session.id !== rt.current.agent.session.id) return
@@ -60,6 +66,15 @@ export function attachSessionEvents(rt: DriverSessionEventsCtx): void {
     rt.emit(applySessionEvent(rt.state(), event as SessionEventLike, rt.presenters))
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
       rt.emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent)))
+    }
+    // R4: a live classifier breaker open is surfaced once, visibly — replayed
+    // logs are handled by the transcript fold, never re-shown here.
+    if (eventType === 'permission/classifier') {
+      const data = (event as SessionEventLike).data as { failure?: string } | undefined
+      if (data?.failure === 'breaker' && !breakerNoticed.has(session.id)) {
+        breakerNoticed.add(session.id)
+        rt.showNotice(CLASSIFIER_BREAKER_NOTICE)
+      }
     }
     // Manual-compaction working line: an idle agent's `/compact` runs outside
     // any turn, so anchor the working line for its duration. A live turn's
