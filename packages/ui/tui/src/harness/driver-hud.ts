@@ -46,7 +46,7 @@ import type { DriverHudCtx } from './driver-ctx.ts'
  * needs no extra call.
  */
 export function createHudSection(rt: DriverHudCtx) {
-  const { state, emit, ctx, cwd, current, selection, branchProbe } = rt
+  const { state, emit, ctx, cwd, current, selection, branchProbe, statusline } = rt
 
   // --- Branch: one best-effort probe at boot and after each switchSession (the
   // cwd may differ per session). Async is fine — a late landing re-emits so
@@ -97,6 +97,7 @@ export function createHudSection(rt: DriverHudCtx) {
     emit(setUsage(s, merged))
   }
   const seedHud = (): void => {
+    statusline?.onRebind()
     const s = state()
     const patch: Partial<HudView> = {}
     if (projections !== undefined) {
@@ -140,6 +141,7 @@ export function createHudSection(rt: DriverHudCtx) {
   if (projections !== undefined) {
     projections.onChanged((session, key, value) => {
       if (session.id !== current.agent.session.id) return
+      statusline?.onProjection(key)
       if (key === 'tokenUsage') {
         const usage = value as TokenUsageStateLike | undefined
         const tokens = tokensOf(usage)
@@ -178,6 +180,10 @@ export function createHudSection(rt: DriverHudCtx) {
   }
 
   const statusLineOf = (width?: number): string => {
+    // Custom statusLine (plan §3.2): active → the command's first stdout line
+    // with padding; inactive → today's built-in line, byte-identical.
+    const custom = statusline?.override()
+    if (custom !== undefined) return custom
     const effort = selection.current?.reasoningEffort
     const s = state()
     return formatStatusLine({

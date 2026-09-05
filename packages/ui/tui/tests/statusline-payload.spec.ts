@@ -78,6 +78,13 @@ describe('buildStatusLinePayload', () => {
   })
 })
 
+describe('version (pinned v1 omission — no truthful runtime source)', () => {
+  it('drops the version field when the view carries none', () => {
+    const payload = buildStatusLinePayload({ bindTimeMs: 1_000_000, nowMs: 1_005_000 })
+    expect('version' in payload).toBe(false)
+  })
+})
+
 describe('exceeds_200k_tokens boundary (uncached input total)', () => {
   it('is false at 200000 and true at 200001', () => {
     expect(buildStatusLinePayload(view({ inputTokens: 200_000 })).exceeds_200k_tokens).toBe(false)

@@ -11,8 +11,12 @@
 
 /** Structural view of the driver state the payload is built from. */
 export type StatusLinePayloadView = {
-  /** Bundle version of dsh-cc (not a CC version). */
-  version: string
+  /**
+   * Bundle version of dsh-cc (not a CC version). Optional as a pinned v1
+   * omission: the TUI has no truthful runtime source for a bundle version, so
+   * the wiring layer never supplies it (recorded as a manifest deviation).
+   */
+  version?: string
   /** Driver cwd at payload-fire time; the workspace/cwd fallback. */
   driverCwd?: string
   /** Session cwd (session.header.cwd). */
