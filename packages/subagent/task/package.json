@@ -69,7 +69,8 @@
     "@jianxx/dsh-cc-memory": "workspace:^",
     "@jianxx/dsh-cc-model-aliases": "workspace:^",
     "@jianxx/dsh-cc-subagent-resume-pins": "workspace:^",
-    "@jianxx/dsh-cc-tools": "workspace:^"
+    "@jianxx/dsh-cc-tools": "workspace:^",
+    "@jianxx/dsh-cc-tool-search": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

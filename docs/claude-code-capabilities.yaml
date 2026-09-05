@@ -1696,6 +1696,8 @@ capabilities:
       - { type: test, path: packages/subagent/task/tests/suppress-settled.spec.ts }
       - { type: test, path: packages/subagent/task/tests/integration.spec.ts }
       - { type: test, path: packages/subagent/task/tests/registry-publication.spec.ts }
+      - { type: source, path: packages/subagent/task/src/preload-tools.ts }
+      - { type: test, path: packages/subagent/task/tests/preload-tools.spec.ts }
       - { type: test, path: packages/ui/tui/tests/promote-key.spec.ts }
       - { type: test, path: packages/subagent/resume-pins/tests/gate.spec.ts }
       - { type: test, path: packages/bundle/cc-shell/tests/resume-pins-composition.spec.ts }
@@ -1789,6 +1791,15 @@ capabilities:
         WORKSPACE_CHANGED / DEFINITION_CHANGED / PINNED_TOOL_UNAVAILABLE /
         PIN_ORPHANED / PIN_UNREADABLE naming the policy knob — Claude Code has
         no equivalent mechanism.
+        Spawn-time preload (dsh-cc-side, no Claude Code equivalent): an
+        explicit `tools:` entry that is still a deferred MCP tool is
+        activated through the duck-typed ctx.toolSearch seam at spawn, BEFORE
+        the child starts, on BOTH dispatch paths — activation is
+        process-global (every admitting agent's schema grows after the
+        spawn); wildcard entries are restrict-only, deny/sanitize-excluded
+        names are never activated, eager names are skipped, and outcomes
+        surface in the Task result text (Preloaded deferred tools for child /
+        Not preloaded: name (reason)).
 
   # ── mcp ─────────────────────────────────────────────────────────────────
   mcp.client:

@@ -40,6 +40,7 @@ import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
 import { toAgentOptions } from '@jianxx/dsh-cc-model-aliases'
 import type { AgentRegistry } from './registry.ts'
 import { SpawnPinCapture } from './resume-capture.ts'
+import { preloadDeferredFilterTools, renderPreloadLines, type ToolSearchActivateSeam } from './preload-tools.ts'
 import { sanitizeToolFilter } from './sanitize-filter.ts'
 import {
   backgroundTasksDisabled,
@@ -263,18 +264,34 @@ export function registerTaskTool(
       // agent: MCP tools live on the standing-scope layer, which the global
       // view (no scope) does not include.
       const knownNames = tools.view?.(agent).restrictableNames ?? new Set<string>()
+      const toolFilter = definition.toolRestriction !== undefined
+        ? sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message), knownNames)
+        : undefined
+      // Spawn-time pre-activation (named definitions only): explicit deferred
+      // MCP names in the raw `tools:` allow-list are activated through the
+      // duck-typed toolSearch seam BEFORE the child starts, on BOTH dispatch
+      // paths. Activation is process-global — every admitting agent's schema
+      // grows after the spawn.
+      const preloadText = renderPreloadLines(preloadDeferredFilterTools({
+        raw: definition.toolRestriction,
+        sanitized: toolFilter,
+        toolSearch: ctx.get('toolSearch') as ToolSearchActivateSeam | undefined,
+        agent,
+        tools,
+        warn: message => ctx.logger.warn(message),
+      }))
       const folded = {
         ...base,
         persona: definition.systemPrompt,
-        ...(definition.toolRestriction !== undefined
-          ? { toolFilter: sanitizeToolFilter(definition.toolRestriction, message => ctx.logger.warn(message), knownNames) }
-          : {}),
+        ...(toolFilter !== undefined ? { toolFilter } : {}),
         ...(agentOptions !== undefined ? { agentOptions } : {}),
       }
       if (wantsBackground(args, definition, disabled)) {
-        return startBackground(seam, preparedBackground(folded, capture, definition, routes), capture)
+        const result = await startBackground(seam, preparedBackground(folded, capture, definition, routes), capture)
+        return preloadText === '' ? result : { ...result, text: `${result.text}\n${preloadText}` }
       }
-      return collectForeground(ctx, seam, preparedBackground(folded, capture, definition, routes), capture, exec)
+      const result = await collectForeground(ctx, seam, preparedBackground(folded, capture, definition, routes), capture, exec)
+      return preloadText === '' ? result : { ...result, text: `${result.text}\n${preloadText}` }
     },
   }))
 }

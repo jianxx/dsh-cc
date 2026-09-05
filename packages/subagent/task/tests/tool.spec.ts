@@ -499,7 +499,10 @@ describe('Task tool', () => {
     expect(filter?.allow).toContain('mcp__github__create_issue')
     expect(filter?.allow).toContain('ToolSearch')
     expect(filter?.allow).not.toContain('mcp__github__search')
-    expect(warn).not.toHaveBeenCalled()
+    // The spawn-time preload step warns once when no toolSearch seam is
+    // mounted (it cannot pre-activate the deferred MCP name); what must stay
+    // silent is sanitization — no unknown-name drops for these mounted names.
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('dropping unknown tool name'))
     await assertRestrictable(ctx, filter!)
   })
 
