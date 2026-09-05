@@ -62,6 +62,7 @@
     "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
     "@deepseek-ai/dsh-plan-mode": "link:../../../../deepseek-harness/packages/plan/plan-mode",
     "@deepseek-ai/dsh-session": "link:../../../../deepseek-harness/packages/core/session",
+    "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",
     "@deepseek-ai/dsh-user-approval": "link:../../../../deepseek-harness/packages/interaction/user-approval",
     "@deepseek-ai/dsh-user-questions": "link:../../../../deepseek-harness/packages/interaction/user-questions",
     "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
