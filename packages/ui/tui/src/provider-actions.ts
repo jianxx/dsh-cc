@@ -6,6 +6,7 @@
  * @module @jianxx/dsh-cc-tui/provider-command-actions
  */
 import { Input } from '@jianxx/dsh-cc-pi-tui'
+import { MaskedInput } from './components/masked-input.ts'
 import { setProviderOverlay } from './store.ts'
 import {
   backFromWizard,
@@ -84,8 +85,7 @@ export const openField = (core: ProviderCore, panel: ProviderPanelState | undefi
   const step = currentStep(panel)
   const spec = step === undefined ? undefined : TEXT_STEPS[step]
   if (spec === undefined || panel?.wizard === undefined || step === undefined) return
-  const input = new Input()
-  input.masked = spec.masked
+  const input = spec.masked ? new MaskedInput() : new Input()
   const wizard = panel.wizard
   if (!spec.masked && step !== 'models') {
     const answer = wizard.answers[step]
