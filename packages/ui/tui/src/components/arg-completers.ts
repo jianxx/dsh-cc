@@ -11,6 +11,7 @@
  */
 
 import { PERMISSION_COMMAND_MODES } from '@jianxx/dsh-cc-command-permissions'
+import { PROVIDER_SUBCOMMANDS } from '../slash.ts'
 import type { AutocompleteItem } from '@jianxx/dsh-cc-pi-tui'
 import type { ArgCompleterMap } from './completion.ts'
 import type { Driver } from '../state/driver-types.ts'
@@ -71,6 +72,10 @@ export function buildArgCompleters(driver: ArgCompleterDriver): ArgCompleterMap 
           ...short === session.id ? {} : { description: session.id },
         }
       })
+    },
+    provider: async () => {
+      // Static subcommand table (§4.1); route ids come from the overlay itself.
+      return PROVIDER_SUBCOMMANDS.map(sub => ({ value: sub, label: sub }))
     },
   }
 }

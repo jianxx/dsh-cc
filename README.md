@@ -68,7 +68,7 @@ dsh web
 | --- | --- | --- | --- | --- |
 | Engine subsystems | 11 | 6 | 5 | 2 |
 | Hook events | 12 | 4 | 4 | 0 |
-| Command surface | 19 | 6 | 1 | 2 |
+| Command surface | 20 | 6 | 1 | 2 |
 | Sessions and context | 1 | 0 | 1 | 0 |
 | Memory and CLAUDE.md | 0 | 1 | 1 | 0 |
 | Skills | 0 | 1 | 0 | 0 |
@@ -165,11 +165,14 @@ The CC preset exposes a growing command surface, including:
 /diff              inspect CLAUDE.md / settings differences
 /init               scan a project and scaffold CLAUDE.md
 /plugin             manage plugins
+/provider           manage LLM providers (list/add/remove, rotate keys, set default)
 /release-notes      show release notes
 /version            show version information
 ```
 
 The TUI also provides terminal-oriented interactions such as todo inspection, approval flows, queued prompts, transcript export, usage/context display, and local shell commands.
+
+`/provider` opens an overlay over your configured model providers: `/provider list` prints the current routes, `/provider add <preset-id>` walks a wizard for the built-in presets (Moonshot, Z.AI/Zhipu, DeepSeek) or a fully custom endpoint, and the per-route detail view rotates keys, refreshes the model list, sets the default, or removes the route. API keys are typed into a masked field and stored in the credential store (`~/.dsh/.credentials.yaml`), never in settings; keys already supplied by the environment are shown read-only. Changes take effect for new sessions immediately (credentials resolve per request); the running session keeps its current provider until you pick again with `/model`.
 
 ## Use the models you want
 

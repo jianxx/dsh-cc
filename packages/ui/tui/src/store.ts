@@ -15,6 +15,7 @@ export type {
   ModelPickerView,
   PermissionPickerEntryView,
   PermissionPickerView,
+  ProviderPanelView,
   QuestionOptionView,
   QuestionView,
   SessionEntryView,
@@ -83,4 +84,9 @@ export {
   setTodos,
   todoSummary,
 } from './store/todos.ts'
+export {
+  moveCursor,
+  openProviderPanel,
+  setProviderOverlay,
+} from './store/provider-panel.ts'
 export { closeUsagePanel, openUsagePanel, setUsage } from './store/usage.ts'

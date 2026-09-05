@@ -27,6 +27,7 @@ import { parseModelChoice } from '../model-catalog.ts'
 import { parseEffortChoice } from '../effort-catalog.ts'
 import { shouldEchoCommandResult } from '../compact-fold.ts'
 import { createAgentsSection } from './driver-agents.ts'
+import { createProviderSection, type ProviderRuntime } from '../provider-command.ts'
 import { enqueue, moveWorktreeExitFocus, openUsagePanel, setBusy, setTurnActive, setWorktreeExit, upsertRow } from '../store.ts'
 import {
   createWorktreeExitHooks,
@@ -74,6 +75,8 @@ export interface RunLocalSection {
   copyLatestReply(): void
   runLocal(name: string, rawInput: string): Promise<void>
   runHarness(line: string): Promise<{ kind: string; text?: string } | undefined | null>
+  /** `/provider` runtime (read path + action wizards); mounted onto the driver. */
+  providerRuntime: ProviderRuntime
   /** Move the `/quit` worktree-exit confirmation focus by one row. */
   worktreeExitMove(delta: -1 | 1): void
   /** Confirm the focused worktree-exit option (keep / remove / cancel). */
@@ -85,6 +88,9 @@ export interface RunLocalSection {
 export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
   const { emit, showNotice } = rt
   const { agentsSlash } = createAgentsSection(rt)
+  // `/provider` section (read path + action wizards). Created here so runLocal
+  // can dispatch without a cycle; createDriver re-exports it on the driver.
+  const providerRuntime = createProviderSection({ emit: rt.emit, state: rt.state, ctx: rt.ctx, selection: rt.selection })
   const worktreeExit = rt.config.worktreeExit ?? createWorktreeExitHooks()
 
   // The section owns the quit finalizer: after a `/quit` decision settles it
@@ -279,6 +285,10 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       exportTranscript(rawInput)
       return
     }
+    if (name === 'provider') {
+      await providerRuntime.openProviderPanel(rawInput)
+      return
+    }
     if (name === 'copy') {
       copyLatestReply()
       return
@@ -409,6 +419,7 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
     copyLatestReply,
     runLocal,
     runHarness,
+    providerRuntime,
     worktreeExitMove,
     worktreeExitSubmit,
     worktreeExitCancel,

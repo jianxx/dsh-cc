@@ -5,6 +5,7 @@
  */
 import type { FileDiff } from '../tool-card.ts'
 import type { TurnAnchor } from '../working-line.ts'
+import type { ProviderPanelState } from './provider-panel.ts'
 
 export type TranscriptRow =
   | { kind: 'user'; text: string; seq?: number }
@@ -334,6 +335,13 @@ export interface WorktreeExitView {
 /** Number of rows in the worktree-exit overlay (keep / remove / cancel). */
 export const WORKTREE_EXIT_OPTION_COUNT = 3
 
+/**
+ * Live view of the `/provider` overlay home (§4.2): the two-section list
+ * rows, the focused cursor, and a transient message line. Reuses the pure
+ * panel state directly — the list phase is the only phase this unit wires.
+ */
+export type ProviderPanelView = ProviderPanelState
+
 export interface TuiState {
   rows: TranscriptRow[]
   draft: string
@@ -389,6 +397,8 @@ export interface TuiState {
   usagePanel?: UsagePanelView
   /** Open `/quit` worktree-exit confirmation overlay; absent while closed. */
   worktreeExit?: WorktreeExitView
+  /** Open `/provider` panel; absent while closed. */
+  providerPanel?: ProviderPanelView
   /**
    * Latest `session/title` event text (framework-generated session summary),
    * folded last-wins. Drives the terminal window title; absent until the

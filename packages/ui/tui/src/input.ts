@@ -326,6 +326,91 @@ export function routeUsagePanelInput(driver: InputSink, data: string): void {
 }
 
 /**
+ * Route one raw keypress into the open `/provider` panel (§4.2–§4.6).
+ * Phase-dependent: the list phase keeps j/k navigation (+ `n` starts the
+ * custom wizard); the wizard phase feeds printable keys/backspace into the
+ * live text field, arrows move the protocol select, enter submits, tab runs
+ * the models fetch, `x` is the secondary choice (keep/remove, keep
+ * credential), and esc backs one step (closing with a note at the first
+ * step). Every other key is consumed — the panel is modal and the composer
+ * editor must never see keystrokes while it is open.
+ */
+type ProviderPanelRouter = {
+  panelPhase?(): 'list' | 'detail' | 'wizard' | 'confirm-remove' | undefined
+  panelMove(delta: -1 | 1): void
+  panelSubmit(): void
+  panelCancel(): void
+  panelEscape?(): void
+  panelType?(text: string): void
+  panelBackspace?(): void
+  panelToggleFetch?(): void
+  panelSecondary?(): void
+  panelRefreshModels?(): void
+  startCustomWizard?(): void
+}
+
+export function routeProviderPanelInput(runtime: ProviderPanelRouter | undefined, data: string): void {
+  if (runtime === undefined) return
+  const phase = runtime.panelPhase?.() ?? 'list'
+  if (matchesKey(data, Key.escape)) {
+    if (runtime.panelEscape !== undefined) runtime.panelEscape()
+    else runtime.panelCancel()
+    return
+  }
+  if (matchesKey(data, Key.enter)) {
+    runtime.panelSubmit()
+    return
+  }
+  if (phase === 'wizard') {
+    if (matchesKey(data, Key.tab)) {
+      runtime.panelToggleFetch?.()
+      return
+    }
+    if (data === 'x') {
+      runtime.panelSecondary?.()
+      return
+    }
+  }
+  if (matchesKey(data, Key.up)) {
+    runtime.panelMove(-1)
+    return
+  }
+  if (matchesKey(data, Key.down)) {
+    runtime.panelMove(1)
+    return
+  }
+  if (phase === 'detail') {
+    if (data === 'r') {
+      runtime.panelRefreshModels?.()
+      return
+    }
+  }
+  if (phase === 'list') {
+    if (data === 'n') {
+      runtime.startCustomWizard?.()
+      return
+    }
+    if (data === 'j') {
+      runtime.panelMove(1)
+      return
+    }
+    if (data === 'k') {
+      runtime.panelMove(-1)
+      return
+    }
+  }
+  if (matchesKey(data, Key.backspace)) {
+    runtime.panelBackspace?.()
+    return
+  }
+  if (phase === 'wizard') {
+    const printable = printableOf(data)
+    if (printable !== undefined) runtime.panelType?.(printable)
+  }
+  // All other keys consumed (modal).
+}
+
+/**
  * Apply one raw keypress against the live driver. Returns whether the app
  * should exit. Called from the pi-tui global input listener before the editor
  * receives the keystroke.
