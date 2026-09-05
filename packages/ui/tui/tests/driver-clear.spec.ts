@@ -168,7 +168,9 @@ describe('createDriver /clear /new /reset', () => {
     expect(resumeCalls).toEqual([])
     expect(disposed).toEqual(['s-a'])
     expect(driver.state.rows).not.toContainEqual({ kind: 'user', text: 'old turn' })
-    expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'banner' })
+    expect(driver.state.rows[1]).toMatchObject({ kind: 'status' })
+    expect((driver.state.rows[1] as { text: string }).text).toMatch(/dsh cc-mode/)
   })
 
   it('/new and /reset take the same create path', async () => {

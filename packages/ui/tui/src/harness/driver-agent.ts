@@ -16,6 +16,7 @@
 
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { bootBannerText } from './boot-banner.ts'
 import { loadHistory, HISTORY_CAP } from '../history.ts'
 import { loadBashHistory, saveBashHistory } from '../bash-history.ts'
 import { writeResumeTarget } from '../resume-target.ts'
@@ -259,7 +260,7 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
         existing => existing.kind === 'status' && (existing as { text?: string }).text?.startsWith('dsh cc-mode — '),
       )
       if (bannerIndex >= 0) {
-        rows[bannerIndex] = { kind: 'status', text: `dsh cc-mode — ${modelLabel} · ${rt.cwd} · /tui-help for keys` }
+        rows[bannerIndex] = { kind: 'status', text: bootBannerText(modelLabel, rt.cwd) }
         rt.emit({ ...settled, rows })
       }
       if (selection.current === undefined) {

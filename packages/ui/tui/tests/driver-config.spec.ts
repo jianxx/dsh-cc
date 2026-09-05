@@ -144,6 +144,8 @@ describe('createDriver agentOptions passthrough', () => {
   it('emits a boot banner status row with cwd on a fresh create', async () => {
     const capture: { create?: unknown } = {}
     const driver = await createDriver(makeCtx(capture) as never, { cwd: '/fake/path' })
+    // Fresh boot: whale art row first, then the info status row.
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'banner' })
     const banner = driver.state.rows.find(r => r.kind === 'status')
     expect(banner).toBeDefined()
     expect((banner as { text: string }).text).toMatch(/dsh cc-mode/)
@@ -170,7 +172,7 @@ describe('createDriver agentOptions passthrough', () => {
     expect(banner!.text).toContain('default model')
   })
 
-  it('places the boot banner as the first row above replayed history on resume', async () => {
+  it('places the boot banner (art + info) as the first rows above replayed history on resume', async () => {
     const resumeEvents = [
       { type: 'user/message', data: { content: [{ type: 'text', text: 'remember this' }], source: { kind: 'user' } } },
       { type: 'assistant/chunk', data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'ack' } } },
@@ -180,9 +182,10 @@ describe('createDriver agentOptions passthrough', () => {
       resumeStatus: 'idle',
     }
     const driver = await createDriver(makeCtx(capture) as never, { sessionId: 'prior-session' })
-    expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
-    expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
-    // A no-model-configured session also emits the boot notice (row 1); the
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'banner' })
+    expect(driver.state.rows[1]).toMatchObject({ kind: 'status' })
+    expect((driver.state.rows[1] as { text: string }).text).toMatch(/dsh cc-mode/)
+    // A no-model-configured session also emits the boot notice (row 2); the
     // replayed history follows both.
     expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'remember this' })
   })

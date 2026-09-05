@@ -124,8 +124,9 @@ describe('createDriver switchSession', () => {
     })
     const driver = await createDriver(ctx as never, { cwd: PROJ_CWD })
     // Boot session is s-a
-    expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
-    expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'banner' })
+    expect(driver.state.rows[1]).toMatchObject({ kind: 'status' })
+    expect((driver.state.rows[1] as { text: string }).text).toMatch(/dsh cc-mode/)
 
     await driver.switchSession('s-b')
 
@@ -134,9 +135,10 @@ describe('createDriver switchSession', () => {
     // Resume called with the right id
     expect(resumeCalls).toHaveLength(1)
     expect(resumeCalls[0]!.resumeSessionId).toBe('s-b')
-    // Transcript = banner + folded new history
-    expect(driver.state.rows[0]).toMatchObject({ kind: 'status' })
-    expect((driver.state.rows[0] as { text: string }).text).toMatch(/dsh cc-mode/)
+    // Transcript = banner (art + info) + folded new history
+    expect(driver.state.rows[0]).toMatchObject({ kind: 'banner' })
+    expect(driver.state.rows[1]).toMatchObject({ kind: 'status' })
+    expect((driver.state.rows[1] as { text: string }).text).toMatch(/dsh cc-mode/)
     expect(driver.state.rows).toContainEqual({ kind: 'user', text: 'switched history' })
     // Busy synced from the new agent's status
     expect(driver.state.busy).toBe(true)

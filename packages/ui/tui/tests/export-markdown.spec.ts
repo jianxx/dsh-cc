@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { rowsToMarkdown } from '@jianxx/dsh-cc-tui/export-markdown.ts'
+import { whaleBannerArt } from '@jianxx/dsh-cc-tui/harness/boot-banner.ts'
 import type { TranscriptRow } from '@jianxx/dsh-cc-tui/store.ts'
 
 /** Drop the phantom empty element a trailing newline produces on split. */
@@ -168,6 +169,17 @@ describe('rowsToMarkdown', () => {
   it('does not double the ⚠ on an error row whose text already carries it', () => {
     const md = rowsToMarkdown([{ kind: 'status', text: '⚠ Turn failed: boom', error: true }])
     expect(md).toBe('*⚠ Turn failed: boom*\n')
+  })
+
+  it('skips banner rows (no raw SGR or block glyphs in the document)', () => {
+    const md = rowsToMarkdown([
+      { kind: 'banner', text: whaleBannerArt() },
+      { kind: 'status', text: 'dsh cc-mode — m · /cwd · /tui-help for keys' },
+    ])
+    expect(md).toContain('dsh cc-mode')
+    expect(md).not.toContain('█')
+    expect(md).not.toContain('▀')
+    expect(md).not.toContain('\x1b[')
   })
 
   it('joins blocks with blank lines and ends the document with one newline', () => {

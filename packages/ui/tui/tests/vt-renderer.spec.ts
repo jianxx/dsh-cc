@@ -9,6 +9,7 @@ import {
 } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import { renderRowText } from '@jianxx/dsh-cc-tui/components/transcript.ts'
+import { whaleBannerArt } from '@jianxx/dsh-cc-tui/harness/boot-banner.ts'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
 import {
@@ -1538,6 +1539,12 @@ describe('vt-renderer', () => {
     const rendered = renderRowText(row)
     expect(rendered).toContain('\x1b[2m')
     expect(rendered).not.toContain('\x1b[31m')
+  })
+
+  it('renders a banner row verbatim (pre-styled, no theme wrap)', () => {
+    const art = whaleBannerArt()
+    const rendered = renderRowText({ kind: 'banner', text: art })
+    expect(rendered).toBe(art)
   })
 
   it('hides tool output behind a dim summary when toolOutputExpanded is false', () => {

@@ -25,6 +25,16 @@ export type TranscriptRow =
     seq?: number
   }
   | {
+    kind: 'banner'
+    /** Pre-styled UI chrome (boot whale art); rendered verbatim, no theme wrap. */
+    text: string
+    /**
+     * No `seq`: like the boot status row, the banner survives compaction.
+     * Markdown export skips it entirely.
+     */
+    seq?: number
+  }
+  | {
     kind: 'status'
     text: string
     /**
