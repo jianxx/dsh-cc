@@ -79,8 +79,8 @@ dsh web
 | Permissions | 0 | 1 | 0 | 0 |
 | Models | 0 | 1 | 0 | 0 |
 | Workspace | 1 | 0 | 0 | 0 |
-| Interactive UX | 1 | 0 | 1 | 0 |
-Statuses were verified against upstream documentation retrieved as of 2026-09-04 (freshness threshold: 120 days).
+| Interactive UX | 1 | 1 | 0 | 0 |
+Statuses were verified against upstream documentation retrieved as of 2026-09-05 (freshness threshold: 120 days).
 
 For the exact feature-by-feature status and known gaps, see the **[Claude Code parity matrix](docs/cc-parity-matrix.md)**.
 <!-- parity:matrix:end -->
@@ -230,6 +230,27 @@ They are applied after the installed bundles.
 Model alias configuration, permissions, settings precedence, hook behavior, memory options, and TUI behavior are exposed through the corresponding plugins/settings namespaces.
 
 For exact semantics, use the package READMEs and the [parity matrix](docs/cc-parity-matrix.md) as the source of truth.
+
+### Custom status line
+
+On the `tui` profile, you can replace the built-in bottom status line with your own shell command (Claude Code-compatible). The block can live in the user file `~/.dsh/settings.json` or in a project `.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.dsh/statusline.sh",
+    "padding": 0,
+    "refreshInterval": 10
+  }
+}
+```
+
+Project `.claude/settings.json` files shared with a Claude Code checkout work as-is; if both a camelCase `statusLine` and a dsh-native kebab `statusline` key are present, the dsh-native key wins.
+
+The command receives a Claude Code-compatible JSON session payload on stdin (the [CC statusline docs](https://code.claude.com/docs/en/statusline) describe the contract); dsh-cc supplies only the fields it can source truthfully. Its stdout's first line becomes the status line (ANSI escapes are passed through); a failure or empty output renders a blank line. The command reruns on session boot/resume, new messages, mode and model changes — and immediately when the command itself changes — plus on the `refreshInterval` timer, which is in **seconds** (minimum 1). Scripts get `COLUMNS`/`LINES` in their environment.
+
+v1 caveats: only the first output row is rendered (CC renders every row), and edits to `settings.json` made outside the running session apply at the next restart.
 
 ## Compatibility and known limits
 

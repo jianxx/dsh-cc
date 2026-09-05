@@ -1,6 +1,6 @@
 # Custom status line (`statusLine` settings contract, Claude Code parity)
 
-Status: Approved (post-review; deep-reasoner cold review verdicts incorporated)
+Status: Approved (post-review) — implemented (deep-reasoner cold review verdicts incorporated)
 Date: 2026-09-05
 Scope: Let the dsh-cc TUI (`dsh --profile tui`) execute a user-configured shell command for the bottom status line, honoring the Claude Code `statusLine` settings contract (`statusLine.type = "command"`), while leaving today's built-in HUD untouched when no command is configured.
 
@@ -106,17 +106,17 @@ CC-shaped JSON with only truthfully-sourced fields (C2, D7, D13):
 | `model.display_name` | same as `model.id` (no display-name registry exists) | ✓ (duplicated; deviation-noted) |
 | `workspace.current_dir` / `project_dir` | session cwd / driver project root | ✓ |
 | `workspace.added_dirs` | — | `[]` constant |
-| `workspace.git_worktree` | worktree descriptor name if carried on the session | best-effort (D13) |
-| `version` | dsh-cc bundle version (not a CC version) | ✓ (D13 source pin) |
-| `output_style.name` | `cc-output-styles` settings section | best-effort (D13) |
-| `cost.total_duration_ms` | `now − session.createdAt` (persistence facade, D7), falling back to bind time | ✓ (reviewer N1: `/resume` of an old session must not restart the clock) |
+| `workspace.git_worktree` | — | **omitted**: the session header verifiably carries no worktree descriptor (D13) |
+| `version` | — | **omitted**: no truthful runtime source (a dsh-cc bundle version is not a CC version) |
+| `output_style.name` | — | **omitted**: sourcing it from the `cc-output-styles` settings section would double-register another plugin's namespace |
+| `cost.total_duration_ms` | `now − session.header.createdAt` (the harness `SessionHeader` carries `createdAt` directly), falling back to bind time when absent | ✓ (reviewer N1: `/resume` of an old session must not restart the clock) |
 | `cost.total_cost_usd`, `total_api_duration_ms`, `total_lines_*` | no truthful source | **omitted** |
 | `context_window.total_input_tokens` / `total_output_tokens` | token-usage totals from projections | ✓ when present |
 | `context_window.context_window_size` / `used_percentage` / `remaining_percentage` | context-pressure projection | ✓ when present |
 | `context_window.current_usage.*` | **NO truthful source** — `contextBreakdown` is role counts `{system, tools, messages}`, not token buckets (reviewer B1, `usage-view.ts:132-140`) | **omitted** |
 | `exceeds_200k_tokens` | derived from the uncached input-token total (NOT total incl. cache) | ✓-approximate (reviewer N2; deviation-noted) |
 | `effort.level` | `selection.current.reasoningEffort` | ✓ when set |
-| `worktree{…}` | session worktree descriptor | best-effort (D13) |
+| `worktree{…}` | — | **omitted**: the session header verifiably carries no worktree descriptor (D13) |
 | `session_name`, `prompt_id`, `fast_mode`, `thinking`, `rate_limits`, prompt-cache fields, `vim`, `agent`, `pr`, `workspace.repo` | no truthful source | **omitted** (consequently their C4 triggers never fire either) |
 
 The payload type is structural and open (serialized, not validated): future fields add without a schema bump.
@@ -152,7 +152,9 @@ All work lands in `packages/ui/tui` (the only surface with a status line) plus t
   - `dispose()` aborts in-flight, clears debounce + refresh timers, and makes later settles no-ops (reviewer S3 — `driver.dispose()` calls this; the no-polling invariant D2 stays intact because `dispose` clears the only timer the feature can create).
 - Test first: `packages/ui/tui/tests/statusline-command.spec.ts` — fake `ShellExecutorLike` (deferred promises, records requests/signals) + fake timers: 5 rapid updates → 1 spawn; in-flight kill observed (abort signal) before respawn; **stale settle from generation N is discarded when N+1 already landed** (S2 test); immediate-update bypasses debounce; each failure class → `latest() === ''`; ANSI bytes verbatim; first-line-only; hard cap cuts a hung run; `COLUMNS`/`LINES` present in the request env; `dispose()` mid-flight kills and quiets.
 
-### Slice 4 — driver wiring (integration)
+### Slice 4 — driver wiring (integration) — as built
+
+As implemented, `packages/ui/tui/src/harness/statusline-wiring.ts` is the single integration point: `createStatusLineWiring(rt)` owns settings registration + lifecycle, the `refreshInterval` timer, payload assembly, and the emit-diff trigger (mode / model / effort), and exposes `statusLineOf(width)` plus `dispose()`. `driver.ts` was kept within its net-zero line budget by delegating to the wiring module at boot and dispose; `plugin.ts` was untouched. The rest of the design below is unchanged from the planned version:
 
 - Registration: `createDriver`/`mountTui` registers the section via `installSettingsSection` (D5; tolerant when no settings provider is mounted). `onChange` → re-resolve; `command` change → `runner.update(immediate: true)`; deactivation → runner disposed/absent → `statusLineOf` back on the built-in lane.
 - `driver-hud.ts`: `statusLineOf(width)` gains the single conditional: active → `' '.repeat(padding) + runner.latest()`; inactive → built-in (unchanged). **No `root.ts` / `statusline.ts` edits.**
@@ -177,7 +179,7 @@ Planned verification (fast-worker executes; ambiguous results route to deep-reas
 2. `pnpm test` — no cross-package regressions (seam widening is additive/optional).
 3. `pnpm typecheck`; gates covering touched files: `pnpm check:tui-boundary`, `pnpm check:size` (fix, never ratchet), `pnpm check:spec-deps`, `pnpm check:deep-imports`, `pnpm check:exports` if module surfaces changed.
 4. `pnpm docs:parity` (regen) + `pnpm check:parity` + `pnpm check:capabilities` + `pnpm test:capabilities`.
-5. **Behavioral proof through the REAL executor** (no TTY): a driver-level spec with a temp settings file whose command runs via the real `LocalBashExecutor` (not the fake seam) shows the script's stdout on `driver.statusLine`; `exit 3` blanks it. This is the end-to-end guard against seam drift of exactly the B2 kind (wrong field names type-check under the structural fake but no-op against the real executor).
+5. **SKIPPED — Behavioral proof through the REAL executor.** Not executed: `dsh-shell` is not importable in the `ui/tui` test environment. Instead, the seam field names were verified against the harness executor source types (`workdir`, `stdin`, `signal`, `env` on both the request and spec sides), so the B2 drift class is covered by type checking against the real contract rather than by an end-to-end run.
 6. Stretch (not CI-gating): PTY e2e suite `packages/ui/tui/scripts/e2e/run_core.py` (real `dsh` CLI, temp DSH_HOME, mock LLM) gains a scenario asserting a scripted status line's marker on the bottom row — manual confidence run.
 
 ## 6. Load-bearing risks
@@ -231,3 +233,4 @@ Per repo rule (CLAUDE.md): manifest edit + regenerated docs land in the same com
   - [NIT] N5 — blank-on-failure re-verified: verbatim quote obtained from the official doc's Troubleshooting section (context7); absent from the current `.md` variant.
   - Reviewer verified accurate: D1–D5, D8–D12 spot-checks, the R6 channel, Slice 2/3 standalone TDD-ability; Slice 4 needs the fake settings service (now pinned, D8).
 - **Implementation-prep verification by fast-worker (Sonnet) caught a further BLOCKER before any code was written:** `settingsNamespace` enforces kebab-case and throws on `'statusLine'` at module load (harness `settings/src/index.ts:21-29`, untouchable), and the service resolves sections by exact `document[ns]` raw-key lookup — CC's camelCase top-level key could never resolve. **Resolution adopted (Slice 1 reworked):** dsh-cc-side CC-key aliasing in the cascade (whitelist `{ statusLine: 'statusline' }`, post-merge/pre-publish, dsh-native key wins), plus the missing `@deepseek-ai/dsh-settings` dependency for `packages/ui/tui`. The CC-file-compat goal survives unchanged; Slice 2/3 confirmed unaffected.
+- **Implementation provenance (2026-09-05).** Slices 1–3 landed at 75cc99f, slice 4 at c1e32d1. TDD caught two real bugs before they could land: a boot-generation result discarded by the runner, and a dispose/re-emit ordering bug. Slice 5 (capability manifest, regenerated parity docs, README sections, this truth-sync) is part of the same slice-5 commit.
