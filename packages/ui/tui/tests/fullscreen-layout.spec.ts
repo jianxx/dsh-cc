@@ -3,6 +3,7 @@ import { Terminal as XtermTerminal } from '@xterm/headless'
 import { type Terminal as PiTerminal } from '@jianxx/dsh-cc-pi-tui'
 import { buildRoot } from '@jianxx/dsh-cc-tui/components/root.ts'
 import type { Driver } from '@jianxx/dsh-cc-tui/state/driver-types.ts'
+import { formatModeLine } from '@jianxx/dsh-cc-tui/statusline.ts'
 import {
   clearQueue,
   createInitialState,
@@ -295,6 +296,94 @@ describe('fullscreen layout', () => {
 		g = vt.grid().map(stripAnsi)
 		expect(g.join('\n')).not.toContain('Press Ctrl+C again to exit')
 		expect(g[23]).toContain('test · status')
+
+		root.stopForExit()
+		root.destroy()
+	})
+})
+
+describe('multi-row custom statusline', () => {
+	/** Seed a transcript long enough to overflow the viewport. */
+	function overflowState(): TuiState {
+		let state = createInitialState()
+		for (let i = 0; i < 40; i++) {
+			state = upsertRow(state, { kind: 'status', text: `line ${i}` })
+		}
+		return state
+	}
+
+	/**
+	 * Driver stub whose statusLineIn(width) returns a 3-row custom statusline
+	 * (2 fake command rows + the client-drawn mode row), recording every width
+	 * it is called with so tests can assert recompute-on-resize.
+	 */
+	function multiRowDriver(initial: TuiState = createInitialState()) {
+		const driver = fakeDriver(initial)
+		const widths: number[] = []
+		driver.statusLineIn = (width: number) => {
+			widths.push(width)
+			return `cc-status row one (${width})\ncc-status row two (${width})\n${formatModeLine(driver.state.permissionMode)}`
+		}
+		return { driver, widths }
+	}
+
+	/** Index of the last grid row carrying transcript content. */
+	function lastTranscriptRow(grid: string[]): number {
+		for (let i = grid.length - 1; i >= 0; i--) {
+			if (grid[i].includes('line ')) return i
+		}
+		return -1
+	}
+
+	it('occupies the bottom 3 rows and cedes exactly 2 transcript rows vs the 1-row statusline', async () => {
+		const state = overflowState()
+
+		// Baseline: the v1-style single-row stub.
+		const vt1 = new VirtualTerminal(80, 24)
+		const root1 = buildRoot(fakeDriver(state), { terminal: vt1, onQuit: () => {}, uiMode: 'fullscreen', mouse: false })
+		root1.tui.start()
+		await settle()
+		const g1 = vt1.grid().map(stripAnsi)
+		expect(g1[23]).toContain('test · status')
+		root1.stopForExit()
+		root1.destroy()
+
+		// 3-row custom statusline: command rows, then the mode row, pinned at
+		// the very bottom — the transcript above cedes 2 rows for them.
+		const vt3 = new VirtualTerminal(80, 24)
+		const { driver } = multiRowDriver(state)
+		const root3 = buildRoot(driver, { terminal: vt3, onQuit: () => {}, uiMode: 'fullscreen', mouse: false })
+		root3.tui.start()
+		await settle()
+
+		const g3 = vt3.grid().map(stripAnsi)
+		expect(g3[21]).toContain('cc-status row one (80)')
+		expect(g3[22]).toContain('cc-status row two (80)')
+		expect(g3[23]).toContain(formatModeLine('default'))
+		expect(lastTranscriptRow(g1) - lastTranscriptRow(g3)).toBe(2)
+
+		root3.stopForExit()
+		root3.destroy()
+	})
+
+	it('recomputes the statusline on width shrink without waiting for a driver emit', async () => {
+		const vt = new VirtualTerminal(80, 24)
+		const { driver, widths } = multiRowDriver()
+		const root = buildRoot(driver, { terminal: vt, onQuit: () => {}, uiMode: 'fullscreen', mouse: false })
+		root.tui.start()
+		await settle()
+
+		// Drop the boot/emit calls, then resize WITHOUT any driver emit
+		// (setState is never called): the recompute must come from the resize.
+		widths.length = 0
+		vt.resize(60, 24)
+		await settle()
+
+		expect(widths).toContain(60)
+		// The rendered rows carry the new width, not the stale 80.
+		const g = vt.grid().map(stripAnsi)
+		expect(g[21]).toContain('cc-status row one (60)')
+		expect(g[22]).toContain('cc-status row two (60)')
 
 		root.stopForExit()
 		root.destroy()

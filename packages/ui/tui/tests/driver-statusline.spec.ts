@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
+import { formatModeLine } from '@jianxx/dsh-cc-tui/statusline.ts'
 
 /**
  * Slice 4 — driver wiring for the custom status line (plan §4/Slice 4).
@@ -227,8 +228,9 @@ describe('createDriver custom statusLine wiring', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(executor.specs).toHaveLength(1)
-    expect(driver.statusLine).toBe('  HELLO FROM CMD')
-    expect(driver.statusLine).not.toContain('shift+tab')
+    expect(driver.statusLine).toBe('  HELLO FROM CMD' + '\n' + formatModeLine('default'))
+    expect(driver.statusLine.split('\n').at(-1)).toBe(formatModeLine('default'))
+    expect(driver.statusLine.split('\n').at(-1)).toContain('shift+tab')
 
     const spec = executor.specs[0]!
     const payload = JSON.parse(spec.stdin!) as Record<string, unknown>
@@ -286,7 +288,7 @@ describe('createDriver custom statusLine wiring', () => {
     expect((payload.context_window as Record<string, unknown>).total_output_tokens).toBe(345)
     // Fresh JSON, not a stale echo of the boot payload.
     expect(JSON.parse(executor.specs[0]!.stdin!).context_window).toBeUndefined()
-    expect(driver.statusLine).toBe('HELLO FROM CMD')
+    expect(driver.statusLine).toBe('HELLO FROM CMD' + '\n' + formatModeLine('default'))
   })
 
   it('a failing command (exit 3) blanks the line', async () => {
@@ -294,7 +296,7 @@ describe('createDriver custom statusLine wiring', () => {
     executor.setHandler(async () => ({ exitCode: 3, timedOut: false, stdout: { text: '' }, stderr: { text: 'boom' } }))
     const { driver } = await bootActiveDriver(executor, activeSection({ padding: 0 }))
     await vi.advanceTimersByTimeAsync(0)
-    expect(driver.statusLine).toBe('')
+    expect(driver.statusLine).toBe(formatModeLine('default'))
   })
 
   it('flipping the section inactive mid-session restores the built-in HUD; a command swap runs immediately', async () => {
@@ -315,7 +317,7 @@ describe('createDriver custom statusLine wiring', () => {
     settings.commit(activeSection({ command: 'other.sh' }))
     expect(executor.specs).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(0)
-    expect(driver.statusLine).toBe('SECOND')
+    expect(driver.statusLine).toBe('SECOND' + '\n' + formatModeLine('default'))
   })
 
   it('a /resume-style rebind re-runs with the new session id', async () => {
@@ -394,5 +396,52 @@ describe('createDriver custom statusLine wiring', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     expect(driver.statusLine).not.toBe('LATE')
     clearTimeoutSpy.mockRestore()
+  })
+
+  it('multi-row command output flows through with padding on every row plus the trailing mode row', async () => {
+    const executor = makeExecutor()
+    executor.setHandler(async () => ({
+      exitCode: 0,
+      timedOut: false,
+      stdout: { text: 'ONE\nTWO\nTHREE\n' },
+      stderr: { text: '' },
+    }))
+    const { driver } = await bootActiveDriver(executor, activeSection({ padding: 2 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.statusLine).toBe('  ONE\n  TWO\n  THREE\n' + formatModeLine('default'))
+  })
+
+  it('statusLineIn(width) clips each row to the width without wrapping (row count preserved)', async () => {
+    const executor = makeExecutor()
+    executor.setHandler(async () => ({
+      exitCode: 0,
+      timedOut: false,
+      stdout: { text: 'A'.repeat(50) + '\nB\n' },
+      stderr: { text: '' },
+    }))
+    const { driver } = await bootActiveDriver(executor, activeSection({ padding: 0 }))
+    await vi.advanceTimersByTimeAsync(0)
+    const width = 40
+    const clipped = driver.statusLineIn(width)
+    const rows = clipped.split('\n')
+    // Rows are clipped to the width, never wrapped; raw length may include
+    // ANSI bytes around the ellipsis, so measure visible width.
+    const stripAnsi = (row: string): string => row.replace(/\x1b\[[0-9;]*m/g, '')
+    expect(rows.length).toBe(3)
+    for (const row of rows) {
+      expect(stripAnsi(row).length).toBeLessThanOrEqual(width)
+    }
+    expect(rows[0]!.startsWith('A')).toBe(true)
+    // No-width call stays untruncated.
+    expect(driver.statusLine.split('\n')).toHaveLength(3)
+    expect(driver.statusLine.split('\n')[0]).toBe('A'.repeat(50))
+  })
+
+  it('padding > 0 with blank output renders the mode row alone (no whitespace row above it)', async () => {
+    const executor = makeExecutor()
+    executor.setHandler(async () => ({ exitCode: 0, timedOut: false, stdout: { text: '' }, stderr: { text: '' } }))
+    const { driver } = await bootActiveDriver(executor, activeSection({ padding: 3 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(driver.statusLine).toBe(formatModeLine('default'))
   })
 })

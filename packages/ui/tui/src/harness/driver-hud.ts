@@ -36,7 +36,8 @@ import {
   type SessionProjectionsLike,
   type TokenUsageStateLike,
 } from '../state/driver-types.ts'
-import { formatStatusLine } from '../statusline.ts'
+import { formatModeLine, formatStatusLine } from '../statusline.ts'
+import { truncateToWidth } from '@jianxx/dsh-cc-pi-tui'
 import type { DriverHudCtx } from './driver-ctx.ts'
 
 /**
@@ -180,10 +181,20 @@ export function createHudSection(rt: DriverHudCtx) {
   }
 
   const statusLineOf = (width?: number): string => {
-    // Custom statusLine (plan §3.2): active → the command's first stdout line
-    // with padding; inactive → today's built-in line, byte-identical.
+    // Custom statusLine (plan §3.2/D3/D4): active → the command's rows with
+    // padding plus a client-drawn mode row below; inactive → today's built-in
+    // line, byte-identical.
     const custom = statusline?.override()
-    if (custom !== undefined) return custom
+    if (custom !== undefined) {
+      // Blank detection must trim: with padding > 0 an all-blank settle is
+      // whitespace, not ''. Blank → the mode row alone.
+      if (custom.trim().length === 0) return formatModeLine(state().permissionMode)
+      const rows = custom.split('\n')
+      const clipped = width === undefined
+        ? rows
+        : rows.map(row => truncateToWidth(row, width))
+      return `${clipped.join('\n')}\n${formatModeLine(state().permissionMode)}`
+    }
     const effort = selection.current?.reasoningEffort
     const s = state()
     return formatStatusLine({

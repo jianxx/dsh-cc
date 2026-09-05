@@ -156,13 +156,87 @@ describe('statusline command runner', () => {
     h.runner.dispose()
   })
 
-  it('keeps ANSI bytes verbatim and takes the first line trimEnd-ed', async () => {
+  it('keeps ANSI bytes verbatim and trimEnd-s each row', async () => {
     const h = harness()
     h.runner.update({ command: 'cmd' }, {})
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
     h.runs[0]!.settle(ok('\x1b[32mgreen line\x1b[0m\nsecond row\n'))
     await vi.advanceTimersByTimeAsync(0)
-    expect(h.runner.latest()).toBe('\x1b[32mgreen line\x1b[0m')
+    expect(h.runner.latest()).toBe('\x1b[32mgreen line\x1b[0m\nsecond row')
+    h.runner.dispose()
+  })
+
+  it('keeps up to 3 rows in order, joined by newline, and notifies onSettled', async () => {
+    const settledValues: string[] = []
+    const h = harness({ onSettled: (line: string) => { settledValues.push(line) } })
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('row1\nrow2\nrow3\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('row1\nrow2\nrow3')
+    expect(settledValues).toEqual(['row1\nrow2\nrow3'])
+    h.runner.dispose()
+  })
+
+  it('caps 4+ rows to the first 3', async () => {
+    const h = harness()
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('a\nb\nc\nd\ne\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('a\nb\nc')
+    h.runner.dispose()
+  })
+
+  it('drops trailing empty and whitespace-only rows', async () => {
+    const h = harness()
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('a\n \n\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('a')
+    h.runner.dispose()
+  })
+
+  it('preserves interior empty rows', async () => {
+    const h = harness()
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('a\n\nb\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('a\n\nb')
+    h.runner.dispose()
+  })
+
+  it('trimEnds each row individually', async () => {
+    const h = harness()
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('  a  \nb \n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('  a\nb')
+    h.runner.dispose()
+  })
+
+  it('blanks when stdout is only whitespace or newlines', async () => {
+    const settledValues: string[] = []
+    const h = harness({ onSettled: (line: string) => { settledValues.push(line) } })
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('  \n\t\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('')
+    expect(settledValues).toEqual([''])
+    h.runner.dispose()
+  })
+
+  it('keeps single-line output byte-identical to the v1 first-line behavior', async () => {
+    const h = harness()
+    h.runner.update({ command: 'cmd' }, {})
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS)
+    h.runs[0]!.settle(ok('only row\n'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.runner.latest()).toBe('only row')
     h.runner.dispose()
   })
 

@@ -133,7 +133,14 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 	let autocompleteProvider = new TuiAutocompleteProvider(lastCatalog, driver.cwd, undefined, argCompleters)
 	editor.setAutocompleteProvider(autocompleteProvider)
 
-	const statusline = new Text(driver.statusLineIn(terminal.columns), 0, 0)
+	// D5: the statusline string is width-dependent — rebuild it from
+	// driver.statusLineIn on every render, so a resize applies immediately.
+	const statusline = new class extends Text {
+		override render(width: number): string[] {
+			this.setText(driver.statusLineIn(terminal.columns))
+			return super.render(width)
+		}
+	}(driver.statusLineIn(terminal.columns), 0, 0)
 
 	// Ordered chrome shared by the inline mount and the fullscreen exit replay.
 	const chrome: Component[] = [title, transcript, queueLine, todoLine, noticeLine, overlays, workingLine, editor, statusline]
@@ -452,9 +459,6 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			editor.setAutocompleteProvider(autocompleteProvider)
 		}
 
-		// Known downgrade: the statusline is a fixed string, so a resize alone
-		// does not recompute it — the new width applies on the next driver emit.
-		statusline.setText(driver.statusLineIn(terminal.columns))
 		tui.requestRender()
 	})
 
