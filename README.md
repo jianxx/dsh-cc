@@ -119,6 +119,25 @@ The CC profile includes an MCP client with:
 
 Use `/mcp` to inspect and manage MCP connections.
 
+#### Optional: Serena code intelligence
+
+When your MCP configuration connects a [Serena](https://github.com/oraios/serena) server, dsh-cc automatically takes advantage of it: the system prompt steers toward Serena's symbol tools for code questions, and the bundled `explore` subagent gains read-only symbol retrieval (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`). Serena is strictly optional — without it, sessions behave identically through the built-in Read/Grep tools, minus the steering hints.
+
+Add it to `~/.dsh/.mcp.json` (or a project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena@v1.7.0", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"]
+    }
+  }
+}
+```
+
+`/doctor` reports the connection under the `mcp.serena` check.
+
 ### Hooks
 
 Claude Code-style hooks can react to session, prompt, tool, permission, compaction, task, and subagent lifecycle events. Command and HTTP executors are supported, with additional prompt/agent executors available behind configuration gates.

@@ -112,6 +112,25 @@ CC profile 中的 MCP 客户端支持：
 
 使用 `/mcp` 查看和管理 MCP 连接。
 
+#### 可选：Serena 代码智能
+
+当你的 MCP 配置连接了 [Serena](https://github.com/oraios/serena) server 时，dsh-cc 会自动加以利用：系统提示词会引导模型在代码问题上优先使用 Serena 的符号工具，内置的 `explore` 子代理也会获得只读符号检索能力（`find_symbol`、`find_referencing_symbols`、`get_symbols_overview`）。Serena 完全可选——不安装时，会话行为完全一致，代码问答仍走内置的 Read/Grep 工具，只是少了这些引导。
+
+在 `~/.dsh/.mcp.json`（或项目级 `.mcp.json`）中添加：
+
+```json
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena@v1.7.0", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"]
+    }
+  }
+}
+```
+
+连接状态可通过 `/doctor` 的 `mcp.serena` 检查项查看。
+
 ### Hooks
 
 Claude Code 风格 hooks 可以响应会话、用户输入、工具、权限、压缩、任务和子代理生命周期事件。当前支持 command 和 HTTP executor，部分 prompt/agent executor 需要通过配置开关启用。
