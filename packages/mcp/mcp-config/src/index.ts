@@ -12,6 +12,11 @@
  * performs no network I/O and mounts nothing itself. Consumers translate the
  * returned registrations into mcp-client plugin instances.
  *
+ * Two side modules extend that surface: `src/paths.ts` adds side-effect-free
+ * default-path classification and per-file server-name reads, and
+ * `src/migrate.ts` is the package's only file-WRITING surface — the atomic,
+ * user-invoked `/mcp migrate` import into `$DSH_HOME/.mcp.json`.
+ *
  * @module @jianxx/dsh-cc-mcp-config
  */
 
@@ -284,3 +289,12 @@ export function buildRegistrations(
 }
 
 export type { Config }
+
+export {
+  claudeOnlyServers,
+  readMcpServerNames,
+  resolveDefaultMcpPaths,
+} from './paths.ts'
+export type { ClaudeOnlySource, McpPathInputs, McpServerNames, ResolvedMcpPaths } from './paths.ts'
+export { migrateMcpServers } from './migrate.ts'
+export type { McpMigrationResult, McpMigrationSourceReport } from './migrate.ts'
