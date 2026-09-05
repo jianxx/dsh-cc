@@ -61,7 +61,7 @@ await ctx.plugin(PermissionRules, {
 
 每条规则携带 `PermissionRuleSource`（`session` > `cliArg` > `policySettings` > `flagSettings` > `localSettings` > `projectSettings` > `userSettings` > `config`），用于内容规则的优先级。引擎在调用时解析生效模式：plan 激活（来自 `@deepseek-ai/dsh-plan-mode`）最先覆盖，然后是会话记录的 `permission/mode` 覆盖（`foldPermissionMode`），否则回退到 `defaultMode`。
 
-模式是**持久的**——`setMode(agent, mode)` 追加一条 last-wins 的 `permission/mode` 会话事件（插件加载时注册进 `KNOWN_SESSION_EVENT_TYPES`，持久化可恢复它）。`plan` 归 plan-mode 所有，在这里会抛错。进入 `bypassPermissions` 会把会话沙箱钉到 `danger-full-access` 并记录 `resumeSandbox`；离开时恢复记录（或回退 `workspace-write`）的约束。在 `auto` 下，风险分类器代理每次 `ask`：LOW 风险调用自动放行，MEDIUM 风险仍会询问。
+模式是**持久的**——`setMode(agent, mode)` 追加一条 last-wins 的 `permission/mode` 会话事件（插件加载时注册进 `KNOWN_SESSION_EVENT_TYPES`，持久化可恢复它）。`plan` 归 plan-mode 所有，在这里会抛错。进入 `bypassPermissions` 会把会话沙箱钉到 `danger-full-access` 并记录 `resumeSandbox`；离开时恢复记录（或回退 `workspace-write`）的约束。在 `auto` 下，风险分类器代理每次 `ask`：LOW 风险调用自动放行，MEDIUM 风险仍会询问。LLM 分类器阶段武装时，只读工具调用豁免——完全不经过模型（读流量零额外延迟）。判定解析保持严格并 fail-closed：模型输出畸形时返回常量原因 `classifier output unparseable`（模型输出永不展示；审计记录只含摘要）。按路由的连续失败熔断器（阈值 3，按 `provider/model` 键控）会为故障车道打开断路——该路由不再调用分类器，每进程一次 warn、每会话一条 `breaker` 审计事件；`rebuild()`（设置变更）重置熔断状态并重新武装。
 
 ## 切换模式
 

@@ -46,6 +46,9 @@ export interface AutoModeSettings {
 /** The session event type carrying one classifier verdict audit record. */
 export const CLASSIFIER_EVENT = 'permission/classifier'
 
+/** Consecutive per-route classifier failures before that route's breaker opens (module constant — no settings knob by design). */
+export const CLASSIFIER_BREAKER_THRESHOLD = 3
+
 // Cross-repo event registration: postdates the upstream session catalog
 // (same pattern as `permission/mode` / `permission/session-allow`).
 ;(KNOWN_SESSION_EVENT_TYPES as Set<string>).add(CLASSIFIER_EVENT)
@@ -57,7 +60,7 @@ export interface ClassifierAuditEventData {
   /** sha256 of the rendered classifier input (absent on the arming `unarmed` record). */
   digest?: string
   verdict: 'allow' | 'ask'
-  failure?: 'timeout' | 'error' | 'malformed' | 'unarmed'
+  failure?: 'timeout' | 'error' | 'malformed' | 'unarmed' | 'breaker'
   route?: string
   provider?: string
   model?: string
@@ -168,6 +171,14 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
   let classifier: LlmClassifier | undefined
   /** Warned-once flag for enabled-but-unarmable (per process). */
   let warnedUnarmed = false
+  /** Consecutive classifier failures per route (`${provider}/${model}`); any success resets the route to 0. */
+  const routeFailures = new Map<string, number>()
+  /** Routes whose breaker is open: maybeEscalate returns undefined without touching the stream. */
+  const breakerOpen = new Set<string>()
+  /** Session ids that already recorded one `breaker` audit event (one per session). */
+  const breakerAudited = new Set<string>()
+  /** Warned-once flag for an opened breaker (per process). */
+  let warnedBreaker = false
 
   const ensureClassifier = (): LlmClassifier => {
     if (classifier !== undefined && builtRaw === slice.raw) return classifier
@@ -215,6 +226,13 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
         slice = current
         classifier = undefined
       }
+      // A settings change is the operator's "I fixed the lane": reset ALL
+      // breaker state — route counters, open routes, the per-session audit
+      // de-dup set, and the per-process warn-once flag.
+      routeFailures.clear()
+      breakerOpen.clear()
+      breakerAudited.clear()
+      warnedBreaker = false
     },
 
     async maybeEscalate(decided: DecidedCall, exec: ToolExecution): Promise<StageOutcome | undefined> {
@@ -232,9 +250,36 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
         return undefined
       }
       // Eligibility (§4.1): only auto + LOW + ask/passthrough reaches the LLM.
+      // These gates precede the read-only exemption and the breaker gate.
       if (decided.mode !== 'auto' || decided.risk.level !== 'LOW') return undefined
       if (decided.decision.kind !== 'ask' && decided.decision.kind !== 'passthrough') return undefined
+      // F2 read-only exemption: read-only calls cannot mutate, so the LLM
+      // round-trip adds latency with zero safety — the legacy path applies.
+      if (decided.isReadOnly) return undefined
+      const routeKey = `${route.provider}/${route.model}`
+      if (breakerOpen.has(routeKey)) {
+        auditBreakerOnce(exec, routeKey, route)
+        return undefined
+      }
       const verdict = await ensureClassifier().classify(exec, { route })
+      // F4 per-route breaker bookkeeping, attributed to THIS call's route:
+      // any success (parsed verdict, cache hit included) resets the streak;
+      // malformed/error/timeout increment it; `unarmed` never counts here
+      // (it never reaches this path — it is a disarm outcome above).
+      if (verdict.failure === undefined) {
+        routeFailures.set(routeKey, 0)
+      } else {
+        const count = (routeFailures.get(routeKey) ?? 0) + 1
+        routeFailures.set(routeKey, count)
+        if (count >= CLASSIFIER_BREAKER_THRESHOLD) {
+          breakerOpen.add(routeKey)
+          if (!warnedBreaker) {
+            warnedBreaker = true
+            deps.warn(`permission classifier: route ${routeKey} failed ${CLASSIFIER_BREAKER_THRESHOLD} consecutive classifications; breaker open for this route, auto mode uses the legacy path`)
+          }
+          auditBreakerOnce(exec, routeKey, route)
+        }
+      }
       const session = exec.agent?.session
       if (session !== undefined) {
         deps.audit(session, {
@@ -249,5 +294,24 @@ export function createAutoStage(deps: AutoStageDeps): AutoStage {
       }
       return verdict.verdict === 'allow' ? 'allow' : { kind: 'ask', reason: verdict.reason }
     },
+  }
+
+  /** One `breaker` audit event per session (de-dup by session id), no stream involved. */
+  function auditBreakerOnce(exec: ToolExecution, routeKey: string, route: ClassifierRoute): void {
+    const session = exec.agent?.session
+    if (session === undefined) return
+    const sessionId = String(session.header.id)
+    if (breakerAudited.has(sessionId)) return
+    breakerAudited.add(sessionId)
+    deps.audit(session, {
+      tool: exec.name,
+      verdict: 'ask',
+      failure: 'breaker',
+      route: routeKey,
+      provider: route.provider,
+      model: route.model,
+      latencyMs: 0,
+      cacheHit: false,
+    })
   }
 }

@@ -153,7 +153,7 @@ export function createPickersSection(rt: DriverPickersCtx): {
    * error on submit, matching the argued `/permissions <mode>` path.
    */
   const openPermissionPicker = (): void => {
-    const currentMode = rt.liveMode(rt.current.agent, rt.state().permissionMode)
+    const currentMode = rt.liveMode(rt.current.agent)
     const index = PERMISSION_MODE_OPTIONS.findIndex(option => option.id === currentMode)
     rt.emit(setPermissionPicker(rt.state(), {
       entries: PERMISSION_MODE_OPTIONS,

@@ -12,7 +12,7 @@
  */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
+import { isPermissionMode, nextPermissionMode, type PermissionCommandMode } from '../mode-cycle.ts'
 import { PERMISSION_COMMAND_MODES, planPhaseOf, type PlanUnitStateLike } from '@jianxx/dsh-cc-command-permissions'
 import { setPermissionMode } from '../store.ts'
 import type { TuiState } from '../store.ts'
@@ -79,8 +79,13 @@ export function createModeSection(rt: DriverModeCtx): {
   return {
     applyMode,
     cyclePermissionMode() {
-      const live = rt.liveMode(rt.current.agent, rt.state().permissionMode)
-      const next = nextPermissionMode(live)
+      // F1: the cycle start follows the live settings default when no fold
+      // exists — but a settings defaultMode outside PERMISSION_COMMAND_MODES
+      // must not become the start (one Tab press would never reach it and the
+      // shown mode would be "lost"), so clamp non-members to 'default' first.
+      const live = rt.liveMode(rt.current.agent)
+      const start = isPermissionMode(live) ? live : 'default'
+      const next = nextPermissionMode(start)
       if (!(PERMISSION_COMMAND_MODES as readonly string[]).includes(next)) return modeWrites
       applyMode(next)
       return modeWrites

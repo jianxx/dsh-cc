@@ -96,7 +96,7 @@ export interface DriverModeCtx {
   /** Returns the mounted permission-rules engine's setMode seam, if any. */
   getRules(): PermissionRulesSeam | undefined
   /** Fold the current plan/permission mode (live, not a snapshot). */
-  liveMode(agent: Agent, fallback: string): string
+  liveMode(agent: Agent, fallback?: string): string
 }
 
 /** Duck-typed surface for the permission-rules engine's mode writepath. */
@@ -194,7 +194,7 @@ export interface DriverPickersCtx {
   /** The rebindable agent holder (openPermissionPicker reads the live agent). */
   current: { agent: Agent }
   /** Fold the live plan/permission mode for the picker's focus row. */
-  liveMode(agent: Agent, fallback: string): string
+  liveMode(agent: Agent, fallback?: string): string
   /** Resolve a model's advertisement list (never a fabricated list). */
   resolveEfforts(
     provider: string,
@@ -237,7 +237,7 @@ export interface DriverSessionsCtx {
   /** Model selection ref; switchSession reseeds it after the rebind. */
   selection: ModelSelectionRef
   /** Fold the live plan/permission mode for the new session. */
-  liveMode(agent: Agent, fallback: string): string
+  liveMode(agent: Agent, fallback?: string): string
   /** Reset-and-reseed the model selection from the new agent's options. */
   seedDefaultModel(reset?: boolean): Promise<void>
   /** Fold the new session's history into a fresh TuiState. */
@@ -404,7 +404,7 @@ export interface DriverAgentCtx {
   /** Explicit provider/model override, or undefined when unset. */
   agentOptions: { provider: string; model: string } | undefined
   /** Fold the live plan/permission mode for the agent. */
-  liveMode(agent: Agent, fallback: string): string
+  liveMode(agent: Agent, fallback?: string): string
   /** Directory backing prompt/bash-history persistence. */
   historyDir: string | undefined
   /** Working directory the resume marker is keyed by. */
@@ -427,7 +427,7 @@ export interface DriverSessionEventsCtx {
   /** The rebindable agent holder (re-read live at fire time). */
   current: { handle: AgentHandle; agent: Agent }
   /** Fold the live plan/permission mode. */
-  liveMode(agent: Agent, fallback: string): string
+  liveMode(agent: Agent, fallback?: string): string
   /** Tool presenters for folding replayed session events. */
   presenters: ToolPresenters | undefined
   /** Late-bound queue flush (wired after createQueueSection). */

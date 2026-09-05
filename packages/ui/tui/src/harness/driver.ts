@@ -17,7 +17,7 @@ import { createApprovalsSection } from './driver-approvals.ts'
 import { createCatalogSection } from './driver-catalog.ts'
 import type { DriverBashCtx, DriverQueueCtx, PermissionRulesLike } from './driver-ctx.ts'
 import { createModeSection } from './driver-mode.ts'
-import { liveMode, liveSessionCwd } from './driver-live.ts'
+import { liveModeWithDefault, liveSessionCwd } from './driver-live.ts'
 import { createHudSection } from './driver-hud.ts'
 import { createStatusLineWiring } from './statusline-wiring.ts'
 import { createPickersSection } from './driver-pickers.ts'
@@ -197,7 +197,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     current,
     selection,
     agentOptions,
-    liveMode,
+    liveMode: liveModeWithDefault(ctx),
     historyDir,
     cwd,
   })
@@ -237,7 +237,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     rebindHistory(liveSessionCwd(current.agent, cwd))
     recordProjectSession(String(current.agent.session.id), liveSessionCwd(current.agent, cwd))
   }
-  emit(setPermissionMode(state, liveMode(current.agent, 'default')))
+  emit(setPermissionMode(state, liveModeWithDefault(ctx)(current.agent)))
 
   // Boot banner: one status row greeting, before the resume fold (row 0); the
   // settled seed upserts the label + gated notice (driver-agent continuation).
@@ -286,7 +286,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     state: () => state,
     ctx,
     current,
-    liveMode,
+    liveMode: liveModeWithDefault(ctx),
     presenters: agent.presenters,
     flushQueue: () => actions.flushQueue(),
   })
@@ -301,7 +301,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     showNotice,
     runHarness: (line) => actions.runHarness(line),
     getRules: () => ctx.get('permissionRules') as PermissionRulesLike | undefined,
-    liveMode,
+    liveMode: liveModeWithDefault(ctx),
   })
   // Slash-command catalog + subagent lifecycle listeners.
   const catalog = createCatalogSection({ emit, state: () => state, current, ctx })
@@ -313,7 +313,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     state: () => state,
     selection,
     current,
-    liveMode,
+    liveMode: liveModeWithDefault(ctx),
     resolveEfforts: agent.resolveEfforts,
     stalePair: agent.stalePair,
     loadCatalog: agent.loadCatalog,
@@ -329,7 +329,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     cwd,
     current,
     selection,
-    liveMode,
+    liveMode: liveModeWithDefault(ctx),
     seedDefaultModel: agent.seedDefaultModel,
     foldHistory: agent.foldHistory,
     seedHud,

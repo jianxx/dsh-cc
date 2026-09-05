@@ -32,7 +32,8 @@ function decided(overrides: Partial<DecidedCall> = {}): DecidedCall {
   const decision: PermissionDecision = overrides.decision ?? { kind: 'ask', reason: 'rule ask' }
   const risk: RiskAssessment = overrides.risk ?? { level: 'LOW', reasons: [] }
   const mode: PermissionMode = overrides.mode ?? 'auto'
-  return { decision, risk, mode }
+  const isReadOnly: boolean = overrides.isReadOnly ?? false
+  return { decision, risk, mode, isReadOnly }
 }
 
 interface Harness {
@@ -298,5 +299,175 @@ describe('permission/classifier audit event (fold/replay round-trip)', () => {
     session.append('permission/mode', { mode: 'auto' })
     appendSessionClassifier(session, { tool: 'Bash', digest: 'c'.repeat(64), verdict: 'ask', latencyMs: 1, cacheHit: false })
     expect(foldClassifiers(session.events)).toHaveLength(1)
+  })
+})
+
+describe('F2 read-only exemption', () => {
+  it('armed + auto + LOW + read-only ⇒ stream never called, legacy mapping (undefined) applies', async () => {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true } } }
+    const stage = createAutoStage(h.deps)
+    const out = await stage.maybeEscalate(
+      decided({ isReadOnly: true, decision: { kind: 'passthrough' } }),
+      exec({ name: 'Glob', args: { pattern: '*.ts' } }),
+    )
+    expect(out).toBeUndefined()
+    expect(h.streams).toBe(0)
+    expect(h.deps.audit).not.toHaveBeenCalled()
+  })
+
+  it('mutating control (same shape) still consults the classifier', async () => {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true } } }
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided({ isReadOnly: false }), exec({ name: 'Glob', args: { pattern: '*.ts' } }))).toBe('allow')
+    expect(h.streams).toBe(1)
+  })
+
+  it('ordering: the risk!=="LOW" gate precedes — a MEDIUM read-only path never reaches the classifier', async () => {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true } } }
+    const stage = createAutoStage(h.deps)
+    const out = await stage.maybeEscalate(
+      decided({ isReadOnly: true, risk: { level: 'MEDIUM', reasons: ['x'] } }),
+      exec({ name: 'Glob', args: { pattern: '*.ts' } }),
+    )
+    expect(out).toBeUndefined()
+    expect(h.streams).toBe(0)
+    expect(h.deps.audit).not.toHaveBeenCalled()
+  })
+
+  it('F3 audit-shape pin: the audit record carries no raw input/output fields', async () => {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true } } }
+    const session = sessionOf('audit-shape')
+    const stage = createAutoStage(h.deps)
+    await stage.maybeEscalate(decided(), exec({ session, args: { command: 'secret-echo-token' } }))
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, Record<string, unknown>]>
+    expect(calls).toHaveLength(1)
+    expect(Object.keys(calls[0]![1]).sort()).toEqual(['cacheHit', 'digest', 'latencyMs', 'model', 'provider', 'route', 'tool', 'verdict'])
+    expect(JSON.stringify(calls[0]![1])).not.toContain('secret-echo-token')
+  })
+})
+
+describe('F4 per-route failure breaker', () => {
+  /** Stream fns consumed one per stream call; a fn may throw or hang. */
+  function scriptHarness(
+    script: Array<(opts: { signal?: AbortSignal }) => Promise<string>>,
+    routes: { [tool: string]: { provider: string; model: string } },
+  ): Harness {
+    const h = harness()
+    h.settings.value = { autoMode: { classifier: { enabled: true, timeoutMs: 30 } } }
+    let i = 0
+    h.deps.stream = async (opts: { signal?: AbortSignal }) => {
+      h.streams += 1
+      const next = script[i]
+      i += 1
+      if (next === undefined) throw new Error('script exhausted')
+      return await next(opts)
+    }
+    h.deps.resolveRoute = (e: ToolExecution) => routes[e.name] ?? h.route
+    return h
+  }
+
+  const malformed = async () => 'not json at all'
+  const error = async () => { throw new Error('boom') }
+  const ok = async () => '{"verdict":"allow","reason":"ok"}'
+  const hang = (opts: { signal?: AbortSignal }) => new Promise<string>((_resolve, reject) => {
+    opts.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+    setTimeout(() => reject(new Error('hung')), 4_000)
+  })
+
+  it('3 consecutive mixed failures trip; 4th call: no stream, warn×1, one breaker audit per session', async () => {
+    const h = scriptHarness([malformed, error, hang], { Bash: { provider: 'p1', model: 'm1' } })
+    const sessionA = sessionOf('brk-a')
+    const stage = createAutoStage(h.deps)
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'c1' } }))).toMatchObject({ kind: 'ask' })
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'c2' } }))).toMatchObject({ kind: 'ask' })
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'c3' } }))).toMatchObject({ kind: 'ask' })
+    expect(h.streams).toBe(3)
+    // 4th call on the same session: open breaker, legacy path, exactly one warn, one breaker audit.
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'c4' } }))).toBeUndefined()
+    expect(h.streams).toBe(3)
+    expect(h.warnings).toHaveLength(1)
+    // 5th call in a NEW session: still no stream, still one warn, its own breaker audit.
+    const sessionB = sessionOf('brk-b')
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionB, args: { command: 'c5' } }))).toBeUndefined()
+    expect(h.streams).toBe(3)
+    expect(h.warnings).toHaveLength(1)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string; tool: string; route?: string }]>
+    const breakerFor = (s: Session): unknown[] => calls.filter(([se, e]) => se === s && e.failure === 'breaker')
+    expect(calls.filter(([, e]) => e.failure === 'breaker')).toHaveLength(2)
+    expect(breakerFor(sessionA)).toHaveLength(1)
+    expect(breakerFor(sessionB)).toHaveLength(1)
+  })
+
+  it('a success between failures resets the streak', async () => {
+    const h = scriptHarness([malformed, malformed, ok, malformed, malformed, ok], { Bash: { provider: 'p1', model: 'm1' } })
+    const stage = createAutoStage(h.deps)
+    for (let i = 0; i < 6; i += 1) {
+      await stage.maybeEscalate(decided(), exec({ args: { command: `c${i}` } }))
+    }
+    expect(h.streams).toBe(6)
+    expect(h.warnings).toHaveLength(0)
+  })
+
+  it('route isolation: interleaved concurrent failures on X never open Y', async () => {
+    const h = scriptHarness([malformed, malformed, malformed, malformed, malformed, ok], {
+      X: { provider: 'px', model: 'mx' },
+      Y: { provider: 'py', model: 'my' },
+    })
+    const stage = createAutoStage(h.deps)
+    // Interleaved concurrent classifies on X and Y.
+    const pX = stage.maybeEscalate(decided(), exec({ name: 'X', args: { command: 'x1' } }))
+    const pY = stage.maybeEscalate(decided(), exec({ name: 'Y', args: { command: 'y1' } }))
+    await Promise.all([pX, pY])
+    await stage.maybeEscalate(decided(), exec({ name: 'X', args: { command: 'x2' } }))
+    await stage.maybeEscalate(decided(), exec({ name: 'Y', args: { command: 'y2' } }))
+    await stage.maybeEscalate(decided(), exec({ name: 'Y', args: { command: 'y3' } }))
+    // Y is now open (3 consecutive Y failures): no more Y stream calls…
+    const streamsAtTrip = h.streams
+    expect(await stage.maybeEscalate(decided(), exec({ name: 'Y', args: { command: 'y4' } }))).toBeUndefined()
+    expect(h.streams).toBe(streamsAtTrip)
+    expect(h.warnings).toHaveLength(1)
+    // …but X has only 2 failures and still consults the classifier.
+    expect(await stage.maybeEscalate(decided(), exec({ name: 'X', args: { command: 'x3' } }))).toBe('allow')
+    expect(h.streams).toBe(streamsAtTrip + 1)
+  })
+
+  it('unarmed classifications never count toward the breaker', async () => {
+    const h = scriptHarness([malformed, ok], {})
+    h.route = undefined
+    const stage = createAutoStage(h.deps)
+    for (let i = 0; i < 3; i += 1) {
+      // Unarmed disarm path: stream never consulted, undefined (legacy).
+      expect(await stage.maybeEscalate(decided(), exec({ args: { command: `u${i}` } }))).toBeUndefined()
+    }
+    expect(h.streams).toBe(0)
+    h.route = { provider: 'p1', model: 'm1' }
+    // The route was never "failed" by the unarmed calls: the breaker stays
+    // closed, so a malformed call + a success run normally (one failure ≠ trip).
+    expect(await stage.maybeEscalate(decided(), exec({ args: { command: 'armed-1' } }))).toMatchObject({ kind: 'ask' })
+    expect(await stage.maybeEscalate(decided(), exec({ args: { command: 'armed-2' } }))).toBe('allow')
+    expect(h.streams).toBe(2)
+    expect(h.warnings).toHaveLength(1)
+    expect(h.warnings[0]).toMatch(/unarmable/)
+  })
+  it('rebuild() re-arms: counters, breaker session set, and the warn-once flag all reset', async () => {
+    const h = scriptHarness([malformed, malformed, malformed, ok, malformed, malformed, malformed], { Bash: { provider: 'p1', model: 'm1' } })
+    const sessionA = sessionOf('brk-rebuild')
+    const stage = createAutoStage(h.deps)
+    for (const c of ['c1', 'c2', 'c3']) await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: c } }))
+    expect(h.warnings).toHaveLength(1)
+    // Operator "fixes the lane" via a settings change + rebuild.
+    h.settings.value = { autoMode: { classifier: { enabled: true, timeoutMs: 30, route: 'other' } } }
+    stage.rebuild()
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'fixed' } }))).toBe('allow')
+    // Re-trips with a fresh warn and a fresh breaker audit for the same session.
+    for (const c of ['c4', 'c5', 'c6']) await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: c } }))
+    expect(await stage.maybeEscalate(decided(), exec({ session: sessionA, args: { command: 'c7' } }))).toBeUndefined()
+    expect(h.warnings).toHaveLength(2)
+    const calls = (h.deps.audit as ReturnType<typeof vi.fn>).mock.calls as Array<[Session, { failure?: string }]>
+    expect(calls.filter(([s, e]) => s === sessionA && e.failure === 'breaker')).toHaveLength(2)
   })
 })
