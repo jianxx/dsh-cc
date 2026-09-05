@@ -1368,6 +1368,30 @@ capabilities:
       - { type: test, path: packages/interaction/command-plugin/tests/command-plugin.spec.ts }
     deviation: { kind: none }
 
+  commands.provider:
+    title: /provider
+    category: commands
+    plane: host
+    upstream:
+      summary: >-
+        No upstream — dsh-cc extension. Claude Code has no provider-management
+        command; dsh-cc adds an in-TUI manager over the llm-pi-ai settings
+        namespace and the credential store.
+      refs: []
+    dimensions:
+      recognized: true
+      mounted: true
+      behavioral: full
+      ux: full
+    evidence:
+      - { type: source, path: packages/ui/tui/src/provider-command.ts, anchor: "createProviderSection" }
+      - { type: source, path: packages/ui/tui/src/provider-flow.ts, anchor: "verifyProbeFor" }
+      - { type: source, path: packages/ui/tui/src/provider-presets.ts, anchor: "PRESETS" }
+      - { type: test, path: packages/ui/tui/tests/driver-provider-panel.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/driver-provider-actions.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/driver-provider-refresh.spec.ts }
+    deviation: { kind: none }
+
   commands.release-notes:
     title: /release-notes
     category: commands

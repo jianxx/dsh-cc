@@ -6,8 +6,11 @@
 
 /** Slash names the TUI handles without calling `ctx.commands`. */
 export const LOCAL_SLASH = [
-  'quit', 'exit', 'clear', 'new', 'reset', 'tui-help', 'resume', 'model', 'effort', 'agents', 'cost', 'usage', 'export-md', 'copy',
+  'quit', 'exit', 'clear', 'new', 'reset', 'tui-help', 'resume', 'model', 'effort', 'agents', 'cost', 'usage', 'export-md', 'copy', 'provider',
 ] as const
+
+/** `/provider` subcommands (§4.1) — surfaced as the argument completer hints. */
+export const PROVIDER_SUBCOMMANDS = ['list', 'add', 'remove'] as const
 
 export type LocalSlashName = (typeof LOCAL_SLASH)[number]
 
@@ -41,6 +44,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
     argumentHint: '<path>',
   },
   { name: 'copy', description: 'Copy the latest assistant reply to the clipboard' },
+  { name: 'provider', description: 'Manage LLM provider routes and API keys', argumentHint: '[list | add <preset-id> | remove <route>]' },
 ] as const
 
 export type ParsedSlash =

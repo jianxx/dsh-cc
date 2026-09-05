@@ -156,11 +156,14 @@ CC preset 提供的命令包括：
 /diff              查看 CLAUDE.md / settings 差异
 /init               扫描项目并生成 CLAUDE.md
 /plugin             管理插件
+/provider           管理模型供应商（列表/添加/删除、轮换密钥、设为默认）
 /release-notes      查看版本说明
 /version            查看版本信息
 ```
 
 TUI 还提供 todo 查看、审批、排队输入、对话导出、用量/上下文显示和本地 shell 命令等终端交互。
+
+`/provider` 在覆盖层中管理已配置的模型供应商：`/provider list` 列出当前路由，`/provider add <preset-id>` 通过向导添加内置预设（Moonshot、Z.AI/智谱、DeepSeek）或完全自定义的端点；每个路由的详情页支持轮换密钥、刷新模型列表、设为默认和删除。API 密钥通过掩码输入框录入并保存到凭据存储（`~/.dsh/.credentials.yaml`），不写入 settings；由环境变量提供的密钥只读展示。变更对新会话立即生效（凭据按请求解析）；当前会话保持原供应商，直到用 `/model` 重新选择。
 
 ## 使用你需要的模型
 

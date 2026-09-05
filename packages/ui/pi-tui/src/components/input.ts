@@ -22,6 +22,13 @@ export class Input implements Component, Focusable {
 	public onSubmit?: (value: string) => void;
 	public onEscape?: () => void;
 
+	/**
+	 * When true, display shows one bullet per grapheme of the value instead of
+	 * its characters (for secrets like API keys). Display-only: getValue() and
+	 * onSubmit still receive the raw value.
+	 */
+	masked: boolean = false;
+
 	/** Focusable interface - set by TUI when focus changes */
 	focused: boolean = false;
 
@@ -384,18 +391,28 @@ export class Input implements Component, Focusable {
 			return [prompt];
 		}
 
+		// Masked mode: bullets are one column wide, so display text and cursor
+		// offsets can be derived from grapheme counts without touching the raw value.
+		let displayValue = this.value;
+		if (this.masked) {
+			displayValue = "•".repeat([...segmenter.segment(this.value)].length);
+		}
+		const graphemesBeforeCursor = this.masked
+			? [...segmenter.segment(this.value.slice(0, this.cursor))].length
+			: this.cursor;
+
 		let visibleText = "";
-		let cursorDisplay = this.cursor;
-		const totalWidth = visibleWidth(this.value);
+		let cursorDisplay = graphemesBeforeCursor;
+		const totalWidth = visibleWidth(displayValue);
 
 		if (totalWidth < availableWidth) {
 			// Everything fits (leave room for cursor at end)
-			visibleText = this.value;
+			visibleText = displayValue;
 		} else {
 			// Need horizontal scrolling
 			// Reserve one column for cursor if it's at the end
-			const scrollWidth = this.cursor === this.value.length ? availableWidth - 1 : availableWidth;
-			const cursorCol = visibleWidth(this.value.slice(0, this.cursor));
+			const scrollWidth = graphemesBeforeCursor === [...segmenter.segment(displayValue)].length ? availableWidth - 1 : availableWidth;
+			const cursorCol = visibleWidth(displayValue.slice(0, graphemesBeforeCursor));
 
 			if (scrollWidth > 0) {
 				const halfWidth = Math.floor(scrollWidth / 2);
@@ -412,8 +429,8 @@ export class Input implements Component, Focusable {
 					startCol = Math.max(0, cursorCol - halfWidth);
 				}
 
-				visibleText = sliceByColumn(this.value, startCol, scrollWidth, true);
-				const beforeCursor = sliceByColumn(this.value, startCol, Math.max(0, cursorCol - startCol), true);
+				visibleText = sliceByColumn(displayValue, startCol, scrollWidth, true);
+				const beforeCursor = sliceByColumn(displayValue, startCol, Math.max(0, cursorCol - startCol), true);
 				cursorDisplay = beforeCursor.length;
 			} else {
 				visibleText = "";

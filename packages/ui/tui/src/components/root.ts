@@ -22,7 +22,7 @@ import {
 	type TuiMode,
 } from '@jianxx/dsh-cc-pi-tui'
 import type { Driver } from '../state/driver-types.ts'
-import { routeApprovalInput, routeQuestionInput, routeEffortPickerInput, routeModelPickerInput, routePermissionPickerInput, routeSessionSwitcherInput, routeTodoPanelInput, routeUsagePanelInput, routeWorktreeExitInput } from '../input.ts'
+import { overlayOpen, renderOverlayChildren, routeOverlayInput } from './overlay-host.ts'
 import { todoSummary } from '../store.ts'
 import { formatWorkingLine } from '../working-line.ts'
 import { buildArgCompleters } from './arg-completers.ts'
@@ -33,17 +33,6 @@ import { DOUBLE_PRESS_WINDOW_MS, openSystemUrl, sanitizeWindowTitle, truncateAct
 import { createEditorTheme, createTheme } from './theme.ts'
 import { TranscriptView } from './transcript.ts'
 import { WorkingLine } from './working-line.ts'
-import {
-  createApprovalBox,
-  createEffortPickerBox,
-  createModelPickerBox,
-  createPermissionPickerBox,
-  createQuestionBox,
-  createSessionSwitcherBox,
-  createTodoPanelBox,
-  createUsagePanelBox,
-  createWorktreeExitBox,
-} from './overlays.ts'
 
 import type { BuildRootOptions, RootHandle } from './root-types.ts'
 
@@ -199,12 +188,7 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 				driver.interrupt()
 				return { consume: true }
 			}
-			if (live.approval !== undefined || live.question !== undefined ||
-				live.modelPicker !== undefined || live.effortPicker !== undefined ||
-				live.permissionPicker !== undefined ||
-				live.sessionSwitcher !== undefined ||
-				live.todoPanel !== undefined || live.usagePanel !== undefined ||
-				live.worktreeExit !== undefined) {
+			if (overlayOpen(live)) {
 				return undefined
 			}
 			const now = Date.now()
@@ -219,60 +203,10 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			driver.showNotice('Press Ctrl+C again to exit')
 			return { consume: true }
 		}
-		if (live.approval !== undefined) {
-			// Approval keys route through the shared router in input.ts — the same
-			// single source of truth the headless composer path uses.
-			routeApprovalInput(driver, data)
-			return { consume: true }
-		}
-		if (live.question !== undefined) {
-			// While a question is open every key belongs to the overlay — routed and
-			// consumed here so the editor never sees typing, arrows, or enter.
-			routeQuestionInput(driver, data)
-			return { consume: true }
-		}
-		if (live.modelPicker !== undefined) {
-			// Modal model picker: arrows/enter/esc only, everything else consumed.
-			routeModelPickerInput(driver, data)
-			return { consume: true }
-		}
-		if (live.effortPicker !== undefined) {
-			// Modal effort picker: arrows/enter/esc only, everything else consumed.
-			routeEffortPickerInput(driver, data)
-			return { consume: true }
-		}
-		if (live.permissionPicker !== undefined) {
-			// Modal permission picker: arrows/enter/esc only, everything else consumed.
-			routePermissionPickerInput(driver, data)
-			return { consume: true }
-		}
-		if (live.sessionSwitcher !== undefined) {
-			// Modal session switcher: arrows/enter/esc only, everything else
-			// consumed. While `switching` is true, all keys are consumed without
-			// action.
-			routeSessionSwitcherInput(driver, data)
-			return { consume: true }
-		}
-		if (live.todoPanel !== undefined) {
-			// Modal todo panel: arrows/esc/ctrl+t (close) only, everything else
-			// consumed. The open path is the ctrl+t binding below, which only
-			// fires while the panel is closed.
-			routeTodoPanelInput(driver, data)
-			return { consume: true }
-		}
-		if (live.usagePanel !== undefined) {
-			// Modal usage panel: pure display with no navigation — esc closes,
-			// everything else is consumed. The open path is the /usage command.
-			routeUsagePanelInput(driver, data)
-			return { consume: true }
-		}
-		if (live.worktreeExit !== undefined) {
-			// Modal /quit worktree-exit confirmation: arrows/enter/esc only,
-			// everything else consumed. While `busy` (a removal in flight) all
-			// keys are swallowed by the router.
-			routeWorktreeExitInput(driver, data)
-			return { consume: true }
-		}
+		// Any parked overlay (approval, question, pickers, panels) owns the key:
+		// routed through the shared overlay host and consumed so the editor
+		// never sees typing, arrows, or enter while a modal is open.
+		if (routeOverlayInput(driver, live, data)) return { consume: true }
 		if (matchesKey(data, 'shift+tab')) {
 			driver.cyclePermissionMode()
 			return { consume: true }
@@ -416,37 +350,9 @@ export function buildRoot(driver: Driver, opts: BuildRootOptions = {}): RootHand
 			else workingLine.stop()
 		}
 
-		overlays.clear()
-		if (state.approval !== undefined) {
-			overlays.addChild(createApprovalBox(state.approval, theme))
-		}
-		if (state.question !== undefined) {
-			overlays.addChild(createQuestionBox(state.question, theme))
-		}
-		if (state.modelPicker !== undefined) {
-			overlays.addChild(createModelPickerBox(state.modelPicker, theme))
-		}
-		if (state.effortPicker !== undefined) {
-			overlays.addChild(createEffortPickerBox(state.effortPicker, theme))
-		}
-		if (state.permissionPicker !== undefined) {
-			overlays.addChild(createPermissionPickerBox(state.permissionPicker, theme))
-		}
-		if (state.sessionSwitcher !== undefined) {
-			overlays.addChild(createSessionSwitcherBox(state.sessionSwitcher, theme))
-		}
-		if (state.todoPanel !== undefined) {
-			overlays.addChild(createTodoPanelBox(state.todos ?? [], state.todoPanel.focused, theme))
-		}
-		if (state.usagePanel !== undefined) {
-			// The panel rebuilds from the live snapshot on every emit, so
-			// projection changes refresh it in place while it is open.
-			overlays.addChild(createUsagePanelBox(state.usage, theme))
-		}
-		if (state.worktreeExit !== undefined) {
-			overlays.addChild(createWorktreeExitBox(state.worktreeExit, theme))
-		}
-		overlays.invalidate()
+		// Overlay boxes (approval/question/pickers/panels) rebuild from the
+		// state on every emit via the shared overlay host.
+		renderOverlayChildren(overlays, state, theme)
 
 		// Refresh the autocomplete provider when the command catalog moves
 		// (reference equality with the last-seen array). The driver keeps the

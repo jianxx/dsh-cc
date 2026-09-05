@@ -26,6 +26,7 @@ import { createQueueSection } from './driver-queue.ts'
 import { createRunLocalSection } from './driver-run-local.ts'
 import { createAgentSection, attachSessionEvents } from './driver-agent.ts'
 import { createPromoteSection } from './driver-promote.ts'
+import type { ProviderRuntime } from '../provider-command.ts'
 
 import type { Driver } from '../state/driver-types.ts'
 export type { Driver } from '../state/driver-types.ts'
@@ -70,7 +71,7 @@ const NOTICE_TTL_MS = 3000
  * Create the TUI driver: one agent under the CC preset, interaction providers,
  * and a folded view model.
  */
-export async function createDriver(ctx: Context, config: DriverConfig = {}): Promise<Driver> {
+export async function createDriver(ctx: Context, config: DriverConfig = {}): Promise<Driver & { providerRuntime: ProviderRuntime }> {
   const listeners = new Set<(state: TuiState) => void>()
   let state = createInitialState()
   const emit = (next: TuiState): void => {
@@ -480,6 +481,8 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     worktreeExitSubmit: () => runLocalSection.worktreeExitSubmit(),
     worktreeExitCancel: () => runLocalSection.worktreeExitCancel(),
     showNotice,
+    // `/provider` read path + action flows; the section is created in driver-run-local
+    providerRuntime: runLocalSection.providerRuntime,
     markExitAttempt: (now) => emit(markExitAttempt(state, now ?? Date.now())),
     switchSession: (id) => sessions.switchSession(id),
     listSessions: () => sessions.listSessions(),

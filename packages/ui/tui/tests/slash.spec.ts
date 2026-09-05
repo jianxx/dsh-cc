@@ -5,7 +5,7 @@ describe('LOCAL_COMMANDS', () => {
   it('has an entry for every TUI-owned slash name', () => {
     const names = LOCAL_COMMANDS.map(c => c.name).sort()
     expect(names).toEqual([
-      'agents', 'clear', 'copy', 'cost', 'effort', 'exit', 'export-md', 'model', 'new', 'quit', 'reset', 'resume', 'tui-help', 'usage',
+      'agents', 'clear', 'copy', 'cost', 'effort', 'exit', 'export-md', 'model', 'new', 'provider', 'quit', 'reset', 'resume', 'tui-help', 'usage',
     ])
   })
 
