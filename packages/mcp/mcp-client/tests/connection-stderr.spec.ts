@@ -65,10 +65,24 @@ describe('supervisor warn carries the stdio stderr tail (real child)', () => {
     for (const line of failed) expect(line).not.toMatch(/\n/)
 
     // Full stream (header + banner) is on disk under the isolated DSH_HOME.
+    // createWriteStream opens the file synchronously (existsSync passes) but
+    // the header/banner bytes go through the async WriteStream buffer — on a
+    // loaded CI runner the one-shot read below can observe an empty file.
+    // Poll for the bytes, same pattern as stdio-stderr.spec.ts.
     const logPath = join(isolatedHome, 'mcp-logs', 'crashy.log')
-    expect(existsSync(logPath)).toBe(true)
-    const log = readFileSync(logPath, 'utf8')
-    expect(log).toContain(`--- dsh-cc pid ${process.pid}`)
-    expect(log).toContain('crash-banner')
+    await viWaitForCondition(() => {
+      if (!existsSync(logPath)) return false
+      const log = readFileSync(logPath, 'utf8')
+      return log.includes(`--- dsh-cc pid ${process.pid}`) && log.includes('crash-banner')
+    })
   }, 20_000)
 })
+
+async function viWaitForCondition(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    if (check()) return
+    await new Promise<void>((resolve) => { setTimeout(resolve, 20) })
+  }
+  throw new Error('timed out waiting for condition')
+}
