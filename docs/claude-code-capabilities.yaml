@@ -1947,6 +1947,11 @@ capabilities:
     evidence:
       - { type: test, path: packages/interaction/permission-rules/tests/mode.spec.ts, anchor: "bypassPermissions" }
       - { type: test, path: packages/interaction/permission-rules/tests/classifier.spec.ts }
+      - { type: test, path: packages/interaction/permission-rules/tests/auto-stage.spec.ts }
+      - { type: test, path: packages/interaction/permission-rules/tests/listener-auto-stage.spec.ts }
+      - { type: test, path: packages/interaction/permission-rules/tests/llm-classifier.spec.ts }
+      - { type: source, path: packages/interaction/permission-rules/src/auto-stage.ts, anchor: "createAutoStage" }
+      - { type: test, path: packages/settings/settings-cascade/tests/auto-mode.spec.ts }
       - { type: test, path: packages/ui/tui/tests/approval-preview.spec.ts }
     deviation:
       kind: downgrade
@@ -1955,9 +1960,23 @@ capabilities:
         (default/acceptEdits/plan/auto/bypassPermissions via /permissions),
         plan deny with exit_plan_mode guidance, bypassPermissions pinning
         danger-full-access with resumeSandbox restore, and the always-allow
-        derived-rule persistence all work. Remaining vs CC: ML/bash risk
-        classifier service, managed/enterprise remote settings, UI mode cycle;
-        the upstream permission/mode catalog pin is an upstream polish.
+        derived-rule persistence all work. `auto` mode additionally gains an
+        opt-in, escalate-only LLM risk-classifier stage: a one-shot auxiliary
+        model verdict over tool name + rendered parameters (never tool
+        results), fail-to-ask on every classifier failure, `$defaults`
+        soft-deny prose expansion, a verdict LRU cache, and durable
+        `permission/classifier` session audit events (armed only when enabled,
+        an llm service is mounted, and the alias route resolves).
+        Settings-surface deviation: the auto-mode section is delivered as
+        `permissions.autoMode` — an `autoMode` key inside the existing
+        `permissions` namespace (camelCase key in a kebab namespace, like
+        `defaultMode`), NOT Claude Code's root-level `autoMode` key, because
+        top-level settings namespaces must be kebab-case upstream. Other
+        documented CC auto-mode divergences (explicit ask rules still proxied
+        to allow in auto; same-source allow-before-deny) remain recorded as
+        unfixed follow-ups — they are not addressed or masked here. Remaining
+        vs CC: managed/enterprise remote settings, UI mode cycle; the upstream
+        permission/mode catalog pin is an upstream polish.
 
   # ── models ──────────────────────────────────────────────────────────────
   models.aliases:

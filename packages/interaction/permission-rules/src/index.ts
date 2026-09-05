@@ -13,13 +13,16 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
+import type z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { foldPlanMode } from '@deepseek-ai/dsh-plan-mode'
 import { effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { PreToolDecision, ToolExecution } from '@jianxx/dsh-cc-tools'
 import { foldSessionCwd } from '@jianxx/dsh-cc-session-cwd'
+import { resolveAlias, toOneShotRoute } from '@jianxx/dsh-cc-model-aliases'
 import { installSettingsSection, settingsNamespace, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 // Side-effect type import: declaration-merges `ctx.shell` (the capability fact
 // `sandboxMode` this plugin reads for the sandboxed-bash exemption). No value
@@ -27,10 +30,10 @@ import { installSettingsSection, settingsNamespace, type SettingsNamespace } fro
 import type {} from '@deepseek-ai/dsh-shell'
 import { parseRule, ruleString } from './parser.ts'
 import { mergeRuleSets } from './evaluate.ts'
-import { decideCall, type DecideDeps } from './decide.ts'
+import { decideCallVerbose, type DecideDeps } from './decide.ts'
+import { createAutoStage, appendSessionClassifier, type AutoStage } from './auto-stage.ts'
 import {
   PERMISSION_MODES,
-  SOURCE_PRIORITY,
   type PermissionMode,
   type PermissionRule,
   type PermissionRuleSet,
@@ -65,6 +68,24 @@ export {
   PERMISSION_MODE_EVENT,
 } from './mode.ts'
 export {
+  CLASSIFIER_EVENT,
+  appendSessionClassifier,
+  foldClassifiers,
+  createAutoStage,
+  type AutoModeSettings,
+  type AutoModeClassifierSettings,
+  type ClassifierAuditEventData,
+} from './auto-stage.ts'
+export {
+  createLlmClassifier,
+  expandSoftDeny,
+  DEFAULT_SOFT_DENY,
+  type LlmVerdict,
+  type LlmClassification,
+  type ClassifierAuditEvent,
+  type ClassifierFailure,
+} from './llm-classifier.ts'
+export {
   PERMISSION_MODES,
   SWITCHABLE_PERMISSION_MODES,
   PLAN_READONLY_REASON,
@@ -88,109 +109,22 @@ declare module '@deepseek-ai/cordis' {
 /** The settings namespace carrying `permissions.allow/deny/ask/defaultMode`. */
 export const PERMISSION_SETTINGS_NAMESPACE: SettingsNamespace = settingsNamespace('permissions')
 
-/** The settings section resolved from the settings document. */
-export interface PermissionSettings {
-  /** Whole-tool or content rules that allow matching calls. */
-  allow?: string[]
-  /** Whole-tool or content rules that deny matching calls. */
-  deny?: string[]
-  /** Whole-tool or content rules that route matching calls to approval. */
-  ask?: string[]
-  /** Default permission mode for sessions without a recorded override. */
-  defaultMode?: PermissionMode
-  /** `'disable'` turns off the ability to switch to `bypassPermissions`. */
-  disableBypassPermissionsMode?: 'disable'
-  /** Additional directories included in the permission scope (escape-check base). */
-  additionalDirectories?: string[]
-  /** Protected file wildcard patterns — writes to them are high risk. */
-  protectedFiles?: string[]
-  /** Raw dangerous-command regex sources replacing the curated defaults. */
-  dangerousPatterns?: string[]
-}
-
-/** The Config-provided rule set: strings parsed as source-`config` rules. */
-export interface ConfigRules {
-  /** Allow rules. */
-  allow?: string[]
-  /** Deny rules. */
-  deny?: string[]
-  /** Ask rules. */
-  ask?: string[]
-  /**
-   * Bypass-immune deny rules (e.g. `.git` internals, shell-config paths):
-   * enforced through the monotonic guard layer, never overridable by a mode
-   * switch or `bypassPermissions`.
-   */
-  bypassImmune?: string[]
-}
-
-/** Plugin config. All optional; the schema applies the defaults shown. */
-export interface Config {
-  /**
-   * The rule set provided directly by composition, parsed with source
-   * `config`. Merged with the optional settings section by source priority
-   * (settings rules win).
-   */
-  rules?: ConfigRules
-  /** Settings namespace holding allow/deny/ask/defaultMode; defaults to `permissions`. */
-  settingsNamespace?: string
-  /**
-   * The source label applied to settings-resolved rules; defaults to
-   * `userSettings`. Lets a deployment attribute settings rules to a different
-   * settings layer (project/local/…).
-   */
-  settingsSource?: PermissionRuleSource
-  /** Default mode for sessions without an in-memory mode override; defaults to `default`. */
-  defaultMode?: PermissionMode
-  /** Tool name treated as the shell-command tool for content extraction; defaults to `Bash`. */
-  bashToolName?: string
-  /** File-edit tool names auto-allowed under `acceptEdits` mode. */
-  fileEditTools?: string[]
-  /** Read-only tool names auto-allowed under `plan` mode. */
-  readOnlyTools?: string[]
-  /**
-   * Skip a whole-tool `ask` for a sandboxed (confining, non-full-access)
-   * `Bash` call — allow instead. Defaults to `false`.
-   */
-  exemptSandboxedBashFromToolAsk?: boolean
-  /** Whether `bypassPermissions` mode is disabled (falls back to `default`). */
-  disableBypassPermissionsMode?: boolean
-  /**
-   * Whether the risk-classifier escalation stage runs inside the decision
-   * flow (catastrophic commands hard-deny; protected/out-of-scope file writes
-   * ask unless under `bypassPermissions`). Defaults to `true`.
-   */
-  classifierEnabled?: boolean
-}
-
-/** The standard file-edit tool set, applied when {@link Config.fileEditTools} is omitted. */
-const DEFAULT_FILE_EDIT_TOOLS = ['edit', 'write', 'multi_edit', 'notebook_edit', 'str_replace_editor']
-
-/** The standard read-only tool set, applied when {@link Config.readOnlyTools} is omitted. */
-const DEFAULT_READ_ONLY_TOOLS = ['read', 'glob', 'grep', 'search', 'web_fetch', 'web_search']
-
-/** One short model-facing sentence per permission mode for the prompt context. */
-const MODE_SENTENCE: Record<PermissionMode, string> = {
-  default: 'Permission mode: default. Tool calls follow allow/deny/ask rules; unmatched calls pass through.',
-  acceptEdits: 'Permission mode: acceptEdits. File edits are auto-allowed; other calls follow the rules.',
-  plan: 'Permission mode: plan. Only read-only tools may run; submit the plan via exit_plan_mode.',
-  auto: 'Permission mode: auto. Low-risk approval prompts are auto-allowed; medium-risk prompts still ask the user.',
-  bypassPermissions: 'Permission mode: bypassPermissions. Permission prompts are skipped and the sandbox is full access, except bypass-immune and catastrophic commands which remain denied.',
-}
-
-/** The shared settings schema (Config-facing and settings-provider-facing). */
-function permissionSettingsSchema(): z<PermissionSettings> {
-  return z.object({
-    allow: z.array(z.string()),
-    deny: z.array(z.string()),
-    ask: z.array(z.string()),
-    defaultMode: z.union(PERMISSION_MODES as PermissionMode[]),
-    disableBypassPermissionsMode: z.union(['disable'] as const),
-    additionalDirectories: z.array(z.string()),
-    protectedFiles: z.array(z.string()),
-    dangerousPatterns: z.array(z.string()),
-  })
-}
+export {
+  permissionSettingsSchema,
+  ConfigSchema,
+  DEFAULT_FILE_EDIT_TOOLS,
+  DEFAULT_READ_ONLY_TOOLS,
+  type PermissionSettings,
+  type ConfigRules,
+  type Config,
+} from './settings-schema.ts'
+import {
+  ConfigSchema,
+  permissionSettingsSchema,
+  type Config,
+  type ConfigRules,
+  type PermissionSettings,
+} from './settings-schema.ts'
 
 /** Build a settings-resolved rule set from a settings section. */
 function settingsRuleSet(settings: PermissionSettings, source: PermissionRuleSource): PermissionRuleSet {
@@ -202,25 +136,18 @@ function settingsRuleSet(settings: PermissionSettings, source: PermissionRuleSou
   }
 }
 
+/** One short model-facing sentence per permission mode for the prompt context. */
+const MODE_SENTENCE: Record<PermissionMode, string> = {
+  default: 'Permission mode: default. Tool calls follow allow/deny/ask rules; unmatched calls pass through.',
+  acceptEdits: 'Permission mode: acceptEdits. File edits are auto-allowed; other calls follow the rules.',
+  plan: 'Permission mode: plan. Only read-only tools may run; submit the plan via exit_plan_mode.',
+  auto: 'Permission mode: auto. Low-risk approval prompts are auto-allowed; medium-risk prompts still ask the user.',
+  bypassPermissions: 'Permission mode: bypassPermissions. Permission prompts are skipped and the sandbox is full access, except bypass-immune and catastrophic commands which remain denied.',
+}
+
 /** The engine's Service Definition plus the mode/rule write and read surface. */
 export class PermissionRulesService extends Service {
-  static Config: z<Config> = z.object({
-    rules: z.object({
-      allow: z.array(z.string()),
-      deny: z.array(z.string()),
-      ask: z.array(z.string()),
-      bypassImmune: z.array(z.string()),
-    }),
-    settingsNamespace: z.string().default('permissions'),
-    settingsSource: z.union(SOURCE_PRIORITY as PermissionRuleSource[]).default('userSettings'),
-    defaultMode: z.union(PERMISSION_MODES as PermissionMode[]).default('default'),
-    bashToolName: z.string().default('Bash'),
-    fileEditTools: z.array(z.string()).default(DEFAULT_FILE_EDIT_TOOLS),
-    readOnlyTools: z.array(z.string()).default(DEFAULT_READ_ONLY_TOOLS),
-    exemptSandboxedBashFromToolAsk: z.boolean().default(false),
-    disableBypassPermissionsMode: z.boolean().default(false),
-    classifierEnabled: z.boolean().default(true),
-  })
+  static Config: z<Config> = ConfigSchema
 
   static inject = ['tools']
 
@@ -240,6 +167,8 @@ export class PermissionRulesService extends Service {
   private readonly sessionAllowlist = new SessionAllowlist()
   /** Session ids already seeded from their log's `permission/session-allow` audit events. */
   private readonly allowlistSeeded = new Set<string>()
+  /** The optional LLM classifier stage (armed per call from the live settings slice). */
+  private autoStage: AutoStage | undefined
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'permissionRules')
@@ -281,11 +210,82 @@ export class PermissionRulesService extends Service {
       shellMode: () => this.ctx.get('shell')?.sandboxMode as SandboxMode | undefined,
     }
 
+    // The optional LLM classifier stage (§4.1/§4.4 of the LLM risk-classifier
+    // design). The llm stream seam is wired via ctx.inject so a missing llm
+    // service is a silent no-op rather than a required dependency (same
+    // optional-availability pattern as the systemPrompt injection below).
+    let llmStream: ((options: {
+      provider: string
+      model: string
+      system: string
+      prompt: string
+      maxTokens: number
+      signal?: AbortSignal
+    }) => Promise<string>) | undefined
+    ctx.inject(['llm'], (scope) => {
+      llmStream = async (opts) => {
+        const assembler = new BlockAssembler()
+        for await (const chunk of scope.llm.stream({
+          provider: opts.provider,
+          model: opts.model,
+          system: opts.system,
+          messages: [createUserMessage({
+            content: [{ type: 'text', text: opts.prompt }],
+            source: { kind: 'plugin', plugin: 'permission-rules' },
+          })],
+          maxTokens: opts.maxTokens,
+          ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+        }) as AsyncIterable<StreamChunk>) {
+          assembler.push(chunk)
+        }
+        return assembler.blocks()
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+          .join(' ')
+          .trim()
+      }
+    })
+
+    const autoStage: AutoStage = createAutoStage({
+      settingsRead: () => this.settingsSection(),
+      get stream() {
+        return llmStream
+      },
+      resolveRoute: (exec) => {
+        const route = this.settingsSection().autoMode?.classifier?.route ?? 'haiku'
+        // The calling agent's logged request header fills the provider for a
+        // string-form (model-only) alias; a complete {provider, model} alias
+        // needs no parent (toOneShotRoute flow, session-title-provider precedent).
+        const parent = exec.agent?.session.requestHeader()?.config as
+          | { provider?: string; model?: string }
+          | undefined
+        return toOneShotRoute(resolveAlias(this.ctx, route), parent)
+      },
+      warn: (message) => this.ctx.logger.warn(message),
+      audit: (session, event) => {
+        appendSessionClassifier(session, event)
+      },
+    })
+    this.autoStage = autoStage
+
     ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      const decision = decideCall(decideDeps, exec)
+      const decided = decideCallVerbose(decideDeps, exec)
+      // Armed + auto + LOW + ask/passthrough ⇒ the LLM stage decides (§4.1):
+      // verdict allow ⇒ allow, verdict ask/failure ⇒ ask(reason). Every other
+      // path falls through to today's exact mapping (disarmed ⇒ bit-for-bit).
+      const escalated = await autoStage.maybeEscalate(decided, exec)
+      if (escalated !== undefined) {
+        return escalated === 'allow' ? { kind: 'allow' } : { kind: 'ask', reason: escalated.reason }
+      }
+      const { decision, risk, mode } = decided
       if (decision.kind === 'allow') return { kind: 'allow' }
       if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }
-      if (decision.kind === 'ask') return { kind: 'ask', ...decision.reason === undefined ? {} : { reason: decision.reason } }
+      if (decision.kind === 'ask') {
+        // auto proxies every LOW-risk ask (MEDIUM/HIGH returned above):
+        // identical to the previous decideCall post-processing.
+        if (mode === 'auto' && risk.level === 'LOW') return { kind: 'allow' }
+        return { kind: 'ask', ...decision.reason === undefined ? {} : { reason: decision.reason } }
+      }
       return next()
     })
 
@@ -364,6 +364,9 @@ export class PermissionRulesService extends Service {
       defaultMode: settings.defaultMode ?? this.config.defaultMode ?? 'default',
     }
     this.registerGuards()
+    // Drop the memoized LLM classifier when the autoMode slice changed, so
+    // the next armed call rebuilds it from fresh settings.
+    this.autoStage?.rebuild()
   }
 
   /** Parse the Config `rules` block into a source-`config` rule set. */

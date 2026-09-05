@@ -1271,6 +1271,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../../deepseek-harness/vendor/schemastery
         version: link:../../../../deepseek-harness/vendor/schemastery
+      '@jianxx/dsh-cc-model-aliases':
+        specifier: workspace:^
+        version: link:../../compat/cc-model-aliases
       '@jianxx/dsh-cc-session-cwd':
         specifier: link:../../workspace/session-cwd
         version: link:../../workspace/session-cwd

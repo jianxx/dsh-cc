@@ -95,27 +95,40 @@ function classify(deps: DecideDeps, exec: ToolExecution): RiskAssessment {
 }
 
 /**
- * Fold the engine decision for one call. Bypass-immune matches fall to the
- * guard layer, not here. The risk-classifier escalation runs first (a
- * hard-deny HIGH in every mode; an ask MEDIUM outside bypassPermissions),
- * then the normal waterfall proceeds unchanged. Under `auto`, a classifier-LOW
- * call whose waterfall decision is `ask` is auto-allowed (the classifier
- * proxies the prompt); MEDIUM/HIGH already returned above.
+ * The verbose result of the decision waterfall: the raw waterfall decision
+ * (BEFORE any auto-mode proxying) plus the computed risk and effective mode.
+ * The async classifier stage (§4.1 of the LLM risk-classifier design) needs
+ * all three to decide whether to consult the LLM and how to escalate.
  */
-export function decideCall(deps: DecideDeps, exec: ToolExecution): PermissionDecision {
+export type DecidedCall = { decision: PermissionDecision; risk: RiskAssessment; mode: PermissionMode }
+
+/**
+ * The sync, pure waterfall WITHOUT the auto-proxy conversion. Under `auto`, a
+ * classifier-LOW call whose waterfall decision is `ask` is returned as `ask`
+ * here — `decideCall` applies the proxy on top.
+ */
+export function decideCallVerbose(deps: DecideDeps, exec: ToolExecution): DecidedCall {
   const risk = classify(deps, exec)
   if (risk.level === 'HIGH') {
-    return { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` }
+    return {
+      decision: { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` },
+      risk,
+      mode: effectiveMode(deps, exec),
+    }
   }
   const mode = effectiveMode(deps, exec)
   if (risk.level === 'MEDIUM') {
-    if (mode === 'bypassPermissions') return { kind: 'allow' }
+    if (mode === 'bypassPermissions') return { decision: { kind: 'allow' }, risk, mode }
     // Session-scoped approval memory (WS4-PR-B): a rule the user granted via
     // "Allow for this session" overrides the MEDIUM early-return ask. Checked
     // after the HIGH safety deny, before the MEDIUM ask. `plan` still asks —
     // read-only confinement outranks a session grant.
-    if (mode !== 'plan' && deps.sessionAllowMatches(exec)) return { kind: 'allow' }
-    return { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` }
+    if (mode !== 'plan' && deps.sessionAllowMatches(exec)) return { decision: { kind: 'allow' }, risk, mode }
+    return {
+      decision: { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` },
+      risk,
+      mode,
+    }
   }
   const subject = subjectOf(exec, deps.bashToolName)
   const decision = evaluatePermission({
@@ -130,9 +143,22 @@ export function decideCall(deps: DecideDeps, exec: ToolExecution): PermissionDec
     isReadOnly: deps.readOnlyTools.has(exec.name),
     sandboxedBashExempt: sandboxedBash(deps, exec),
   })
-  // auto proxies every ask: at this point the call is classifier-LOW (MEDIUM
-  // and HIGH returned above), so low-risk asks auto-allow.
-  if (mode === 'auto' && decision.kind === 'ask') {
+  return { decision, risk, mode }
+}
+
+/**
+ * Fold the engine decision for one call. Bypass-immune matches fall to the
+ * guard layer, not here. The risk-classifier escalation runs first (a
+ * hard-deny HIGH in every mode; an ask MEDIUM outside bypassPermissions),
+ * then the normal waterfall proceeds unchanged. Under `auto`, a classifier-LOW
+ * call whose waterfall decision is `ask` is auto-allowed (the classifier
+ * proxies the prompt); MEDIUM/HIGH already returned above.
+ */
+export function decideCall(deps: DecideDeps, exec: ToolExecution): PermissionDecision {
+  const { decision, risk, mode } = decideCallVerbose(deps, exec)
+  // auto proxies every LOW-risk ask: at this point the call is classifier-LOW
+  // (MEDIUM and HIGH returned above), so low-risk asks auto-allow.
+  if (mode === 'auto' && risk.level === 'LOW' && decision.kind === 'ask') {
     return { kind: 'allow' }
   }
   return decision
