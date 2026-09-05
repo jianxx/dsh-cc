@@ -272,7 +272,7 @@ export function normalizeServerName(name: string): string {
  */
 export function buildRegistrations(
   body: McpConfigFile,
-  options: { env?: Record<string, string | undefined>; policy?: McpConfigPolicy } = {},
+  options: { env?: Record<string, string | undefined>; policy?: McpConfigPolicy; deferStartupConnect?: boolean } = {},
 ): Config[] {
   const env = options.env ?? process.env
   const configs: Config[] = []
@@ -283,7 +283,17 @@ export function buildRegistrations(
     const expanded = expandConfig(raw, env)
     // Policy hooks and findOriginal above see the ORIGINAL name; only the
     // emitted mcp-client `serverName` (the tool-name prefix) is normalized.
-    configs.push({ ...expanded, serverName: normalizeServerName(name) })
+    // `deferStartupConnect` opts the caller into non-blocking mounts; because
+    // fail-fast startup forces fully blocking behavior in mcp-client, the
+    // deferral also downgrades the normalized `failOnStartupError: true` so
+    // the two flags never contradict each other.
+    configs.push({
+      ...expanded,
+      serverName: normalizeServerName(name),
+      ...(options.deferStartupConnect === true
+        ? { deferStartupConnect: true, failOnStartupError: false }
+        : {}),
+    })
   }
   return configs
 }

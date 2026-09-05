@@ -107,6 +107,33 @@ export function sanitizeInheritedEnv(env) {
 }
 
 /**
+ * Guidance printed on every path where the `dsh` CLI cannot be spawned
+ * (not on PATH). Two lines: what happened, then how to fix it.
+ * @returns {string}
+ */
+export function dshUnavailableMessage() {
+  return 'dsh-cc: the `dsh` CLI is not on PATH.\n'
+    + 'Install deepseek-harness first, e.g.:  npm install -g @deepseek-ai/dsh'
+}
+
+/**
+ * Environment for the final `dsh` spawn. Defaults `NODE_COMPILE_CACHE` to
+ * `<dshHome>/.cache/node-compile-cache` so the child's module-compile work is
+ * reused across boots (Node creates the dir itself — never mkdir here). A
+ * user-set `NODE_COMPILE_CACHE` always wins. Returns a NEW object — the
+ * input is never mutated.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {string} dshHome
+ * @returns {Record<string, string | undefined>}
+ */
+export function spawnEnv(env, dshHome) {
+  const out = { ...env }
+  out.NODE_COMPILE_CACHE ??= join(dshHome, '.cache', 'node-compile-cache')
+  return out
+}
+
+/**
  * @param {boolean} profileExists
  * @param {string} version
  */

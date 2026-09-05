@@ -237,6 +237,13 @@ const submit = async (rt: DriverQueueCtx, text?: string): Promise<void> => {
     // if the name is a user-invocable skill it injects <skill_content>, and
     // otherwise the line stays ordinary prose.
   }
+  // W4 await-late seam: the boot seed (deployment default model) must be
+  // SETTLED before this turn is enqueued or dispatched — the harness
+  // snapshots `selection.current` at the start of prompt assembly
+  // (@deepseek-ai/dsh-agent model-selection.ts `system-prompt/assemble`),
+  // so dispatching earlier would run the turn with an undefined model.
+  // Local `!` shell lines and slash commands above already returned.
+  await rt.waitForModel()
   // Persist the prompt (not slash commands — they are commands, not prompts,
   // and would dilute the recall signal; an unknown slash IS a prompt and
   // persists here via the fall-through above). Consecutive duplicates and the

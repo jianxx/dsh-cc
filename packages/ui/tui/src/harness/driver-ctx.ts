@@ -336,6 +336,8 @@ export interface DriverRunLocalCtx {
    * resume marker pointing into the just-deleted worktree.
    */
   setMarkedContent(marked: boolean): void
+  /** Await the boot default-model seed before /effort reads the selection. */
+  waitForModel(): Promise<void>
 }
 
 /**
@@ -373,6 +375,12 @@ export interface DriverQueueCtx {
   persistResumeTarget(): void
   /** Mark/clear the session as having real content (drives /quit resume). */
   setMarkedContent(value: boolean): void
+  /**
+   * Await the boot default-model seed before dispatch/enqueue (W4): a turn
+   * must never run with an unresolved selection. Resolves even on seed
+   * failure (warned, never deadlocks submit).
+   */
+  waitForModel(): Promise<void>
 }
 
 /**

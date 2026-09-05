@@ -113,6 +113,14 @@ export interface AgentSection {
   resolveEfforts(provider: string, model: string): Promise<readonly { id: string; name: string }[] | undefined>
   stalePair(captured: { provider: string; model: string }): boolean
   seedDefaultModel(reset?: boolean): Promise<void>
+  /**
+   * Await the boot default-model seed (kicked once, shared promise). Model-turn
+   * paths must await this before dispatch so a turn never runs with an
+   * unresolved selection. Resolves even when the seed failed.
+   */
+  waitForModel(): Promise<void>
+  /** Bounded boot-frame wait (never blocks on a slow seed). */
+  awaitBootFrame(): Promise<void>
   persistResumeTarget(): void
   getMarkedContent(): boolean
   setMarkedContent(value: boolean): void
@@ -184,7 +192,9 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
 
   /**
    * Seed `selection.current` from the deployment default when no explicit
-   * provider/model is configured.
+   * provider/model is configured. `currentSelection()` is awaited so a
+   * (duck-typed) async service can defer settlement — the boot seed's
+   * await-late wait seam keys off this promise.
    */
   const seedDefaultModel = async (reset = false): Promise<void> => {
     if (reset) selection.current = undefined
@@ -194,7 +204,7 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
       return
     }
     if (agentOptions === undefined) {
-      const dep = agentDefaultModel?.currentSelection()
+      const dep = await agentDefaultModel?.currentSelection()
       if (dep !== undefined) {
         let effort: string | undefined
         if (dep.reasoningEffort !== undefined) {
@@ -209,6 +219,52 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
       }
     }
   }
+
+  /**
+   * Fire-early / await-late boot seed (W4): the seed promise is kicked once
+   * and shared (idempotent), so createDriver builds the root without waiting,
+   * while every model-turn path (queue submit, /effort) awaits
+   * {@link waitForModel} before dispatch. A failed seed is caught and warned —
+   * the wait must resolve so submit never deadlocks; the turn then runs on
+   * the agent's own default route. On settle (success or failure) the boot
+   * banner row is upserted to the resolved label and the no-model notice is
+   * emitted ONLY here — a slow-but-fine boot never flashes it.
+   */
+  let seedPromise: Promise<void> | undefined
+  const runSeed = async (): Promise<void> => {
+    try {
+      await seedDefaultModel()
+    } catch (error) {
+      console.warn('[dsh-cc-tui] default-model seed failed:', error)
+    } finally {
+      const settled = rt.state()
+      const modelLabel = selection.current?.model ?? 'default model'
+      const rows = settled.rows.slice()
+      const bannerIndex = rows.findIndex(
+        existing => existing.kind === 'status' && (existing as { text?: string }).text?.startsWith('dsh cc-mode — '),
+      )
+      if (bannerIndex >= 0) {
+        rows[bannerIndex] = { kind: 'status', text: `dsh cc-mode — ${modelLabel} · ${rt.cwd} · /tui-help for keys` }
+        rt.emit({ ...settled, rows })
+      }
+      if (selection.current === undefined) {
+        rt.emit(upsertRow(rt.state(), { kind: 'status', text: 'No model configured. Pick one with /model.' }))
+      }
+    }
+  }
+  const waitForModel = (): Promise<void> => {
+    if (seedPromise === undefined) seedPromise = runSeed()
+    return seedPromise
+  }
+
+  /**
+   * Bounded boot-frame wait (W4): let a seed that settles within the current
+   * microtask cascade (a sync deployment-default service — the common boot)
+   * land its banner upsert + gated notice before the first frame; a genuinely
+   * slow seed resolves via the one-macrotask timer and never blocks it.
+   */
+  const awaitBootFrame = (): Promise<void> =>
+    Promise.race([waitForModel(), new Promise<void>(resolve => { setTimeout(resolve, 0) })])
 
   /**
    * Marker semantics: write on resume (self-heal) and after the first real
@@ -291,6 +347,8 @@ export function createAgentSection(rt: DriverAgentCtx): AgentSection {
     resolveEfforts,
     stalePair,
     seedDefaultModel,
+    waitForModel,
+    awaitBootFrame,
     persistResumeTarget,
     getMarkedContent: () => markedContent,
     setMarkedContent: (value) => { markedContent = value },

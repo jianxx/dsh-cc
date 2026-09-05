@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@jianxx/dsh-cc-tools'
@@ -79,8 +79,8 @@ afterEach(() => {
 describe('cc-shell glue MCP registry ownership', () => {
   it('keeps the registry and mounts later servers when an earlier server fails at startup', async () => {
     const fixturePath = writeFixtureServer()
-    // Object key order matters: the failing server MUST come first so the
-    // rollback lands before the healthy instance would mount.
+    // Object key order matters: the failing server comes first so its mount
+    // precedes the healthy one.
     const mcpJsonPath = join(tmp, '.mcp.json')
     writeFileSync(mcpJsonPath, JSON.stringify({
       mcpServers: {
@@ -97,9 +97,14 @@ describe('cc-shell glue MCP registry ownership', () => {
 
     const registry = ctx.get('mcpConnections')
     expect(registry).toBeDefined()
-    const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'good-second')).toMatchObject({ name: 'good-second', state: 'ready' })
-    expect(entries.some(e => e.name === 'bad-first')).toBe(false)
+    // Deferred mounts no longer fail the fiber: the bad server is registered
+    // (it reports an error) and the healthy server still reaches ready.
+    await vi.waitFor(() => {
+      expect(registry!.entries().find(e => e.name === 'bad-first')?.state).toBe('error')
+    })
+    await vi.waitFor(() => {
+      expect(registry!.entries().find(e => e.name === 'good-second')).toMatchObject({ name: 'good-second', state: 'ready' })
+    })
   }, 30_000)
 
   it('Config({}) keeps absent fields undefined so discovery fallbacks fire', () => {
@@ -136,8 +141,9 @@ describe('cc-shell glue MCP registry ownership', () => {
     expect(registry).toBeDefined()
     // Presence only: cwd/.mcp.json and ~/.claude(.json) defaults may add more
     // entries on a given machine; the fixture server must simply be among them.
-    const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'tdd-discovery-fixture'))
-      .toMatchObject({ name: 'tdd-discovery-fixture', state: 'ready' })
+    await vi.waitFor(() => {
+      expect(registry!.entries().find(e => e.name === 'tdd-discovery-fixture'))
+        .toMatchObject({ name: 'tdd-discovery-fixture', state: 'ready' })
+    })
   }, 30_000)
 })

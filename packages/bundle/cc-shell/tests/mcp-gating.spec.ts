@@ -13,7 +13,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@jianxx/dsh-cc-tools'
@@ -111,6 +111,59 @@ function writeClaudeConfigs(names: string[]): { claudeMcpJson: string; claudeDot
   return { claudeMcpJson, claudeDotJson }
 }
 
+/** A fixture server whose initialize response is delayed by MCP_FIXTURE_DELAY_MS (from its config env). */
+const FIXTURE_SLOW_SERVER = `
+import { createInterface } from 'node:readline'
+
+const respond = (id, result) => {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+const delayMs = Number(process.env.MCP_FIXTURE_DELAY_MS || '0')
+
+createInterface({ input: process.stdin }).on('line', (line) => {
+  let message
+  try {
+    message = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (message.id === undefined || message.id === null) return
+  if (message.method === 'initialize') {
+    const reply = () => respond(message.id, {
+      protocolVersion: '2025-03-26',
+      capabilities: { tools: { listChanged: true } },
+      serverInfo: { name: 'fixture-slow', version: '1.0.0' },
+    })
+    if (delayMs > 0) setTimeout(reply, delayMs)
+    else reply()
+    return
+  }
+  if (message.method === 'tools/list') {
+    respond(message.id, {
+      tools: [{ name: 'ping', description: 'pong', inputSchema: { type: 'object', properties: {} } }],
+    })
+  }
+})
+`
+
+/**
+ * Write a dsh-native config where `slowNames` get a delayed-handshake fixture
+ * (delay via the entry env) and the rest use the fast fixture.
+ */
+function writeDshConfigMixed(fastNames: string[], slowNames: string[], delayMs: number): string {
+  const slowPath = join(tmp, 'fixture-slow-server.mjs')
+  writeFileSync(slowPath, FIXTURE_SLOW_SERVER, 'utf8')
+  const file = join(dshHome, '.mcp.json')
+  const servers: Record<string, unknown> = {}
+  for (const name of fastNames) servers[name] = { type: 'stdio', command: process.execPath, args: [fixturePath] }
+  for (const name of slowNames) {
+    servers[name] = { type: 'stdio', command: process.execPath, args: [slowPath], env: { MCP_FIXTURE_DELAY_MS: String(delayMs) } }
+  }
+  writeFileSync(file, JSON.stringify({ mcpServers: servers }), 'utf8')
+  return file
+}
+
 /** Fresh cordis context with the runtime surfaces the glue needs. */
 async function newCtx(): Promise<Context> {
   const ctx = new Context()
@@ -125,6 +178,16 @@ function emitSessionStartTwice(ctx: Context): unknown[] {
   const agent = { inject: (message: unknown) => captured.push(message) }
   for (let i = 0; i < 2; i++) ctx.emit(ctx, 'agent/session-start', { agent, source: 'startup' })
   return captured
+}
+
+/**
+ * Deferred mounts (`deferStartupConnect: true`) activate without awaiting the
+ * handshake; wait until the named server reaches `ready` in the registry.
+ */
+async function awaitReady(registry: { entries(): { name: string; state: string }[] }, name: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(registry.entries().find(e => e.name === name)).toMatchObject({ name, state: 'ready' })
+  })
 }
 
 describe('cc-shell glue gated MCP discovery', () => {
@@ -142,8 +205,8 @@ describe('cc-shell glue gated MCP discovery', () => {
     await apply(ctx, { pluginDirs: [] })
 
     const registry = ctx.get('mcpConnections')
+    await awaitReady(registry!, 'server-a')
     const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'server-a')).toMatchObject({ name: 'server-a', state: 'ready' })
     expect(entries.some(e => e.name === 'server-b')).toBe(false)
     expect(warns.some(w => w.includes('/mcp migrate'))).toBe(true)
 
@@ -161,8 +224,7 @@ describe('cc-shell glue gated MCP discovery', () => {
     await apply(ctx, { pluginDirs: [] })
 
     const registry = ctx.get('mcpConnections')
-    const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'server-b-ungated')).toMatchObject({ name: 'server-b-ungated', state: 'ready' })
+    await awaitReady(registry!, 'server-b-ungated')
 
     const captured = emitSessionStartTwice(ctx)
     expect(captured).toHaveLength(0)
@@ -177,8 +239,7 @@ describe('cc-shell glue gated MCP discovery', () => {
     await apply(ctx, { pluginDirs: [] })
 
     const registry = ctx.get('mcpConnections')
-    const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'server-b-empty-dsh')).toMatchObject({ name: 'server-b-empty-dsh', state: 'ready' })
+    await awaitReady(registry!, 'server-b-empty-dsh')
     expect(emitSessionStartTwice(ctx)).toHaveLength(0)
   }, 30_000)
 
@@ -190,9 +251,8 @@ describe('cc-shell glue gated MCP discovery', () => {
     await apply(ctx, { mcpLoadClaudeFiles: true, pluginDirs: [] })
 
     const registry = ctx.get('mcpConnections')
-    const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'server-a-escape')).toMatchObject({ name: 'server-a-escape', state: 'ready' })
-    expect(entries.find(e => e.name === 'server-b-escape')).toMatchObject({ name: 'server-b-escape', state: 'ready' })
+    await awaitReady(registry!, 'server-a-escape')
+    await awaitReady(registry!, 'server-b-escape')
     expect(emitSessionStartTwice(ctx)).toHaveLength(0)
   }, 30_000)
 
@@ -204,9 +264,57 @@ describe('cc-shell glue gated MCP discovery', () => {
     await apply(ctx, { mcpConfigFiles: [claudeDotJson], pluginDirs: [] })
 
     const registry = ctx.get('mcpConnections')
+    await awaitReady(registry!, 'server-b-explicit')
     const entries = registry!.entries()
-    expect(entries.find(e => e.name === 'server-b-explicit')).toMatchObject({ name: 'server-b-explicit', state: 'ready' })
     expect(entries.some(e => e.name === 'server-a-explicit')).toBe(false)
+    expect(emitSessionStartTwice(ctx)).toHaveLength(0)
+  }, 30_000)
+})
+
+describe('cc-shell glue deferred MCP mounts', () => {
+  it('mounts with deferStartupConnect: true (apply returns while the handshake is pending)', async () => {
+    writeDshConfigMixed(['fast-server'], ['slow-server'], 5_000)
+    const ctx = await newCtx()
+
+    await apply(ctx, { pluginDirs: [] })
+
+    const registry = ctx.get('mcpConnections')
+    // The defer signature: apply resolved while the slow server is still
+    // handshaking, and the fast fixture has already settled.
+    const slow = registry!.entries().find(e => e.name === 'slow-server')
+    expect(slow).toMatchObject({ name: 'slow-server', state: 'connecting' })
+    await awaitReady(registry!, 'fast-server')
+
+    // Cleanup: kill the still-connecting child.
+    await registry!.disconnect('slow-server')
+  }, 30_000)
+
+  it('injects a one-shot connecting notice listing only the unsettled servers', async () => {
+    writeDshConfigMixed(['fast-notice'], ['slow-notice'], 5_000)
+    const ctx = await newCtx()
+
+    await apply(ctx, { pluginDirs: [] })
+    await awaitReady(ctx.get('mcpConnections')!, 'fast-notice')
+
+    const captured = emitSessionStartTwice(ctx)
+    expect(captured).toHaveLength(1)
+    const text = JSON.stringify(captured[0])
+    expect(text).toContain('slow-notice')
+    expect(text).not.toContain('fast-notice')
+
+    // Cleanup: kill the still-connecting child.
+    await ctx.get('mcpConnections')!.disconnect('slow-notice')
+  }, 30_000)
+
+  it('suppresses the connecting notice when every server settles before the mount loop ends', async () => {
+    writeDshConfig(['settled-a', 'settled-b'])
+    const ctx = await newCtx()
+
+    await apply(ctx, { pluginDirs: [] })
+    const registry = ctx.get('mcpConnections')
+    await awaitReady(registry!, 'settled-a')
+    await awaitReady(registry!, 'settled-b')
+
     expect(emitSessionStartTwice(ctx)).toHaveLength(0)
   }, 30_000)
 })

@@ -277,6 +277,14 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
     // rt.current.agent, which is the target session only once rebound here;
     // the fresh-session path (startFreshSession) skips reseed and keeps the
     // live /model route as agentOptions instead.
+    //
+    // Benign boot race (W4, documented — no locking): this reset seed shares
+    // no lock with the boot seed's now-async wait seam. If a switch ran
+    // during the boot seed window, a boot seed that already passed its
+    // `selection.current !== undefined` early-return could still write
+    // `selection.current` AFTER this reset intended "unset". At boot both
+    // resolve to the same value (agent options / the same deployment
+    // default), so the outcome is identical; no synchronization is added.
     if (opts.reseedModel === true) await rt.seedDefaultModel(true)
 
     rt.writeResumeTarget(String(rt.current.agent.session.id))

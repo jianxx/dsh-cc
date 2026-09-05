@@ -258,11 +258,17 @@ export class SettingsCascadeProvider extends SettingsProvider {
    * @returns the merged document minus its top-level `env` key.
    */
   protected async load(): Promise<Record<string, unknown>> {
-    const user = await this.readOptional(this.spec.sources.userSettings)
-    const project = await this.readOptional(this.spec.sources.projectSettings)
-    const local = await this.readOptional(this.spec.sources.localSettings, true)
-    const flag = await this.resolveFlag()
-    const policy = await this.resolvePolicy()
+    // The five source resolutions are independent; read them concurrently.
+    // With MULTIPLE invalid sources, serial loading surfaced the lowest layer
+    // deterministically while Promise.all surfaces whichever rejects first in
+    // time — both fail loud. Single-invalid behavior is unchanged.
+    const [user, project, local, flag, policy] = await Promise.all([
+      this.readOptional(this.spec.sources.userSettings),
+      this.readOptional(this.spec.sources.projectSettings),
+      this.readOptional(this.spec.sources.localSettings, true),
+      this.resolveFlag(),
+      this.resolvePolicy(),
+    ])
 
     const merged = [user, project, local, flag, policy]
       .reduce<Record<string, unknown>>(
