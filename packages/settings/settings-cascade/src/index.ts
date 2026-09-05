@@ -12,16 +12,17 @@
  * @module @jianxx/dsh-cc-settings-cascade
  */
 
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { watch as chokidarWatch } from 'chokidar'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { canonicalizeWatchPath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { resolveLocalSettingsDir, type LocalRootDeps } from './local-root.ts'
 import { mergeSettingsSection } from './merge.ts'
 import { coerceEnv, type EnvSettings } from './env.ts'
-import { applyOpsToSection, diffSections, readUserFile, writeJsonAtomic } from './persist.ts'
+import { applyOpsToSection, diffSections, writeJsonAtomic } from './persist.ts'
 import { applyCcKeyAliases } from './cc-key-aliases.ts'
 
 export { applyCcKeyAliases, CC_KEY_ALIASES } from './cc-key-aliases.ts'
@@ -108,6 +109,12 @@ function isAccessDenied(error: unknown): boolean {
   return code === 'EACCES' || code === 'EPERM'
 }
 
+/** Watcher write-settle window in milliseconds (mirrors the harness file provider's default). */
+const DEBOUNCE_MS = 100
+
+/** Optimistic-retry bound for persist: how many read-check-write rounds before failing loud. */
+const MAX_PERSIST_ATTEMPTS = 5
+
 /**
  * Resolve the runtime spec from plugin config: explicit paths win, otherwise
  * the defaults derive from the harness home and the project directory. The
@@ -178,6 +185,20 @@ export class SettingsCascadeProvider extends SettingsProvider {
    * `publish(doc)` path must also update this shadow.
    */
   private shadow: Record<string, unknown> = {}
+  /**
+   * Single exclusive operation chain: watcher-triggered reloads and persists
+   * run one at a time in queue order (settled tail), so a persist can never
+   * race a reload's read-modify-publish, and a reload can never read a
+   * half-committed atomic rename.
+   */
+  private operations: Promise<void> = Promise.resolve()
+  /** Set at dispose: refuse new watcher events and let in-flight work no-op. */
+  private closed = false
+
+  /** Opaque read of {@link closed}: control flow cannot narrow it across awaits. */
+  private isClosed(): boolean {
+    return this.closed
+  }
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -230,15 +251,126 @@ export class SettingsCascadeProvider extends SettingsProvider {
    * @param section - the complete merged user section to store.
    */
   protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
+    // Serialize with watcher-triggered reloads on the one operation chain, and
+    // retry optimistically when an external edit lands between the read and
+    // the atomic rename.
+    return this.enqueue(() => this.persistSection(ns, section))
+  }
+
+  /** Queue one exclusive document operation behind every earlier one. */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.operations.then(operation)
+    this.operations = task.then(() => undefined, () => undefined)
+    return task
+  }
+
+  /** Queue a reload; a failed reload keeps the last-good document and stays only a warning. */
+  private queueRefresh(): void {
+    void this.enqueue(async () => {
+      if (this.isClosed()) return
+      try {
+        this.publish(await this.load())
+      } catch (error) {
+        // A malformed or unreadable source must never take a live session
+        // down: keep the last good document published and keep watching.
+        this.ctx.logger.warn('settings-cascade: reload failed; keeping the last good document')
+        this.ctx.logger.warn(error)
+      }
+    }).catch((error: unknown) => {
+      // Only an invariant violation escaping the commit path can reject a
+      // reload past the warn-and-keep guard; keep the queue alive so one
+      // poisoned commit cannot silently end hot reloading forever.
+      this.ctx.logger.warn('settings-cascade: reload commit failed')
+      this.ctx.logger.warn(error)
+    })
+  }
+
+  /**
+   * Persist one namespace with optimistic concurrency: the user-file bytes
+   * are re-read immediately before the atomic rename, and when an external
+   * writer changed them since the read the op built on, the whole round
+   * restarts from a fresh read (bounded, then loud). The shadow still moves
+   * only after the write has durably succeeded.
+   */
+  private async persistSection(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
     const path = this.documentPath
-    const ops = diffSections(this.shadow[ns] ?? {}, section)
-    const root = await readUserFile(path)
-    if (ops.length > 0) {
+    let lastError: unknown
+    for (let attempt = 0; attempt < MAX_PERSIST_ATTEMPTS; attempt++) {
+      const ops = diffSections(this.shadow[ns] ?? {}, section)
+      if (ops.length === 0) {
+        this.shadow[ns] = structuredClone(section)
+        return
+      }
+      const before = await this.readUserText(path)
+      const root = before === undefined || before.trim().length === 0 ? {} : this.parse(path, before)
       const next = applyOpsToSection(root[ns], ops)
       const updated = { ...root, [ns]: next }
+      if ((await this.readUserText(path)) !== before) {
+        lastError = new Error(`settings-cascade: user settings file at ${path} changed concurrently during persist`)
+        continue
+      }
       await writeJsonAtomic(path, updated)
+      this.shadow[ns] = structuredClone(section)
+      return
     }
-    this.shadow[ns] = structuredClone(section)
+    throw lastError ?? new Error(`settings-cascade: persist at ${path} exhausted ${MAX_PERSIST_ATTEMPTS} optimistic-retry attempts`)
+  }
+
+  /** Raw user-file text, or `undefined` when the file is absent. */
+  private async readUserText(path: string): Promise<string | undefined> {
+    try {
+      return await readFile(path, 'utf8')
+    } catch (error) {
+      if (isENOENT(error)) return undefined
+      throw error
+    }
+  }
+
+  /** Every concrete settings FILE path worth watching, canonicalized and deduped. */
+  private async watchPaths(): Promise<string[]> {
+    const paths = [
+      this.spec.sources.userSettings,
+      this.spec.sources.projectSettings,
+      this.spec.sources.localSettings,
+      this.spec.sources.flagSettings,
+      this.spec.policy.systemPath,
+      this.spec.policy.userPath,
+    ].filter((path): path is string => path !== undefined)
+    const canonical = await Promise.all(paths.map(path => canonicalizeWatchPath(path)))
+    return [...new Set(canonical)]
+  }
+
+  override async* [Service.init](): AsyncGenerator<() => Promise<void> | void, void, void> {
+    // The base init loads and publishes the merged document; a parse failure
+    // there is a boot failure and stays loud.
+    yield* super[Service.init]()
+    const watcher = chokidarWatch(await this.watchPaths(), {
+      ignoreInitial: true,
+      awaitWriteFinish: {
+        stabilityThreshold: DEBOUNCE_MS,
+        pollInterval: Math.max(1, Math.min(DEBOUNCE_MS, 10)),
+      },
+    })
+    watcher.on('all', () => {
+      if (this.isClosed()) return
+      this.queueRefresh()
+    })
+    watcher.on('ready', () => {
+      // The base init's load raced the watcher's own setup: a change written
+      // between that read and the watcher becoming active never fires an
+      // event. One reconcile at ready closes the gap.
+      if (this.isClosed()) return
+      this.queueRefresh()
+    })
+    watcher.on('error', (error) => {
+      this.ctx.logger.warn('settings-cascade: watcher error')
+      this.ctx.logger.warn(error)
+    })
+    yield async () => {
+      this.closed = true
+      await watcher.close()
+      await this.operations
+    }
   }
 
   /**
