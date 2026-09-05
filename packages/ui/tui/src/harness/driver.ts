@@ -201,6 +201,9 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     historyDir,
     cwd,
   })
+  // W4 fire-early: kick the default-model seed — submits and /effort await the
+  // settled seed before dispatch; banner upsert + gated notice in continuation.
+  void agent.waitForModel()
   // /resume rebinds history onto the switched session's project; the tracked
   // key makes same-project switches no-ops.
   const rebindHistory = (sessionCwd: string | undefined): void => {
@@ -222,7 +225,6 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     agent.persistResumeTarget()
     recordProjectSession(String(current.agent.session.id), liveSessionCwd(current.agent, cwd))
   }
-  await agent.seedDefaultModel()
   // Marker semantics: write on resume (self-heal) and after the first real
   // user prompt — never on an empty fresh boot; seed true + persist only on resume.
   if (resumed) {
@@ -237,22 +239,13 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   }
   emit(setPermissionMode(state, liveMode(current.agent, 'default')))
 
-  // Boot banner: one status row greeting. Emitted before the resume fold so it
-  // lands as row 0, above replayed history (matching the host's header block).
+  // Boot banner: one status row greeting, before the resume fold (row 0); the
+  // settled seed upserts the label + gated notice (driver-agent continuation).
   const modelLabel = selection.current?.model ?? 'default model'
   emit(upsertRow(state, {
     kind: 'status',
     text: `dsh cc-mode — ${modelLabel} · ${cwd} · /tui-help for keys`,
   }))
-  // If no model could be resolved at all (no explicit config, no resolved agent
-  // options, no deployment default), surface a one-time boot notice — F2 (/model)
-  // picks one. Fires only at driver create, never on per-event emits.
-  if (selection.current === undefined) {
-    emit(upsertRow(state, {
-      kind: 'status',
-      text: 'No model configured. Pick one with /model.',
-    }))
-  }
 
   // Replay the durable event log so a resumed session shows its prior
   // conversation via the agent section's presenter-bound fold. One emit for
@@ -261,6 +254,10 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // A historical log may end mid-turn if the process crashed; sync busy from
   // the ground-truth agent status before live events continue.
   emit(setBusy(state, current.agent.status === 'running'))
+
+  // W4 await-late bound: a microtask-fast seed lands before the frame; a slow
+  // seed never blocks it.
+  await agent.awaitBootFrame()
 
   // --- Statusline: custom command wiring + HUD (branch + projections feed) ---
   const statusline = createStatusLineWiring({ emit, state: () => state, ctx, cwd, current, selection, listeners })
@@ -378,6 +375,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     openEffortPicker,
     loadCatalog: agent.loadCatalog,
     resolveEfforts: agent.resolveEfforts,
+    waitForModel: agent.waitForModel,
     persistResumeTarget: persistResumeTargetAndIndex,
     getMarkedContent: agent.getMarkedContent,
     setMarkedContent: agent.setMarkedContent,
@@ -414,6 +412,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     get historyDir() { return agent.historyDir },
     persistResumeTarget: persistResumeTargetAndIndex,
     setMarkedContent: agent.setMarkedContent,
+    waitForModel: agent.waitForModel,
   } satisfies DriverQueueCtx)
   actions.flushQueue = () => queue.flushQueue()
 

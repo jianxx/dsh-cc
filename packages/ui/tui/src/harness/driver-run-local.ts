@@ -200,6 +200,10 @@ export function createRunLocalSection(rt: DriverRunLocalCtx): RunLocalSection {
       await rt.applyModelSwitch(chosen.provider, chosen.model)
     }
     if (name === 'effort') {
+      // W4 await-late seam: identical to the submit path — the seed must be
+      // settled before this branch reads `selection.current`, or a boot-window
+      // /effort would resolve against an undefined route.
+      await rt.waitForModel()
       if (rawInput.length === 0) {
         await rt.openEffortPicker()
         return
