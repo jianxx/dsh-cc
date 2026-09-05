@@ -5,6 +5,8 @@
  * @module @jianxx/dsh-cc-command-mcp
  */
 
+import type { ClaudeOnlySource, McpMigrationResult } from '@jianxx/dsh-cc-mcp-config'
+
 /** The connection lifecycle state of one MCP server. */
 export type McpConnectionState = 'connecting' | 'ready' | 'error' | 'disconnected'
 
@@ -27,6 +29,7 @@ export type McpInput =
   | { kind: 'list' }
   | { kind: 'reconnect'; name: string }
   | { kind: 'disconnect'; name: string }
+  | { kind: 'migrate' }
   | { kind: 'usage' }
 
 /**
@@ -44,6 +47,10 @@ export function parseMcpInput(rawInput: string): McpInput {
   }
   if (sub === 'disconnect') {
     if (name !== undefined && rest.length === 0) return { kind: 'disconnect', name }
+    return { kind: 'usage' }
+  }
+  if (sub === 'migrate') {
+    if (tokens.length === 1) return { kind: 'migrate' }
     return { kind: 'usage' }
   }
   return { kind: 'usage' }
@@ -74,7 +81,57 @@ export function formatUsage(): string {
   return [
     'Usage:',
     '  /mcp                          list MCP connections',
+    '  /mcp migrate                  import Claude Code MCP config into dsh',
     '  /mcp reconnect <name>         reconnect an MCP server',
     '  /mcp disconnect <name>        disconnect an MCP server',
   ].join('\n')
+}
+
+/**
+ * Render the `/mcp migrate` result report. Pure: it only stringifies its
+ * argument; all file I/O happened in the caller.
+ * @param result - the {@link McpMigrationResult} produced by `migrateMcpServers`.
+ */
+export function formatMigrateReport(result: McpMigrationResult): string {
+  if (result.wrote === false) {
+    const lines: string[] = [`Nothing to migrate — ${result.target} is already up to date.`]
+    for (const source of result.sources) {
+      if (source.error !== undefined) lines.push(`${source.path}: unreadable — ${source.error}`)
+    }
+    return lines.join('\n')
+  }
+  const lines: string[] = []
+  for (const source of result.sources) {
+    if (source.error !== undefined) lines.push(`${source.path}: unreadable — ${source.error}`)
+    else lines.push(`${source.path}: ${source.servers.length} servers`)
+  }
+  if (result.added.length > 0) lines.push(`added: ${result.added.join(', ')}`)
+  if (result.kept.length > 0) {
+    lines.push(`kept (already in dsh config): ${result.kept.join(', ')}`)
+  }
+  for (const conflict of result.sourceConflicts) {
+    lines.push(`name taken from ${conflict.kept}, skipped ${conflict.skipped}: ${conflict.name}`)
+  }
+  if (result.backup !== undefined) lines.push(`backup: ${result.backup}`)
+  lines.push(`target: ${result.target}`)
+  lines.push(
+    `The Claude Code source files were not modified — remove them manually when happy.`,
+    `Servers load only after restarting the session.`,
+  )
+  return lines.join('\n')
+}
+
+/**
+ * Render the discovery notice appended to `/mcp` list output when Claude Code
+ * MCP servers are shadowed by the dsh-native config. Pure.
+ * @param sources - the Claude Code sources holding servers not declared by any dsh file.
+ * @param target - the migration target path to run `/mcp migrate` into.
+ */
+export function formatDiscoveryNotice(sources: readonly ClaudeOnlySource[], target: string): string {
+  const counts = sources.map(source => `${source.path} (${source.names.length} servers)`)
+  const lines = [
+    `MCP: dsh config takes precedence — these Claude Code servers are not loaded: ${counts.join(', ')}.`,
+    `Run /mcp migrate to import them into ${target}, then restart the session.`,
+  ]
+  return lines.join('\n')
 }

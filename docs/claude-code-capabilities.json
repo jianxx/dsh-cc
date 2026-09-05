@@ -3357,6 +3357,66 @@
         "kind": "none"
       }
     },
+    "mcp.config-discovery": {
+      "title": "MCP config discovery precedence",
+      "category": "mcp",
+      "plane": "preset",
+      "upstream": {
+        "summary": "Claude Code reads its own config files (project .mcp.json, the Claude config directory's .mcp.json, ~/.claude.json); there is no cross-product precedence rule or config migration surface.",
+        "refs": []
+      },
+      "dimensions": {
+        "recognized": {
+          "status": true
+        },
+        "mounted": {
+          "status": true
+        },
+        "behavioral": {
+          "status": "divergent"
+        },
+        "ux": {
+          "status": "partial"
+        }
+      },
+      "evidence": [
+        {
+          "type": "source",
+          "path": "packages/preset/cc/agent.cordis.yml",
+          "anchor": "- id: cc-shell-glue"
+        },
+        {
+          "type": "source",
+          "path": "packages/preset/cc/agent.cordis.yml",
+          "anchor": "- id: command-mcp"
+        },
+        {
+          "type": "source",
+          "path": "packages/bundle/cc-shell/src/index.ts",
+          "anchor": "resolveDefaultMcpPaths()"
+        },
+        {
+          "type": "test",
+          "path": "packages/bundle/cc-shell/tests/mcp-gating.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/mcp/mcp-config/tests/paths.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/mcp/mcp-config/tests/migrate.spec.ts"
+        },
+        {
+          "type": "test",
+          "path": "packages/interaction/command-mcp/tests/command-mcp.spec.ts"
+        }
+      ],
+      "deviation": {
+        "kind": "divergent",
+        "summary": "Deliberate dsh-first rule with no Claude Code analog: when a dsh-native config (the project .mcp.json or $DSH_HOME/.mcp.json) declares at least one server, Claude Code MCP config files are not loaded; skipped claude-only servers surface via a logger warn, a one-shot session-start TUI notice, and a self-clearing /mcp status line, and /mcp migrate imports them into $DSH_HOME/.mcp.json (raw entries verbatim, atomic write, .bak backup, existing names win). Escape hatch: mcpLoadClaudeFiles: true on cc-shell-glue restores the old all-merge behavior; an explicit mcpConfigFiles list bypasses gating entirely."
+      }
+    },
     "mcp.serena-first": {
       "title": "Serena-first prompt steering",
       "category": "mcp",

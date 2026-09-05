@@ -73,7 +73,7 @@ dsh web
 | Memory and CLAUDE.md | 0 | 1 | 1 | 0 |
 | Skills | 0 | 1 | 0 | 0 |
 | Subagents | 0 | 1 | 0 | 0 |
-| MCP | 2 | 0 | 0 | 0 |
+| MCP | 2 | 1 | 0 | 0 |
 | Plugins and marketplaces | 1 | 0 | 0 | 0 |
 | Settings | 1 | 1 | 0 | 0 |
 | Permissions | 0 | 1 | 0 | 0 |

@@ -6,16 +6,33 @@
  * owned by the `@jianxx/dsh-cc-model-aliases` routes service. Discovery is
  * best-effort: every absent path simply mounts nothing.
  *
+ * MCP config discovery is source-separated: dsh-native config
+ * (`<cwd>/.mcp.json` and `$DSH_HOME/.mcp.json`) takes precedence — when a
+ * dsh-native file declares at least one server, the Claude Code files
+ * (`$CLAUDE_CONFIG_DIR/.mcp.json` / `~/.claude/.mcp.json` and
+ * `~/.claude.json`) are NOT loaded, and a notice points at `/mcp migrate`
+ * (which imports them into `$DSH_HOME/.mcp.json`; a session restart makes the
+ * import effective). The `mcpLoadClaudeFiles: true` knob restores the old
+ * all-merge behavior, and an explicit `mcpConfigFiles` list is always honored
+ * verbatim with no gating and no notice.
+ *
  * @module @jianxx/dsh-cc-bundle-shell
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ModelRoutes } from '@jianxx/dsh-cc-model-aliases'
-import { buildRegistrations, type McpConfigFile } from '@jianxx/dsh-cc-mcp-config'
+import {
+  buildRegistrations,
+  claudeOnlyServers,
+  readMcpServerNames,
+  resolveDefaultMcpPaths,
+  type ClaudeOnlySource,
+  type McpConfigFile,
+  type ResolvedMcpPaths,
+} from '@jianxx/dsh-cc-mcp-config'
 import * as CcMcpClient from '@jianxx/dsh-cc-mcp-client'
 import { CcPluginsService } from './ccPlugins.ts'
 
@@ -29,6 +46,15 @@ export interface Config {
   pluginDirs?: string[] | null
   /** `.mcp.json` documents whose accepted servers become mcp-client instances. Absent → discovery defaults; explicit [] or null disables. */
   mcpConfigFiles?: string[] | null
+  /**
+   * Restore the old all-merge MCP discovery: `true` loads the dsh files AND
+   * the Claude Code files together with no gating and no notice. Absent,
+   * `null`, or `false` keeps the new gated discovery — dsh-native config
+   * declaring ≥ 1 server takes precedence and Claude Code files are skipped
+   * with a notice pointing at `/mcp migrate`. Ignored when `mcpConfigFiles`
+   * is set explicitly.
+   */
+  mcpLoadClaudeFiles?: boolean | null
 }
 
 /** Runtime config schema (all fields optional; discovery prefers explicit lists). */
@@ -37,21 +63,11 @@ export const Config: z<Config> = z.object({
   // which would defeat the absent → discovery-fallback semantics below.
   pluginDirs: z.union([z.array(z.string()), z.const(null)]),
   mcpConfigFiles: z.union([z.array(z.string()), z.const(null)]),
+  mcpLoadClaudeFiles: z.union([z.boolean(), z.const(null)]),
 })
 
 /** Cordis plugin id. */
 export const name = 'cc-shell-glue'
-
-/** Default `.mcp.json` locations: project, the dsh home, then user-home Claude space. */
-function defaultMcpFiles(): string[] {
-  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return [
-    join(process.cwd(), '.mcp.json'),
-    join(dshHome, '.mcp.json'),
-    join(homedir(), '.claude', '.mcp.json'),
-    join(homedir(), '.claude.json'),
-  ]
-}
 
 /**
  * Mount the discovered CC surfaces. Each piece is effect-scoped where the
@@ -98,7 +114,33 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
 
   // 2. `.mcp.json` documents → per-server @jianxx/dsh-cc-mcp-client instances.
-  for (const file of config.mcpConfigFiles ?? defaultMcpFiles()) {
+  //    An explicit `mcpConfigFiles` list is honored verbatim — no gating, no
+  //    notice. Discovery mode resolves the default paths and gates the Claude
+  //    Code files behind a non-empty dsh-native config (≥ 1 declared server):
+  //    the dsh config then takes sole effect and skipped Claude Code servers
+  //    surface as a notice pointing at `/mcp migrate`.
+  let files: string[]
+  let gatedPaths: ResolvedMcpPaths | undefined
+  let noticeSources: ClaudeOnlySource[] = []
+  if (config.mcpConfigFiles !== undefined) {
+    // Explicit list honored verbatim; []/null disables MCP config mounts.
+    files = config.mcpConfigFiles ?? []
+  } else {
+    const paths = resolveDefaultMcpPaths()
+    let dshServerCount = 0
+    for (const file of paths.dsh) {
+      const names = readMcpServerNames(file)
+      if (names.kind === 'ok') dshServerCount += names.names.length
+    }
+    const gated = dshServerCount > 0 && config.mcpLoadClaudeFiles !== true
+    files = gated ? paths.dsh : [...paths.dsh, ...paths.claude]
+    if (gated) {
+      noticeSources = claudeOnlyServers(paths)
+      if (noticeSources.length > 0) gatedPaths = paths
+    }
+  }
+
+  for (const file of files) {
     if (!existsSync(file)) continue
     try {
       const body = JSON.parse(readFileSync(file, 'utf8')) as McpConfigFile
@@ -114,6 +156,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     } catch (error) {
       ctx.logger.warn(`cc-shell-glue: failed to mount MCP config ${file}: ${String(error)}`)
     }
+  }
+
+  // 3. Gating notice: warn immediately, then inject once on the first
+  //    `agent/session-start` (the TUI cannot see logger.warn). The closure
+  //    flag makes it fire exactly once per process even when subagent/resume
+  //    fan-out re-emits the event.
+  if (gatedPaths !== undefined && noticeSources.length > 0) {
+    const skipped = noticeSources.map(source => `${source.path} (${source.names.length} servers)`).join(', ')
+    const text = `MCP: dsh config takes precedence — skipped Claude Code MCP config: ${skipped}. Run /mcp migrate to import them into ${gatedPaths.target}, then restart the session.`
+    ctx.logger.warn(`cc-shell-glue: ${text}`)
+    let fired = false
+    ctx.on('agent/session-start', ({ agent }: { agent: { inject(message: unknown): void } }) => {
+      if (fired) return
+      fired = true
+      agent.inject(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'cc-shell-glue', form: 'notice', summary: text } }))
+    })
   }
 
   if (results.length > 0) ctx.logger.info(`cc-shell-glue: mounted — ${results.join('; ')}`)

@@ -15,8 +15,9 @@ export const name = 'mcp-config-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: mcp-config is a pure loader that produces registrations
- * and introduces no live registries of its own to reconcile.
+ * No runtime invariant: aside from `migrate.ts`'s atomic, user-invoked file
+ * write, mcp-config produces registrations and introduces no live registries
+ * of its own to reconcile.
  */
 const install: InvariantInstaller = () => {}
 

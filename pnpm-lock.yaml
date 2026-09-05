@@ -933,6 +933,10 @@ importers:
         version: link:../../../../deepseek-harness/packages/core/session
 
   packages/interaction/command-mcp:
+    dependencies:
+      '@jianxx/dsh-cc-mcp-config':
+        specifier: workspace:^
+        version: link:../../mcp/mcp-config
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../../deepseek-harness/vendor/cordis

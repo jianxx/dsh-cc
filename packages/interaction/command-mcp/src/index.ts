@@ -1,15 +1,25 @@
 /**
- * Human-facing `/mcp` command: list the registered MCP servers, or
- * reconnect/disconnect one by name. It reads and drives the optional
- * `mcpConnections` service mounted by mcp-client; when that service is absent
- * it reports the seam gracefully rather than failing.
+ * Human-facing `/mcp` command: list the registered MCP servers, import the
+ * Claude Code MCP config into `$DSH_HOME/.mcp.json`, or reconnect/disconnect
+ * one by name. It reads and drives the optional `mcpConnections` service
+ * mounted by mcp-client; when that service is absent it reports the seam
+ * gracefully rather than failing, but `migrate` works regardless because it
+ * is pure file I/O against the shared config paths.
  * @module @jianxx/dsh-cc-command-mcp
  */
 
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import {
+  claudeOnlyServers,
+  migrateMcpServers,
+  readMcpServerNames,
+  resolveDefaultMcpPaths,
+} from '@jianxx/dsh-cc-mcp-config'
+import {
   formatConnections,
+  formatDiscoveryNotice,
+  formatMigrateReport,
   formatUsage,
   parseMcpInput,
   type McpConnectionEntry,
@@ -37,16 +47,42 @@ function seam(ctx: Context): McpConnectionsSeam | undefined {
   return ctx.get('mcpConnections') as McpConnectionsSeam | undefined
 }
 
+/** Run the `/mcp migrate` import against the shared default config paths. */
+function migrate(): CommandResult {
+  const paths = resolveDefaultMcpPaths()
+  try {
+    const result = migrateMcpServers({ sources: paths.claude, target: paths.target })
+    return { kind: 'success', text: formatMigrateReport(result) }
+  } catch (error) {
+    return { kind: 'success', text: `Failed to migrate: ${String(error)}` }
+  }
+}
+
 /** Execute `/mcp [sub]` against the optional mcpConnections seam. */
 async function executeMcp(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+  const input = parseMcpInput(invocation.rawInput)
+  if (input.kind === 'migrate') return migrate()
   const connections = seam(ctx)
   if (connections === undefined) {
     return { kind: 'success', text: 'No MCP connection registry is mounted in this composition (mcp-client absent).' }
   }
-  const input = parseMcpInput(invocation.rawInput)
   switch (input.kind) {
-    case 'list':
-      return { kind: 'success', text: formatConnections(connections.entries()) }
+    case 'list': {
+      let text = formatConnections(connections.entries())
+      const paths = resolveDefaultMcpPaths()
+      // The notice mirrors the loader's gate: only when a dsh-native config
+      // declares at least one server are Claude Code files actually skipped —
+      // otherwise they are loaded and there is nothing to nag about.
+      const gated = paths.dsh.some((file) => {
+        const read = readMcpServerNames(file)
+        return read.kind === 'ok' && read.names.length > 0
+      })
+      if (gated) {
+        const sources = claudeOnlyServers(paths)
+        if (sources.length > 0) text += `\n\n${formatDiscoveryNotice(sources, paths.target)}`
+      }
+      return { kind: 'success', text }
+    }
     case 'reconnect': {
       try {
         await connections.reconnect(input.name)
@@ -75,8 +111,8 @@ async function executeMcp(ctx: Context, invocation: CommandInvocation): Promise<
 export function apply(ctx: Context): void {
   ctx.commands.register({
     name: 'mcp',
-    description: 'list MCP connections, or reconnect/disconnect one by name',
-    input: { hint: '[reconnect|disconnect <name>]' },
+    description: 'list MCP connections, import Claude Code config, or reconnect/disconnect one by name',
+    input: { hint: '[migrate|reconnect|disconnect <name>]' },
     handler: (invocation: CommandInvocation) => executeMcp(ctx, invocation),
   })
 }
