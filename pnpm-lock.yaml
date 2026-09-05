@@ -1992,6 +1992,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../../deepseek-harness/packages/core/session
         version: link:../../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../../deepseek-harness/packages/settings/settings
+        version: link:../../../../deepseek-harness/packages/settings/settings
       '@deepseek-ai/dsh-user-approval':
         specifier: link:../../../../deepseek-harness/packages/interaction/user-approval
         version: link:../../../../deepseek-harness/packages/interaction/user-approval

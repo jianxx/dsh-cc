@@ -22,6 +22,9 @@ import { resolveLocalSettingsDir, type LocalRootDeps } from './local-root.ts'
 import { mergeSettingsSection } from './merge.ts'
 import { coerceEnv, type EnvSettings } from './env.ts'
 import { applyOpsToSection, diffSections, readUserFile, writeJsonAtomic } from './persist.ts'
+import { applyCcKeyAliases } from './cc-key-aliases.ts'
+
+export { applyCcKeyAliases, CC_KEY_ALIASES } from './cc-key-aliases.ts'
 
 export { resolveLocalSettingsDir, type LocalRootDeps, type LocalRootExec, type LocalRootExecResult } from './local-root.ts'
 export { mergeValue, mergeSettingsSection, unionDenyPrecedence } from './merge.ts'
@@ -268,7 +271,9 @@ export class SettingsCascadeProvider extends SettingsProvider {
         {},
       )
 
-    const { env, ...document } = merged
+    // CC camelCase top-level keys alias onto kebab namespaces before the env
+    // split / publish, so the shadow mirrors exactly what the seam resolves.
+    const { env, ...document } = applyCcKeyAliases(merged)
     this.env = this.coerceEnvSection(env)
     this.shadow = structuredClone(document)
     return document

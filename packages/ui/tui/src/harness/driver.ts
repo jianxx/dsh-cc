@@ -19,6 +19,7 @@ import type { DriverBashCtx, DriverQueueCtx, PermissionRulesLike } from './drive
 import { createModeSection } from './driver-mode.ts'
 import { liveMode, liveSessionCwd } from './driver-live.ts'
 import { createHudSection } from './driver-hud.ts'
+import { createStatusLineWiring } from './statusline-wiring.ts'
 import { createPickersSection } from './driver-pickers.ts'
 import { createQueueSection } from './driver-queue.ts'
 import { createRunLocalSection } from './driver-run-local.ts'
@@ -261,15 +262,12 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
   // the ground-truth agent status before live events continue.
   emit(setBusy(state, current.agent.status === 'running'))
 
-  // --- Statusline HUD: git branch + sessionProjections feed -----------------
+  // --- Statusline: custom command wiring + HUD (branch + projections feed) ---
+  const statusline = createStatusLineWiring({ emit, state: () => state, ctx, cwd, current, selection, listeners })
   const hud = createHudSection({
-    emit,
-    state: () => state,
-    ctx,
-    cwd,
-    current,
-    selection,
+    emit, state: () => state, ctx, cwd, current, selection,
     branchProbe: config.branchProbe ?? gitBranchOf,
+    statusline,
   })
   const { refreshBranch, seedHud, seedTodos, applyUsage, projections, statusLineOf } = hud
 
@@ -491,6 +489,7 @@ export async function createDriver(ctx: Context, config: DriverConfig = {}): Pro
     loadModelEfforts: () => pickers.loadModelEfforts(),
     listCommands: () => catalog.listCommands(),
     async dispose() {
+      statusline.dispose()
       if (noticeTimer !== undefined) { clearTimeout(noticeTimer); noticeTimer = undefined }
       approvals.dispose()
       if (agent.getMarkedContent()) persistResumeTargetAndIndex()

@@ -427,6 +427,12 @@ export type ShellExecSpecLike = {
   workdir: string
   timeoutMs: number
   stdoutMaxBytes: number
+  /** Stdin bytes handed to the child (resolve bakes the request's in). */
+  stdin?: string
+  /** Abort signal wiring the caller's cancellation into the child. */
+  signal?: AbortSignal
+  /** Extra/overriding environment entries (resolve bakes the request's in). */
+  env?: Record<string, string>
 }
 
 export type ShellRunResultLike = {
@@ -438,8 +444,22 @@ export type ShellRunResultLike = {
   stderr: { text: string }
 }
 
+export type ShellExecRequestLike = {
+  command: string
+  timeoutMs?: number
+  stdoutMaxBytes?: number
+  /** Stdin bytes handed to the child (e.g. the status-line JSON payload). */
+  stdin?: string
+  /** Abort signal wiring the caller's cancellation into the child. */
+  signal?: AbortSignal
+  /** Environment entries merged over the inherited process env. */
+  env?: Record<string, string>
+  /** Working directory for the child (the harness executor's field name). */
+  workdir?: string
+}
+
 export type ShellExecutorLike = {
-  resolve(request: { command: string; timeoutMs?: number; stdoutMaxBytes?: number }): ShellExecSpecLike
+  resolve(request: ShellExecRequestLike): ShellExecSpecLike
   run(spec: ShellExecSpecLike): Promise<ShellRunResultLike>
 }
 

@@ -24,6 +24,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { CatalogEntry } from '../model-catalog.ts'
 import type { ModalEntry } from './driver-modal.ts'
+import type { StatusLineSectionHandle } from './statusline-wiring.ts'
 import type { SessionEventLike, ToolPresenters } from '../transcript.ts'
 
 /**
@@ -126,6 +127,12 @@ export interface DriverHudCtx {
   selection: ModelSelectionRef
   /** Best-effort git-branch probe for the statusline footer. */
   branchProbe: (dir: string) => Promise<string | undefined>
+  /**
+   * Custom statusLine wiring (statusline-wiring.ts), when created by the
+   * driver. `override()` returns the configured command's line while active,
+   * or undefined so the built-in HUD stays in charge.
+   */
+  statusline?: StatusLineSectionHandle
 }
 
 /**

@@ -218,6 +218,27 @@ profile 仍然是普通的 dsh 组合。自定义覆盖可以放在：
 
 精确语义以各 package README 和[兼容矩阵](docs/cc-parity-matrix.md)为准。
 
+### 自定义状态栏
+
+在 `tui` profile 中，你可以用自定义 shell 命令替换内置的底部状态栏（与 Claude Code 兼容）。该配置块可以放在用户文件 `~/.dsh/settings.json` 或项目文件 `.claude/settings.json` 中：
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.dsh/statusline.sh",
+    "padding": 0,
+    "refreshInterval": 10
+  }
+}
+```
+
+与 Claude Code checkout 共享的项目 `.claude/settings.json` 文件可以直接使用；如果同时存在 camelCase 的 `statusLine` 和 dsh 原生的 kebab 风格 `statusline` 键，dsh 原生键优先。
+
+命令会在 stdin 上收到与 Claude Code 兼容的 JSON 会话负载（契约见 [CC statusline 文档](https://code.claude.com/docs/en/statusline)）；dsh-cc 只提供能真实取到来源的字段。命令 stdout 的第一行会成为状态栏内容（ANSI 转义原样透传）；失败或输出为空时渲染为空白行。命令会在会话启动/恢复、新消息、mode 和模型变化时重新运行——命令本身变化时立即运行——此外还按 `refreshInterval` 定时器运行，单位为**秒**（最小值 1）。脚本的环境中会带上 `COLUMNS`/`LINES`。
+
+v1 注意事项：只渲染输出的第一行（CC 会渲染每一行），并且运行中会话之外对 `settings.json` 的修改要等到下次重启才生效。
+
 ## 兼容性与已知限制
 
 项目目标是提供**实用的 Claude Code 风格工作流兼容性**，而不是逐字节模拟 Claude Code。

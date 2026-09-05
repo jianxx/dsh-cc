@@ -521,9 +521,9 @@ capabilities:
         interrupt, Ctrl+C/Ctrl+S/Ctrl+T/Ctrl+O/Up/Tab bindings, approval
         previews with 1/2/3 answers on a shared FIFO, leading-! bash mode with
         separate history, TUI-local /export-md /copy /usage, six-role theme,
-        context-occupancy statusline, multi-hunk diff transcript rendering.
-        Vim mode and ghost text are still later. The statusline settings
-        contract is tracked separately as ux.statusline.
+        context-occupancy statusline, custom statusLine and multi-hunk diff
+        transcript rendering. Vim mode and ghost text are still later; the
+        statusLine contract's remaining limits are detailed in ux.statusline.
 
   engine.vendor-internals:
     title: Buddy / KAIROS / undercover / ultraplan / computer-use
@@ -2028,22 +2028,46 @@ capabilities:
   ux.statusline:
     title: Status line
     category: ux
-    plane: preset
+    plane: host
     upstream:
       summary: >-
         User-configured status line command/script whose output replaces the
         bottom status line of the TUI.
       refs:
-        - { source: cc-docs, path: /docs/en/statusline, retrieved: '2026-09-04' }
+        - { source: cc-docs, path: /docs/en/statusline, retrieved: '2026-09-05' }
     dimensions:
-      recognized: false
-      mounted: false
-      behavioral: missing
-      ux: missing
-    evidence: []
+      recognized: true
+      mounted: true
+      behavioral: partial
+      ux: partial
+    evidence:
+      - { type: source, path: packages/ui/tui/src/harness/statusline-wiring.ts, anchor: "createStatusLineWiring" }
+      - { type: source, path: packages/ui/tui/src/harness/statusline-command.ts, anchor: "createStatusLineCommand" }
+      - { type: source, path: packages/settings/settings-cascade/src/cc-key-aliases.ts, anchor: "CC_KEY_ALIASES" }
+      - { type: source, path: packages/ui/tui/src/harness/statusline-settings.ts, anchor: "describeStatusLine" }
+      - { type: test, path: packages/ui/tui/tests/driver-statusline.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/statusline-command.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/statusline-settings.spec.ts }
+      - { type: test, path: packages/ui/tui/tests/statusline-payload.spec.ts }
+      - { type: test, path: packages/settings/settings-cascade/tests/cc-key-aliases.spec.ts }
     deviation:
       kind: downgrade
       summary: >-
-        The statusLine settings contract is unimplemented (no parsing or
-        execution of a configured status-line command); the TUI renders its
-        own fixed HUD statusline (context occupancy) instead.
+        v1 renders only the first row of the command's output (CC renders
+        every row as its own status-line row), enforces a 60 s hard run cap
+        and a 64 KiB stdout cap (CC documents no timeout), and logs no
+        debug-mode failure output for the statusline command. The stdin
+        payload omits fields with no truthful runtime source: version,
+        output_style.name, worktree, workspace.git_worktree, workspace.repo,
+        session_name, prompt_id, fast_mode, thinking, vim, agent, pr,
+        cost.total_cost_usd / total_api_duration_ms / total_lines_*, and
+        context_window.current_usage (the context breakdown carries role
+        counts, not token buckets) — consequently CC's rate-limit and
+        prompt-cache reset/expiry refresh triggers never fire either.
+        display_name duplicates model.id; exceeds_200k_tokens is derived
+        from the uncached input-token total (approximate).
+        hideVimModeIndicator is parsed but behaviorally inert (no vim mode
+        yet); disableAllHooks / allowManagedHooksOnly gating keys are
+        unimplemented. External settings.json edits apply at the next boot
+        (no file watcher; in-process settings commits react immediately).
+        refreshInterval is honored in seconds with a minimum clamp of 1.
