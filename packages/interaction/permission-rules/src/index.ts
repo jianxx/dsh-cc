@@ -448,6 +448,15 @@ export class PermissionRulesService extends Service {
   }
 
   /**
+   * The LIVE merged settings default (`config.defaultMode`, overridden by the
+   * settings section): rebuilt on every settings reload, so display surfaces
+   * reading this always follow the currently authoritative default.
+   */
+  get defaultMode(): PermissionMode {
+    return this.state.defaultMode
+  }
+
+  /**
    * Switch a session's permission mode durably. Semantics live in
    * `switchSessionPermissionMode` (./mode.ts): `plan` is owned by plan-mode
    * and throws; entering `bypassPermissions` pins the session sandbox to

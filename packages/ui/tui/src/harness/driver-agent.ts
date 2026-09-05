@@ -59,7 +59,7 @@ export function attachSessionEvents(rt: DriverSessionEventsCtx): void {
     const eventType = (event as SessionEventLike).type as string
     rt.emit(applySessionEvent(rt.state(), event as SessionEventLike, rt.presenters))
     if (eventType === 'permission/mode' || eventType === 'plan/mode') {
-      rt.emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent, rt.state().permissionMode)))
+      rt.emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent)))
     }
     // Manual-compaction working line: an idle agent's `/compact` runs outside
     // any turn, so anchor the working line for its duration. A live turn's

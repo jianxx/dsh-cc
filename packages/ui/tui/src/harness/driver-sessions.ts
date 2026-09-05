@@ -292,7 +292,7 @@ export function createSessionsSection(rt: DriverSessionsCtx): SessionsSection {
       text: `dsh cc-mode — ${modelLabel} · ${rt.cwd} · /tui-help for keys`,
     }))
     emit(rt.foldHistory())
-    emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent, 'default')))
+    emit(setPermissionMode(rt.state(), rt.liveMode(rt.current.agent)))
     // Success path: drop the previous session's anchor together with the busy
     // sync (a failed resume returned above and keeps it), then re-anchor
     // below once the new session's HUD is seeded.

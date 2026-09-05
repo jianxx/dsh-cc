@@ -100,7 +100,7 @@ function classify(deps: DecideDeps, exec: ToolExecution): RiskAssessment {
  * The async classifier stage (§4.1 of the LLM risk-classifier design) needs
  * all three to decide whether to consult the LLM and how to escalate.
  */
-export type DecidedCall = { decision: PermissionDecision; risk: RiskAssessment; mode: PermissionMode }
+export type DecidedCall = { decision: PermissionDecision; risk: RiskAssessment; mode: PermissionMode; isReadOnly: boolean }
 
 /**
  * The sync, pure waterfall WITHOUT the auto-proxy conversion. Under `auto`, a
@@ -109,25 +109,28 @@ export type DecidedCall = { decision: PermissionDecision; risk: RiskAssessment; 
  */
 export function decideCallVerbose(deps: DecideDeps, exec: ToolExecution): DecidedCall {
   const risk = classify(deps, exec)
+  const isReadOnly = deps.readOnlyTools.has(exec.name)
   if (risk.level === 'HIGH') {
     return {
       decision: { kind: 'deny', reason: `blocked by risk classifier: ${risk.reasons.join('; ')}` },
       risk,
       mode: effectiveMode(deps, exec),
+      isReadOnly,
     }
   }
   const mode = effectiveMode(deps, exec)
   if (risk.level === 'MEDIUM') {
-    if (mode === 'bypassPermissions') return { decision: { kind: 'allow' }, risk, mode }
+    if (mode === 'bypassPermissions') return { decision: { kind: 'allow' }, risk, mode, isReadOnly }
     // Session-scoped approval memory (WS4-PR-B): a rule the user granted via
     // "Allow for this session" overrides the MEDIUM early-return ask. Checked
     // after the HIGH safety deny, before the MEDIUM ask. `plan` still asks —
     // read-only confinement outranks a session grant.
-    if (mode !== 'plan' && deps.sessionAllowMatches(exec)) return { decision: { kind: 'allow' }, risk, mode }
+    if (mode !== 'plan' && deps.sessionAllowMatches(exec)) return { decision: { kind: 'allow' }, risk, mode, isReadOnly }
     return {
       decision: { kind: 'ask', reason: `requires approval by risk classifier: ${risk.reasons.join('; ')}` },
       risk,
       mode,
+      isReadOnly,
     }
   }
   const subject = subjectOf(exec, deps.bashToolName)
@@ -140,10 +143,10 @@ export function decideCallVerbose(deps: DecideDeps, exec: ToolExecution): Decide
     mode,
     ...deps.bypassDisabled() ? { bypassDisabled: true } : {},
     isFileEdit: deps.fileEditTools.has(exec.name),
-    isReadOnly: deps.readOnlyTools.has(exec.name),
+    isReadOnly,
     sandboxedBashExempt: sandboxedBash(deps, exec),
   })
-  return { decision, risk, mode }
+  return { decision, risk, mode, isReadOnly }
 }
 
 /**

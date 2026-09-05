@@ -544,3 +544,22 @@ describe('risk-classifier escalation', () => {
     expect(result.isError).toBe(false)
   })
 })
+
+describe('defaultMode getter (live merged settings default)', () => {
+  it('returns the constructor-config defaultMode', async () => {
+    const ctx = await mount({ defaultMode: 'acceptEdits' })
+    expect(ctx.permissionRules.defaultMode).toBe('acceptEdits')
+  })
+
+  it('reflects a settings reload (live state, not a boot snapshot)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(PermissionRules, { defaultMode: 'auto' })
+    expect(ctx.permissionRules.defaultMode).toBe('auto')
+    await ctx.settings.update(PERMISSION_SETTINGS_NAMESPACE, { defaultMode: 'acceptEdits' })
+    expect(ctx.permissionRules.defaultMode).toBe('acceptEdits')
+  })
+})

@@ -131,4 +131,21 @@ describe('decideCallVerbose (verbose core split)', () => {
     expect(verbose.risk.level).toBe('LOW')
     expect(verbose.risk.reasons).toEqual([])
   })
+
+  it('F2: isReadOnly is populated — read-only tools true, mutating tools false', () => {
+    const d = deps()
+    expect(decideCallVerbose(d, fakeExec('read', { file_path: 'a.ts' })).isReadOnly).toBe(true)
+    expect(decideCallVerbose(d, fakeExec('Bash', { command: 'ls' })).isReadOnly).toBe(false)
+    expect(decideCallVerbose(d, fakeExec('edit', { file_path: 'a.ts' })).isReadOnly).toBe(false)
+  })
+
+  it('F2: isReadOnly rides HIGH and MEDIUM early returns too', () => {
+    const d = deps()
+    const high = decideCallVerbose(d, fakeExec('Bash', { command: 'rm -rf /' }))
+    expect(high.isReadOnly).toBe(false)
+    const medium = decideCallVerbose(d, fakeExec('edit', { file_path: '/outside/x.ts' }, { cwd: '/work' }))
+    expect(medium.isReadOnly).toBe(false)
+    const mediumRead = decideCallVerbose(deps({ readOnlyTools: new Set(['read']) }), fakeExec('read', { file_path: 'a.ts' }))
+    expect(mediumRead.isReadOnly).toBe(true)
+  })
 })
