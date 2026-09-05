@@ -19,14 +19,14 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { TuiState } from '../store.ts'
 import {
   type ContextPressureStateLike,
-  type PersistenceLike,
   type SessionProjectionsLike,
   type ShellExecutorLike,
   type TokenUsageStateLike,
 } from '../state/driver-types.ts'
-import { tokensOf } from './usage-view.ts'
+import { lastBucketsOf, tokensOf } from './usage-view.ts'
 import { createStatusLineCommand, type StatusLineCommand } from './statusline-command.ts'
 import { buildStatusLinePayload } from './statusline-payload.ts'
+import { createCcTranscriptMirror, type CcTranscriptMirror } from './statusline-cc-transcript.ts'
 import {
   STATUSLINE_SECTION_SCHEMA,
   STATUSLINE_SETTINGS_NAMESPACE,
@@ -61,16 +61,13 @@ export type StatusLineWiringCtx = {
 const FALLBACK_COLUMNS = 80
 const FALLBACK_ROWS = 24
 
-/** Structural face of the session-persistence service's locate seam. */
-type PersistenceLocatorLike = {
-  locate(header: unknown): { path?: string } | undefined
-}
-
-export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSectionHandle & { dispose(): void } {
+export function createStatusLineWiring(
+  rt: StatusLineWiringCtx,
+  options: { transcriptDir?: string } = {},
+): StatusLineSectionHandle & { dispose(): void } {
   const { state, emit, ctx, cwd, current, selection } = rt
   const executor = ctx.get('shell') as ShellExecutorLike | undefined
   const projections = ctx.get('sessionProjections') as SessionProjectionsLike | undefined
-  const persistence = ctx.get('sessionPersistence') as (PersistenceLocatorLike & PersistenceLike) | undefined
   const bindTimeMs = Date.now()
 
   let description: StatusLineDescription = { active: false }
@@ -81,15 +78,58 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
   // re-runs only when it actually changed (the boot-time seedHud call must
   // not discard the initial activation's run via the generation guard).
   let boundSessionId = String(current.agent.session.id)
+  // The CC transcript mirror (Slice C) — created lazily on first activation so
+  // users without a statusline never write files.
+  let mirror: CcTranscriptMirror | undefined
+  let unsubscribeEvents: (() => void) | undefined
+
+  /**
+   * Bind the transcript mirror to the CURRENT session: subscribe the live
+   * event tap (guarded by session id), snapshot + rebuild from the full event
+   * log, then re-drain the tail so a live append landing between snapshot and
+   * subscribe (or to the old inode before rename) is not lost — append is
+   * idempotent under the seq watermark guard. Idempotent; safe on rebind.
+   */
+  function bindTranscriptMirror(): void {
+    const sessionId = String(current.agent.session.id)
+    if (mirror === undefined) {
+      mirror = options.transcriptDir === undefined
+        ? createCcTranscriptMirror()
+        : createCcTranscriptMirror({ dir: options.transcriptDir })
+    }
+    unsubscribeEvents?.()
+    unsubscribeEvents = undefined
+    unsubscribeEvents = ctx.on('session/event', (session, event) => {
+      // Guard against late events from a disposed/rebound session.
+      if (String((session as { id?: unknown })?.id) !== String(current.agent.session.id)) return
+      mirror?.append(event)
+    })
+    const eventsOf = (): readonly unknown[] => {
+      const events = (current.agent.session as { events?: unknown }).events
+      return Array.isArray(events) ? events : []
+    }
+    // Snapshot, rebuild, then re-drain: the watermark was taken at snapshot
+    // time inside rebind, so any event appended since (live tap raced the
+    // snapshot, or wrote to the pre-rename inode) re-flows through append.
+    const snapshot = eventsOf()
+    mirror.rebind(sessionId, snapshot)
+    for (const event of eventsOf()) mirror.append(event)
+  }
 
   /** Assemble the CC-shaped payload at fire time from live state (§3.4). */
   function payloadFor(): Record<string, unknown> {
     const session = current.agent.session
     const header = session.header as { cwd?: string; createdAt?: number }
     const pressure = projections?.stateOf(session, 'contextPressure') as ContextPressureStateLike | undefined
-    const tokens = tokensOf(projections?.stateOf(session, 'tokenUsage') as TokenUsageStateLike | undefined)
+    // One read of the tokenUsage projection feeds both the cumulative totals
+    // and the last step's buckets (the CC current_usage source).
+    const tokenUsage = projections?.stateOf(session, 'tokenUsage') as TokenUsageStateLike | undefined
+    const tokens = tokensOf(tokenUsage)
+    const currentUsage = lastBucketsOf(tokenUsage)
     const sessionCwd = header.cwd ?? cwd
-    const transcriptPath = persistence?.locate?.(header)?.path
+    // transcript_path is advertised only while the CC-shape mirror is ready
+    // (an unreadable/empty file would yield all-zeros that shadow the stdin
+    // fallbacks above — ccstatusline's `??` chain passes zeros through).
     const model = selection.current?.model
     const effort = selection.current?.reasoningEffort
     return buildStatusLinePayload({
@@ -97,12 +137,15 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
       sessionCwd,
       projectDir: cwd,
       sessionId: String(session.id),
-      ...(transcriptPath === undefined ? {} : { transcriptPath }),
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
       ...(tokens === undefined ? {} : { inputTokens: tokens.input, outputTokens: tokens.output }),
+      ...(currentUsage === undefined ? {} : { currentUsage }),
       ...(pressure?.contextWindow === undefined ? {} : { contextWindowTokens: pressure.contextWindow }),
       ...(pressure?.pressureTokens === undefined ? {} : { pressureTokens: pressure.pressureTokens }),
+      ...(mirror?.isReady() === true && mirror.getPath() !== undefined
+        ? { transcriptPath: mirror.getPath()! }
+        : {}),
       ...(header.createdAt === undefined ? {} : { sessionCreatedAtMs: header.createdAt }),
       bindTimeMs,
       nowMs: Date.now(),
@@ -139,6 +182,8 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
   /** Tear the runner down (deactivation or dispose) and restore the built-in line. */
   function deactivate(reEmit = true): void {
     clearRefreshTimer()
+    unsubscribeEvents?.()
+    unsubscribeEvents = undefined
     runner?.dispose()
     runner = undefined
     // Same-reference re-emit so root re-reads the built-in lane; suppressed
@@ -160,6 +205,8 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
       },
     })
     restartRefreshTimer()
+    // Mirror first, then the first frame (immediate fire) reads a ready path.
+    bindTranscriptMirror()
     // Session start runs once, immediately (C4/C5).
     fire({ immediate: true })
   }
@@ -230,6 +277,9 @@ export function createStatusLineWiring(rt: StatusLineWiringCtx): StatusLineSecti
       const sessionId = String(current.agent.session.id)
       if (sessionId === boundSessionId) return
       boundSessionId = sessionId
+      // Rebind the transcript mirror to the NEW session before firing so the
+      // re-run's payload advertises the new session's mirror, not the old one.
+      if (mirror !== undefined && runner !== undefined) bindTranscriptMirror()
       if (runner !== undefined) fire()
     },
     dispose(): void {

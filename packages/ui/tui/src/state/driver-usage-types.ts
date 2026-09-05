@@ -9,7 +9,10 @@
  * `tokenUsage` projection state. `uncachedInputTokens` is the harness's
  * field name; `inputTokens` is accepted defensively so a shape drift
  * degrades to "no tokens" instead of NaN. Cache fields are optional —
- * compositions without prompt caching simply omit those lines.
+ * compositions without prompt caching simply omit those lines. `last`
+ * (when present) carries the most recent API step's per-response token
+ * buckets — the CC `current_usage` semantics; it is read defensively too,
+ * since state may arrive as a foreign/partial shape.
  */
 export type TokenUsageStateLike = {
   totals?: {
@@ -18,6 +21,17 @@ export type TokenUsageStateLike = {
     outputTokens?: number
     cacheReadTokens?: number
     cacheWriteTokens?: number
+  }
+  last?: {
+    turn?: number
+    step?: number
+    buckets?: {
+      uncachedInputTokens?: number
+      inputTokens?: number
+      outputTokens?: number
+      cacheReadTokens?: number
+      cacheWriteTokens?: number
+    }
   }
 }
 

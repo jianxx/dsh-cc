@@ -3,9 +3,14 @@
  * JSON session object (§3.4 of the statusline plan) from a structural view of
  * live driver state. Only truthfully-sourced fields are emitted — absent
  * sources drop their field, and a sub-object with no known member is dropped
- * wholesale. `context_window.current_usage` has no truthful source (the
- * projection's context breakdown is role counts, not token buckets) and is
- * never emitted. Pure and total: no I/O, no clock, no driver imports.
+ * wholesale. `context_window.current_usage` carries the last API step's token
+ * buckets (the projection's `tokenUsage.last.buckets`) mapped onto the CC
+ * field names; one accepted staleness: those buckets may carry partial usage
+ * from a cancelled/failed step. The percentage and exceeds_200k decisions use
+ * the currentUsage-derived context length (input + cache write + cache read)
+ * when present, falling back to the projected pressure sample — and are
+ * omitted when neither source exists. Pure and total: no I/O, no clock, no
+ * driver imports.
  * @module @jianxx/dsh-cc-tui/harness/statusline-payload
  */
 
@@ -37,10 +42,20 @@ export type StatusLinePayloadView = {
   worktree?: { name?: string; path?: string; branch?: string }
   /** Git worktree name (mirrors the worktree descriptor's name). */
   gitWorktree?: string
-  /** Uncached input-token total (the exceeds_200k decision input). */
+  /** Uncached input-token total (context-window total). */
   inputTokens?: number
-  /** Output-token total. */
+  /** Output-token total (context-window total). */
   outputTokens?: number
+  /**
+   * Most recent API step's token buckets (CC `current_usage` semantics);
+   * absent when the projection exposes no last step.
+   */
+  currentUsage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+  }
   /** Context window size in tokens. */
   contextWindowTokens?: number
   /** Projected context occupancy in tokens. */
@@ -68,11 +83,29 @@ function compact(object: Record<string, unknown>): Record<string, unknown> | und
 }
 
 /**
+ * The occupancy decision input: the currentUsage-derived context length
+ * (input + cache write + cache read) when a currentUsage exists, else the
+ * projected pressure sample. Undefined when neither source exists.
+ */
+function contextLengthOf(view: StatusLinePayloadView): number | undefined {
+  if (view.currentUsage !== undefined) {
+    return view.currentUsage.inputTokens
+      + (view.currentUsage.cacheWriteTokens ?? 0)
+      + (view.currentUsage.cacheReadTokens ?? 0)
+  }
+  return isFiniteNumber(view.pressureTokens) ? view.pressureTokens : undefined
+}
+
+/**
  * Build the CC-shaped status-line payload from the view. Absent sources drop
  * their field; empty sub-objects are dropped wholesale; unknown extra keys are
  * never fabricated. Serialized structurally — the payload type stays open.
  */
 export function buildStatusLinePayload(view: StatusLinePayloadView): Record<string, unknown> {
+  const length = contextLengthOf(view)
+  const percentages = isFiniteNumber(length) && isFiniteNumber(view.contextWindowTokens) && view.contextWindowTokens > 0
+    ? (length / view.contextWindowTokens) * 100
+    : undefined
   const payload: Record<string, unknown> = {
     cwd: view.sessionCwd ?? view.driverCwd,
     session_id: view.sessionId,
@@ -96,14 +129,19 @@ export function buildStatusLinePayload(view: StatusLinePayloadView): Record<stri
       total_input_tokens: view.inputTokens,
       total_output_tokens: view.outputTokens,
       context_window_size: view.contextWindowTokens,
-      used_percentage: isFiniteNumber(view.pressureTokens) && isFiniteNumber(view.contextWindowTokens) && view.contextWindowTokens > 0
-        ? (view.pressureTokens / view.contextWindowTokens) * 100
-        : undefined,
-      remaining_percentage: isFiniteNumber(view.pressureTokens) && isFiniteNumber(view.contextWindowTokens) && view.contextWindowTokens > 0
-        ? 100 - (view.pressureTokens / view.contextWindowTokens) * 100
-        : undefined,
+      current_usage: view.currentUsage === undefined
+        ? undefined
+        : compact({
+          input_tokens: view.currentUsage.inputTokens,
+          output_tokens: view.currentUsage.outputTokens,
+          cache_creation_input_tokens: view.currentUsage.cacheWriteTokens,
+          cache_read_input_tokens: view.currentUsage.cacheReadTokens,
+        }),
+      used_percentage: percentages,
+      remaining_percentage: percentages === undefined ? undefined : 100 - percentages,
     }),
-    exceeds_200k_tokens: isFiniteNumber(view.inputTokens) && view.inputTokens > 200_000,
+    // No occupancy source → the field is omitted (not a literal false).
+    exceeds_200k_tokens: isFiniteNumber(length) ? length > 200_000 : undefined,
     effort: compact({ level: view.effort }),
     worktree: view.worktree === undefined ? undefined : compact(view.worktree),
   }

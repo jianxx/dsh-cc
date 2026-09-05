@@ -33,6 +33,32 @@ export function tokensOf(usage: TokenUsageStateLike | undefined): { input: numbe
 }
 
 /**
+ * Most recent API step's token buckets (the CC `current_usage` semantics)
+ * out of a `tokenUsage` state value. Returns undefined unless both the
+ * input (`uncachedInputTokens ?? inputTokens`) and output are finite
+ * numbers; the cache fields are included only when finite numbers, so a
+ * partial bucket degrades to its known members instead of NaNs.
+ */
+export function lastBucketsOf(
+  usage: TokenUsageStateLike | undefined,
+): { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } | undefined {
+  const buckets = usage?.last?.buckets
+  const input = buckets?.uncachedInputTokens ?? buckets?.inputTokens
+  if (typeof input !== 'number' || !Number.isFinite(input)) return undefined
+  if (typeof buckets?.outputTokens !== 'number' || !Number.isFinite(buckets.outputTokens)) return undefined
+  return {
+    inputTokens: input,
+    outputTokens: buckets.outputTokens,
+    ...typeof buckets.cacheReadTokens === 'number' && Number.isFinite(buckets.cacheReadTokens)
+      ? { cacheReadTokens: buckets.cacheReadTokens }
+      : {},
+    ...typeof buckets.cacheWriteTokens === 'number' && Number.isFinite(buckets.cacheWriteTokens)
+      ? { cacheWriteTokens: buckets.cacheWriteTokens }
+      : {},
+  }
+}
+
+/**
  * `/cost` report: token counts with thousands separators, cache lines only
  * when non-zero, a `cache hit` percent (`cacheRead / (input + cacheRead)`,
  * clamped at 100, shown only when `cacheRead` exists and the denominator is
