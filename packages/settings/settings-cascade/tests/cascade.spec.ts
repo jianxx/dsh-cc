@@ -1,11 +1,30 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { SettingsCascadeProvider, type Config } from '../src/index.ts'
+import { SettingsCascadeProvider, type Config, type EnvSettings } from '../src/index.ts'
+
+// Concurrency gate for `node:fs/promises.readFile`. When armed, reads hang in
+// a controlled deferred instead of hitting the disk, letting a test observe
+// how many source reads are in flight before any completes. Disarmed (the
+// default) it is a pure passthrough to the real implementation.
+const gate = vi.hoisted(() => ({
+  armed: false,
+  pending: [] as Array<() => void>,
+}))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile(path: Parameters<typeof actual.readFile>[0], options?: Parameters<typeof actual.readFile>[1]) {
+      if (!gate.armed) return actual.readFile(path, options)
+      return new Promise<string>((res) => gate.pending.push(() => res('{}')))
+    },
+  }
+})
 
 interface ThemeConfig {
   theme: string
@@ -41,6 +60,7 @@ async function boot(config: Config): Promise<Context> {
   await fiber
   return ctx
 }
+
 
 /** Write a settings.json and return its path. */
 async function writeSettings(dir: string, name: string, doc: unknown): Promise<string> {
@@ -179,5 +199,94 @@ describe('misconfiguration fails loud', () => {
     const dir = await tempDir()
     const bad = await writeSettings(dir, 'scalar.json', ['not', 'a', 'map'])
     await expect(boot({ userSettingsPath: bad })).rejects.toThrow()
+  })
+
+  it('fails with an error naming the single invalid file', async () => {
+    const dir = await tempDir()
+    const bad = join(dir, 'bad.json')
+    await writeFile(bad, '{ not valid json')
+    await expect(boot({ userSettingsPath: bad })).rejects.toThrow(bad)
+  })
+})
+
+describe('parallel source loading', () => {
+  // Records the env section split out of `load()` so the split behavior is
+  // observable without reaching into the fiber tree.
+  class ProbeCascade extends SettingsCascadeProvider {
+    static lastEnv: EnvSettings | undefined
+    protected override async load(): Promise<Record<string, unknown>> {
+      const doc = await super.load()
+      ProbeCascade.lastEnv = this.getEnv()
+      return doc
+    }
+  }
+
+  async function bootProbe(config: Config): Promise<Context> {
+    const pinned = config.projectDir ?? (await tempDir())
+    const ctx = new Context()
+    const fiber = ctx.plugin(ProbeCascade, { ...config, projectDir: pinned })
+    cleanups.push(async () => { await fiber.dispose() })
+    await fiber
+    return ctx
+  }
+
+  it('produces the same merged document and env split as serial loading', async () => {
+    const dir = await tempDir()
+    const user = await writeSettings(dir, 'user.json', { 'ui-theme': { theme: 'user', fontSize: 12 } })
+    const local = await writeSettings(dir, 'local.json', { 'ui-theme': { theme: 'local' }, env: { LOCAL_VAR: '1' } })
+    const flagFile = await writeSettings(dir, 'flag.json', { 'ui-theme': { theme: 'flagfile' } })
+    // user layer intentionally absent; policy comes from inline remote settings.
+    const ctx = await bootProbe({
+      userSettingsPath: join(dir, 'missing-user.json'),
+      localSettingsPath: local,
+      flagSettingsPath: flagFile,
+      flagSettingsInline: { 'ui-theme': { theme: 'inline' } },
+      policy: { remoteSettings: { 'ui-theme': { fontSize: 30 }, env: { POLICY_VAR: '2' } } },
+    })
+    // Highest layer wins per key; lower layers still fill missing keys.
+    expect(themeOf(ctx)).toEqual({ theme: 'inline', fontSize: 30 })
+    // Top-level `env` is split out of the merged document, string-coerced.
+    expect(ProbeCascade.lastEnv).toEqual({ LOCAL_VAR: '1', POLICY_VAR: '2' })
+  })
+
+  it('reads multiple sources concurrently before any completes', async () => {
+    const dir = await tempDir()
+    const user = await writeSettings(dir, 'user.json', { 'ui-theme': { theme: 'user' } })
+    const project = await writeSettings(dir, 'project.json', { 'ui-theme': { theme: 'project' } })
+    const local = await writeSettings(dir, 'local.json', { 'ui-theme': { theme: 'local' } })
+    const flag = await writeSettings(dir, 'flag.json', { 'ui-theme': { theme: 'flag' } })
+
+    gate.armed = true
+    try {
+      const bootPromise = boot({ userSettingsPath: user, projectSettingsPath: project, localSettingsPath: local, flagSettingsPath: flag })
+      // Without completing any read, more than one read must already be in flight.
+      await expect.poll(() => gate.pending.length, { timeout: 1000 }).toBeGreaterThanOrEqual(2)
+      while (gate.pending.length > 0) gate.pending.pop()!()
+      await bootPromise
+    } finally {
+      gate.armed = false
+    }
+  })
+
+  it('still fails loud on a single invalid source with the same error identity', async () => {
+    const dir = await tempDir()
+    const bad = join(dir, 'bad.json')
+    await writeFile(bad, '{ not valid json')
+    await expect(boot({ userSettingsPath: bad })).rejects.toThrow(
+      `settings-cascade: invalid settings document at ${bad}:`,
+    )
+  })
+
+  it('rejects on multiple invalid sources with one of their paths (fail loud)', async () => {
+    const dir = await tempDir()
+    const badUser = join(dir, 'bad-user.json')
+    const badProject = join(dir, 'bad-project.json')
+    await writeFile(badUser, '{ nope')
+    await writeFile(badProject, '{ nope')
+    // Promise.all surfaces whichever invalid source rejects first in time —
+    // serial loading surfaced the lowest layer — but the load must still fail.
+    await expect(boot({ userSettingsPath: badUser, projectSettingsPath: badProject })).rejects.toThrow(
+      new RegExp(`invalid settings document at (${badUser}|${badProject})`),
+    )
   })
 })
