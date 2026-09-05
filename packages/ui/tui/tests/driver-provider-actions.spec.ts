@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Container, Input } from '@jianxx/dsh-cc-pi-tui'
+import { MaskedInput } from '@jianxx/dsh-cc-tui/components/masked-input.ts'
 import { createDriver } from '@jianxx/dsh-cc-tui/harness/driver.ts'
 import { createProviderPanelBox } from '@jianxx/dsh-cc-tui/components/provider-box.ts'
 import { buildArgCompleters } from '@jianxx/dsh-cc-tui/components/arg-completers.ts'
@@ -14,7 +15,7 @@ import { routeProviderPanelInput } from '@jianxx/dsh-cc-tui/input.ts'
  * `/provider` action flows (design doc §4.3, §4.4, §4.6, §6, §7): fake
  * settings / llm / credentials seams drive the add-preset wizard, the
  * custom-provider wizard, and the manage/remove flow through the real driver
- * runtime. Secrets are typed through the real masked pi-tui `Input`.
+ * runtime. Secrets are typed through the first-party `MaskedInput` (bullets only).
  */
 
 function boxText(box: Container): string {
@@ -182,7 +183,7 @@ describe('mount: /provider registration + dispatch', () => {
     expect(driver.state.providerPanel?.phase).toBe('list')
   })
 
-  it('/provider add deepseek jumps to the wizard credential step (masked Input naming the ref)', async () => {
+  it('/provider add deepseek jumps to the wizard credential step (MaskedInput naming the ref)', async () => {
     const { driver, runtime } = await makeDriver()
     await driver.submit('/provider add deepseek')
     const panel = driver.state.providerPanel
@@ -190,8 +191,7 @@ describe('mount: /provider registration + dispatch', () => {
     expect(panel?.wizard?.route).toBe('deepseek')
     expect(panel?.wizard?.steps[panel!.wizard!.stepIndex]).toBe('credential')
     const field = runtime.wizardInput()
-    expect(field).toBeInstanceOf(Input)
-    expect(field!.masked).toBe(true)
+    expect(field).toBeInstanceOf(MaskedInput)
     const text = boxText(createProviderPanelBox(panel!, undefined, field))
     expect(text).toContain('DEEPSEEK_API_KEY')
     expect(text).toContain('~/.dsh/.credentials.yaml')

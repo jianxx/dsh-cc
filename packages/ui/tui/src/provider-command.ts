@@ -7,6 +7,7 @@
  * @module @jianxx/dsh-cc-tui/provider-command
  */
 import { Input } from '@jianxx/dsh-cc-pi-tui'
+import { MaskedInput } from './components/masked-input.ts'
 import { upsertRow, setProviderOverlay, type TuiState } from './store.ts'
 import {
   backFromWizard,
@@ -72,7 +73,7 @@ export type { ProviderSettingsOp, SettingsWriteLike } from './provider-settings.
 export interface ProviderCore {
   rt: ProviderSectionDeps
   /** Wizard text field + transient key buffer + in-flight action (§6). */
-  buf: { field?: Input | undefined; secret?: string | undefined; pendingAction?: Promise<void> | undefined }
+  buf: { field?: Input | MaskedInput | undefined; secret?: string | undefined; pendingAction?: Promise<void> | undefined }
   /** The assembled runtime (late-bound sibling method calls). */
   runtime(): ProviderRuntime
   /** Emit a provider-panel reducer result, if the panel is open. */
@@ -141,7 +142,7 @@ export interface ProviderRuntime {
   /** keep/remove choice on a failed verify — remove unsets the just-written route. */
   removeJustAdded(panel: ProviderPanelState): void
   /** The live wizard text field, if a text step is active (test/render seam). */
-  wizardInput(): Input | undefined
+  wizardInput(): Input | MaskedInput | undefined
 }
 
 /** Cordis events that re-render the open overlay (doc §4.2 / C2 / C4). */
@@ -323,7 +324,7 @@ export function createProviderSection(rt: ProviderSectionDeps): ProviderRuntime 
       rt.emit(setProviderOverlay(rt.state(), startWizardFor(panel, '', [...CUSTOM_STEPS], { kind: 'custom' })))
       openField(core, rt.state().providerPanel)
     },
-    wizardInput(): Input | undefined {
+    wizardInput(): Input | MaskedInput | undefined {
       return buf.field
     },
     ...createActions(core),
