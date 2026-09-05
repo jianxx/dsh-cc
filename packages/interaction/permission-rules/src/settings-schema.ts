@@ -103,7 +103,7 @@ export const DEFAULT_READ_ONLY_TOOLS = ['read', 'glob', 'grep', 'search', 'web_f
 const autoModeClassifierSchema = z.object({
   enabled: z.boolean().default(false),
   route: z.string().default('haiku'),
-  timeoutMs: z.number().default(5000),
+  timeoutMs: z.number().default(8000),
   cacheMaxEntries: z.number().default(256),
 })
 

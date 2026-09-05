@@ -20,8 +20,12 @@ import type { ToolExecution } from '@jianxx/dsh-cc-tools'
 /** A model verdict. `ask` is the only escalation the stage can produce. */
 export type LlmVerdict = { verdict: 'allow'; reason: string } | { verdict: 'ask'; reason: string }
 
-/** Why a classification failed. `unarmed` marks an unresolvable model route. */
-export type ClassifierFailure = 'timeout' | 'error' | 'malformed' | 'unarmed'
+/**
+ * Why a classification failed. `unarmed` marks an unresolvable model route;
+ * `cancelled` marks a caller abort mid-flight (host noise, never a lane
+ * fault — the breaker stage never counts it).
+ */
+export type ClassifierFailure = 'timeout' | 'error' | 'malformed' | 'unarmed' | 'cancelled'
 
 /** The per-call route, passed as data instead of resolved from ambient state. */
 export type ClassifierRoute = { provider: string; model: string }
@@ -55,6 +59,14 @@ export type LlmClassifierDeps = {
   softDeny: readonly string[]
   timeoutMs: number
   cacheMaxEntries: number
+  /**
+   * Optional env-gated debug sink (process log — NEVER session events).
+   * When present, every raw model output is logged with the
+   * `[dsh:classifier:raw]` prefix, truncated to 2 KiB. Raw output may echo
+   * tool input (including secrets the agent was about to run), so this
+   * stays a deliberately opt-in channel with no redaction machinery.
+   */
+  debug?: (message: string) => void
 }
 
 export type LlmClassifier = {
@@ -70,8 +82,14 @@ export type LlmClassifier = {
 const INPUT_CAP = 4096
 /** Failsafe reason when the model output does not parse — never echoes model output. */
 const UNPARSEABLE_REASON = 'classifier output unparseable'
+/** Reason tagged when the caller aborted mid-flight (host noise, not a lane fault). */
+const CANCELLED_REASON = 'classification cancelled by caller'
+/** Reason tagged when the classifier's own timer fired. */
+const TIMEOUT_REASON = 'classifier timed out'
 /** A one-shot verdict needs few tokens; keep the lane cheap. */
-const MAX_TOKENS = 256
+const MAX_TOKENS = 1024
+/** The debug sink's truncation cap for one raw model output. */
+const RAW_DEBUG_CAP = 2048
 
 /**
  * The documented CC classifier duties, as prose rules. Expanded into the
@@ -246,6 +264,26 @@ export function createLlmClassifier(deps: LlmClassifierDeps): LlmClassifier {
           maxTokens: MAX_TOKENS,
           signal,
         })
+        deps.debug?.(`[dsh:classifier:raw] ${raw.slice(0, RAW_DEBUG_CAP)}`)
+        // Abort-boundary attribution (R2), BEFORE any parse: a silent end at
+        // the timer boundary means the stream resolved with truncated text —
+        // parsing is a doomed formality, so tag honestly instead of
+        // misreporting `malformed`. The caller's own abort wins first: a
+        // mid-flight ESC is host noise, not a lane fault.
+        if (exec.signal?.aborted === true) {
+          return identity(
+            { verdict: 'ask', reason: CANCELLED_REASON },
+            false,
+            'cancelled',
+          )
+        }
+        if (timeout.signal.aborted) {
+          return identity(
+            { verdict: 'ask', reason: TIMEOUT_REASON },
+            false,
+            'timeout',
+          )
+        }
         const parsed = parseVerdict(raw)
         if (parsed === undefined) {
           return identity(
@@ -257,8 +295,12 @@ export function createLlmClassifier(deps: LlmClassifierDeps): LlmClassifier {
         cache.set(key, parsed)
         return identity(parsed, false)
       } catch (error) {
-        const failure: ClassifierFailure = timeout.signal.aborted && !exec.signal?.aborted ? 'timeout' : 'error'
-        const reason = failure === 'timeout' ? 'classifier timed out' : `classifier error: ${error instanceof Error ? error.message : String(error)}`
+        // Same check order as the resolved path, for symmetric attribution.
+        if (exec.signal?.aborted === true) {
+          return identity({ verdict: 'ask', reason: CANCELLED_REASON }, false, 'cancelled')
+        }
+        const failure: ClassifierFailure = timeout.signal.aborted ? 'timeout' : 'error'
+        const reason = failure === 'timeout' ? TIMEOUT_REASON : `classifier error: ${error instanceof Error ? error.message : String(error)}`
         return identity({ verdict: 'ask', reason }, false, failure)
       } finally {
         clearTimeout(timer)

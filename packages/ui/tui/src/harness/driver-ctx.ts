@@ -432,6 +432,8 @@ export interface DriverSessionEventsCtx {
   presenters: ToolPresenters | undefined
   /** Late-bound queue flush (wired after createQueueSection). */
   flushQueue(): void
+  /** Transient user-visible notice (the classifier-breaker fallback hint). */
+  showNotice(text: string): void
 }
 
 // re-export the event-like types so the agent section can type them without

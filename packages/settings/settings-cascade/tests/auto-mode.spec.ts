@@ -12,7 +12,7 @@ describe('AutoModeSchema', () => {
   it('parses a complete autoMode object', () => {
     const value = {
       soft_deny: ['$defaults', 'Never run terraform apply'],
-      classifier: { enabled: true, route: 'haiku', timeoutMs: 5000, cacheMaxEntries: 256 },
+      classifier: { enabled: true, route: 'haiku', timeoutMs: 8000, cacheMaxEntries: 256 },
     }
     expect(parse(value)).toEqual(value)
   })
@@ -21,13 +21,13 @@ describe('AutoModeSchema', () => {
     expect(parse({})).toEqual({})
     expect(parse({ soft_deny: ['a'] })).toEqual({ soft_deny: ['a'] })
     expect(parse({ classifier: {} })).toEqual({
-      classifier: { enabled: false, route: 'haiku', timeoutMs: 5000, cacheMaxEntries: 256 },
+      classifier: { enabled: false, route: 'haiku', timeoutMs: 8000, cacheMaxEntries: 256 },
     })
   })
 
   it('normalizes a partial classifier object with defaults', () => {
     expect(parse({ classifier: { enabled: true } })).toEqual({
-      classifier: { enabled: true, route: 'haiku', timeoutMs: 5000, cacheMaxEntries: 256 },
+      classifier: { enabled: true, route: 'haiku', timeoutMs: 8000, cacheMaxEntries: 256 },
     })
   })
 
@@ -115,6 +115,6 @@ describe('autoMode cascade layering (permissions.autoMode delivery route)', () =
     const permissions = merged['permissions'] as Record<string, unknown>
     expect(permissions['allow']).toEqual(['Read'])
     expect(permissions['deny']).toEqual(['Bash(rm -rf)'])
-    expect(parse(permissions['autoMode'])).toEqual({ classifier: { enabled: false, route: 'haiku', timeoutMs: 5000, cacheMaxEntries: 256 } })
+    expect(parse(permissions['autoMode'])).toEqual({ classifier: { enabled: false, route: 'haiku', timeoutMs: 8000, cacheMaxEntries: 256 } })
   })
 })

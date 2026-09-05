@@ -1960,7 +1960,10 @@ capabilities:
       - { type: test, path: packages/interaction/permission-rules/tests/classifier.spec.ts }
       - { type: test, path: packages/interaction/permission-rules/tests/auto-stage.spec.ts }
       - { type: test, path: packages/interaction/permission-rules/tests/listener-auto-stage.spec.ts }
-      - { type: test, path: packages/interaction/permission-rules/tests/llm-classifier.spec.ts }
+      - { type: test, path: packages/interaction/permission-rules/tests/llm-classifier.spec.ts, anchor: "R2: timer fires but the stream silently resolves garbage" }
+      - { type: test, path: packages/interaction/permission-rules/tests/llm-classifier.spec.ts, anchor: "R5: debug sink present" }
+      - { type: test, path: packages/interaction/permission-rules/tests/auto-stage.spec.ts, anchor: "trailingRouteFailureStreak" }
+      - { type: test, path: packages/ui/tui/tests/driver-classifier-breaker.spec.ts, anchor: "a live breaker event surfaces the fallback notice once" }
       - { type: source, path: packages/interaction/permission-rules/src/auto-stage.ts, anchor: "createAutoStage" }
       - { type: test, path: packages/settings/settings-cascade/tests/auto-mode.spec.ts }
       - { type: test, path: packages/ui/tui/tests/approval-preview.spec.ts }
@@ -1990,7 +1993,17 @@ capabilities:
         (threshold 3, keyed provider/model) opens the stage for a failing
         lane: no further classifier calls on that route, one warn per process,
         one `breaker` audit event per session, reset by a settings change
-        (rebuild). The UI honors `permissions.defaultMode`: statusline,
+        (rebuild). The breaker is restart-durable within a session: the first
+        call of a session seeds the per-route streak from the durable log
+        (attributed events only; a restored streak ≥ threshold opens at seed
+        time). An open breaker surfaces one visible TUI fallback notice per
+        session (live-appended `breaker` events only — never replayed logs),
+        and caller-cancelled classifications are tagged `cancelled`, never
+        breaker-counted. Raw model output is debuggable via the opt-in
+        `DSH_PERMISSION_CLASSIFIER_DEBUG=1` process-log channel
+        (`[dsh:classifier:raw]`, truncated to 2 KiB — never session events).
+        Defaults: `timeoutMs` 8000, verdict budget 1024 tokens. The UI honors
+        `permissions.defaultMode`: statusline,
         session switch, Shift+Tab cycle start, and the /permissions picker all
         fall back to the live merged settings default (fold precedence — a
         recorded session mode still wins), with the cycle clamped to its
